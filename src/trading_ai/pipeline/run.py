@@ -6,6 +6,7 @@ from trading_ai.ai.brief import generate_trade_brief
 from trading_ai.automation.alerts import send_trade_brief_alert
 from trading_ai.config import Settings
 from trading_ai.intake.bundle import enrich_market
+from trading_ai.intake.gpt_researcher_hooks import reset_gpt_researcher_runtime_state
 from trading_ai.market.filters import filter_candidates
 from trading_ai.clients.polymarket import fetch_markets, to_candidate
 from trading_ai.models.schemas import AlertRecord
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 def run_pipeline(settings: Settings) -> str:
     store = Store(settings.data_dir / "trading_ai.sqlite")
     run_id = store.new_run_id()
+    reset_gpt_researcher_runtime_state()
 
     raw = fetch_markets(settings)
     candidates = [to_candidate(m) for m in raw]
@@ -45,7 +47,13 @@ def run_pipeline(settings: Settings) -> str:
         store.log_brief(run_id, brief)
 
         if brief.signal_score >= settings.alert_min_signal_score:
-            ok, sent_at = send_trade_brief_alert(settings, brief)
+            source_urls = [r.url for r in bundle.tavily_results[:2]]
+            ok, sent_at = send_trade_brief_alert(
+                settings,
+                brief,
+                run_id=run_id,
+                source_urls=source_urls,
+            )
             if ok:
                 summary = f"signal={brief.signal_score} implied={brief.implied_probability}"
                 store.log_alert(

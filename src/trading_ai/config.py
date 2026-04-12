@@ -6,10 +6,13 @@ from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve `.env` from project root (parent of `src/`) so runtime and CLI match regardless of CWD.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -24,20 +27,20 @@ class Settings(BaseSettings):
     )
     polymarket_markets_path: str = "/markets"
 
-    # Market filters
-    min_volume_usd: float = Field(default=10_000.0, ge=0)
+    # Market filters (Phase 1 defaults tuned for signal quality; override via .env)
+    min_volume_usd: float = Field(default=5_000.0, ge=0)
     max_days_to_expiry: Optional[float] = Field(
-        default=90.0,
+        default=60.0,
         description="Exclude markets resolving after this many days; null = no max",
     )
-    min_implied_prob: float = Field(default=0.05, ge=0.0, le=1.0)
-    max_implied_prob: float = Field(default=0.95, ge=0.0, le=1.0)
+    min_implied_prob: float = Field(default=0.10, ge=0.0, le=1.0)
+    max_implied_prob: float = Field(default=0.90, ge=0.0, le=1.0)
     require_implied_probability: bool = Field(
         default=True,
         description="If true, drop markets where implied probability cannot be parsed",
     )
     markets_fetch_limit: int = Field(default=200, ge=1, le=500)
-    max_candidates_per_run: int = Field(default=5, ge=1, le=50)
+    max_candidates_per_run: int = Field(default=10, ge=1, le=50)
 
     # Tavily
     tavily_api_key: Optional[str] = None
@@ -52,8 +55,11 @@ class Settings(BaseSettings):
     openai_base: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
-    # GPT Researcher (optional hook — subprocess or disabled)
-    gpt_researcher_enabled: bool = False
+    # GPT Researcher (optional CLI hook; off = no logs; on + missing CLI = one warning per run)
+    gpt_researcher_enabled: bool = Field(
+        default=False,
+        description="Set GPT_RESEARCHER_ENABLED=true only if the gpt-researcher CLI is installed",
+    )
     gpt_researcher_command: str = "gpt-researcher"
 
     # Alerts

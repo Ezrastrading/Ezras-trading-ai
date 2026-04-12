@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import List, Optional
 
 import httpx
 
@@ -10,27 +11,67 @@ from trading_ai.models.schemas import TradeBrief
 
 logger = logging.getLogger(__name__)
 
+_MAX_LINE = 140
+_MAX_TITLE = 200
 
-def format_brief_telegram(brief: TradeBrief) -> str:
-    # Plain text avoids Telegram Markdown parse failures on user content.
+
+def _pct(implied: Optional[float]) -> str:
+    if implied is None:
+        return "n/a"
+    try:
+        return f"{float(implied) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _one_line(items: List[str], fallback: str = "—") -> str:
+    if not items:
+        return fallback
+    text = (items[0] or "").strip().replace("\n", " ")
+    if len(text) > _MAX_LINE:
+        return text[: _MAX_LINE - 1] + "…"
+    return text or fallback
+
+
+def _run_display(run_id: str) -> str:
+    if len(run_id) <= 12:
+        return run_id
+    return f"{run_id[:8]}…"
+
+
+def format_brief_telegram(
+    brief: TradeBrief,
+    *,
+    run_id: str,
+    source_urls: List[str],
+) -> str:
+    """Concise, mobile-friendly plain text (no Markdown)."""
+    title = (brief.market_question or "").strip()
+    if len(title) > _MAX_TITLE:
+        title = title[: _MAX_TITLE - 1] + "…"
+
     lines = [
-        f"Signal {brief.signal_score}/10 — {brief.market_id}",
-        f"Q: {brief.market_question[:400]}",
-        f"Implied p: {brief.implied_probability}",
+        "Trading AI — signal alert",
         "",
-        "Supporting:",
-        *[f"- {s[:300]}" for s in brief.supporting_evidence[:5]],
+        f"Run: {_run_display(run_id)}",
         "",
-        "Opposing:",
-        *[f"- {s[:300]}" for s in brief.opposing_evidence[:5]],
+        title,
         "",
-        "Drivers:",
-        *[f"- {s[:300]}" for s in brief.probability_drivers[:5]],
+        f"p: {_pct(brief.implied_probability)}  ·  score {brief.signal_score}/10",
         "",
-        f"Uncertainty: {brief.uncertainty[:500]}",
-        f"Edge: {brief.edge_hypothesis[:500]}",
+        f"Bull: {_one_line(brief.supporting_evidence)}",
+        f"Bear: {_one_line(brief.opposing_evidence)}",
     ]
-    return "\n".join(lines)
+
+    urls = [u.strip() for u in source_urls[:2] if u and u.strip()]
+    if urls:
+        lines.extend(["", "Sources:"])
+        for i, u in enumerate(urls, start=1):
+            display = u if len(u) <= 72 else u[:69] + "…"
+            lines.append(f"{i}) {display}")
+
+    text = "\n".join(lines)
+    return text[:4000]
 
 
 def send_telegram_alert(settings: Settings, text: str) -> bool:
@@ -51,8 +92,14 @@ def send_telegram_alert(settings: Settings, text: str) -> bool:
     return True
 
 
-def send_trade_brief_alert(settings: Settings, brief: TradeBrief) -> tuple[bool, datetime]:
-    text = format_brief_telegram(brief)
+def send_trade_brief_alert(
+    settings: Settings,
+    brief: TradeBrief,
+    *,
+    run_id: str,
+    source_urls: List[str],
+) -> tuple[bool, datetime]:
+    text = format_brief_telegram(brief, run_id=run_id, source_urls=source_urls)
     sent_at = datetime.now(timezone.utc)
     ok = send_telegram_alert(settings, text)
     return ok, sent_at

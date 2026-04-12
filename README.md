@@ -71,6 +71,29 @@ From `trading-ai` with `.env` present:
 
 SQLite database path: `data/trading_ai.sqlite` (configurable via `DATA_DIR`).
 
+## Phase 1 default filters
+
+Defaults are tuned for **higher signal quality** (override via `.env`):
+
+| Setting | Default | Effect |
+|--------|---------|--------|
+| `MIN_VOLUME_USD` | `5000` | Drops thin markets (lower min = more candidates) |
+| `MAX_DAYS_TO_EXPIRY` | `60` | Focuses on nearer-term resolution |
+| `MIN_IMPLIED_PROB` / `MAX_IMPLIED_PROB` | `0.10` / `0.90` | Ignores extreme longshots / near-certainties |
+| `MAX_CANDIDATES_PER_RUN` | `10` | Top volume markets processed per cycle (after filters) |
+| `ALERT_MIN_SIGNAL_SCORE` | `7` | Telegram only when model score ≥ 7 |
+
+Stricter volume and expiry mean **fewer** markets pass; tighter implied band removes **very low / very high** prices; more candidates per run only applies to what remains after filters.
+
+## GPT Researcher (optional)
+
+GPT Researcher is **not** installed by this repo. It is an **optional** external CLI hook.
+
+- Set `GPT_RESEARCHER_ENABLED=false` (default): the hook is off and **no log lines** mention GPT Researcher.
+- Set `GPT_RESEARCHER_ENABLED=true`: each pipeline run **checks once** whether `GPT_RESEARCHER_COMMAND` exists on `PATH`. If it does not, you get **one warning per run** and the hook is skipped for **all** candidates that run. If the CLI is present, the hook may run per market as before.
+
+Tavily, Firecrawl (when configured), and OpenAI briefs **do not** depend on GPT Researcher.
+
 ## Recovery / operations
 
 - **Lost local DB**: delete `data/trading_ai.sqlite`; the next run recreates tables. Historical briefs/alerts are lost unless you restore from backup.

@@ -23,10 +23,27 @@ def firecrawl_scrape(settings: Settings, url: str) -> Optional[SourceRef]:
         "Authorization": f"Bearer {settings.firecrawl_api_key}",
         "Content-Type": "application/json",
     }
-    with httpx.Client(timeout=60.0) as client:
-        r = client.post(endpoint, json=body, headers=headers)
-        r.raise_for_status()
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            r = client.post(endpoint, json=body, headers=headers)
+    except httpx.RequestError as exc:
+        logger.warning("Firecrawl request failed for url=%s: %s", url, exc)
+        return None
+
+    if r.status_code >= 400:
+        logger.warning(
+            "Firecrawl HTTP %s for url=%s (skipping this page; enrichment continues)",
+            r.status_code,
+            url,
+        )
+        return None
+
+    try:
         data = r.json()
+    except ValueError as exc:
+        logger.warning("Firecrawl invalid JSON for url=%s: %s", url, exc)
+        return None
+
     meta = data.get("data") or data
     title = None
     if isinstance(meta, dict):
