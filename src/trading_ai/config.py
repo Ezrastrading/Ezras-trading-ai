@@ -55,12 +55,15 @@ class Settings(BaseSettings):
     openai_base: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
-    # GPT Researcher (optional CLI hook; off = no logs; on + missing CLI = one warning per run)
+    # GPT Researcher: optional external process (shell wrapper or any executable). See README.
     gpt_researcher_enabled: bool = Field(
         default=False,
-        description="Set GPT_RESEARCHER_ENABLED=true only if the gpt-researcher CLI is installed",
+        description="Master switch; when false, no GPT Researcher logs or subprocesses",
     )
-    gpt_researcher_command: str = "gpt-researcher"
+    gpt_researcher_command: str = Field(
+        default="",
+        description="Executable or wrapper script path (shlex); query is passed as the last argument",
+    )
 
     # Alerts
     telegram_bot_token: Optional[str] = None

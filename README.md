@@ -87,10 +87,16 @@ Stricter volume and expiry mean **fewer** markets pass; tighter implied band rem
 
 ## GPT Researcher (optional)
 
-GPT Researcher is **not** installed by this repo. It is an **optional** external CLI hook.
+GPT Researcher is **not** installed by this repo. Integration is via **`GPT_RESEARCHER_COMMAND`**: any **executable file** (including a **shell wrapper**). There is no requirement for a binary named `gpt-researcher` on `PATH`.
 
-- Set `GPT_RESEARCHER_ENABLED=false` (default): the hook is off and **no log lines** mention GPT Researcher.
-- Set `GPT_RESEARCHER_ENABLED=true`: each pipeline run **checks once** whether `GPT_RESEARCHER_COMMAND` exists on `PATH`. If it does not, you get **one warning per run** and the hook is skipped for **all** candidates that run. If the CLI is present, the hook may run per market as before.
+- **`GPT_RESEARCHER_ENABLED=false`** (default): no subprocess, **no** GPT Researcher log lines.
+- **`GPT_RESEARCHER_ENABLED=true`**: each pipeline run **resolves `GPT_RESEARCHER_COMMAND` once**. It must be **non-empty** and point to a file that **exists** and is **executable** (`chmod +x`). If that check fails, you get **one warning per run** and the hook is skipped for all candidates. If it succeeds, trading-ai runs that command with the **market query as the final argument** (the value is split with shell-like rules, so quoted paths with spaces work).
+
+**Mac (recommended):** put a wrapper next to your GPT Researcher venv, e.g. `gptr-run.sh` beside `gptr-venv/`, `chmod +x`, then set:
+
+`GPT_RESEARCHER_COMMAND=/Users/<you>/Documents/Ezras Trading AI/gptr-run.sh`
+
+An example template lives at **`../gptr-run.sh`** (sibling of `trading-ai/`, same parent folder as `gptr-venv`). Edit it to call either a script from a cloned GPT Researcher repo or a small Python file that imports the installed package.
 
 Tavily, Firecrawl (when configured), and OpenAI briefs **do not** depend on GPT Researcher.
 
