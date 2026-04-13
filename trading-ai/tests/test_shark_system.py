@@ -943,8 +943,6 @@ def test_73_setup_env_exits_zero_with_empty_poly_keys(tmp_path, monkeypatch):
 
 
 def test_92_health_server_returns_200_on_health(tmp_path, monkeypatch):
-    import json
-    import urllib.error
     import urllib.request
 
     monkeypatch.setenv("PORT", "18888")
