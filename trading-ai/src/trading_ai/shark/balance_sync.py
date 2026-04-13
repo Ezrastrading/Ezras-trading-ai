@@ -1,4 +1,4 @@
-"""Fetch live balances from Kalshi and Manifold; push to treasury every 30 min."""
+"""Fetch live balances from Kalshi and Manifold; treasury + capital.json (scheduler + after each scan)."""
 
 from __future__ import annotations
 

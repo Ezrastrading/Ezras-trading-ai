@@ -21,6 +21,15 @@ from trading_ai.shark.state_store import load_capital
 logger = logging.getLogger(__name__)
 
 
+def _post_scan_balance_sync() -> None:
+    try:
+        from trading_ai.shark.balance_sync import sync_all_platforms
+
+        sync_all_platforms()
+    except Exception as exc:
+        logger.warning("balance sync after scan failed (non-blocking): %s", exc)
+
+
 def run_scan_execution_cycle(
     fetchers: Sequence[OutletFetcher],
     *,
@@ -34,6 +43,7 @@ def run_scan_execution_cycle(
     """
     markets = scan_markets(tuple(fetchers), fallback_demo=False)
     if not markets:
+        _post_scan_balance_sync()
         return 0, 0
 
     cross = group_markets_by_event(markets)
@@ -113,6 +123,7 @@ def run_scan_execution_cycle(
             logger.exception("%s: run_execution_chain failed for %s", tag, m.market_id)
 
     _touch_last_scan_unix(time.time())
+    _post_scan_balance_sync()
     return len(markets), attempts
 
 

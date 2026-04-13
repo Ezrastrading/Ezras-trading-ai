@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -18,17 +19,25 @@ from trading_ai.shark.capital_phase import YEAR_END_TARGET_DEFAULT, detect_phase
 from trading_ai.shark.state import BAYES, MANDATE
 
 
+def _starting_capital_from_env() -> float:
+    try:
+        raw = (os.getenv("STARTING_CAPITAL") or "25.00").strip() or "25.00"
+        return float(raw)
+    except (TypeError, ValueError):
+        return 25.0
+
+
 @dataclass
 class CapitalRecord:
-    current_capital: float = 50.0
-    starting_capital: float = 50.0
-    peak_capital: float = 50.0
+    current_capital: float = field(default_factory=_starting_capital_from_env)
+    starting_capital: float = field(default_factory=_starting_capital_from_env)
+    peak_capital: float = field(default_factory=_starting_capital_from_env)
     phase: str = "phase_1"
     last_updated: str = ""
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
-    monthly_start_capital: float = 50.0
+    monthly_start_capital: float = field(default_factory=_starting_capital_from_env)
     monthly_target: float = 375.0
     year_end_target: float = YEAR_END_TARGET_DEFAULT
     acceleration_mode: bool = True
@@ -96,16 +105,17 @@ def load_capital() -> CapitalRecord:
         # tolerate legacy "capital" key
         if "current_capital" not in raw and "capital" in raw:
             raw["current_capital"] = raw.pop("capital")
+        _sc = _starting_capital_from_env()
         rec = CapitalRecord(
-            current_capital=float(raw.get("current_capital", 50)),
-            starting_capital=float(raw.get("starting_capital", 50)),
-            peak_capital=float(raw.get("peak_capital", raw.get("current_capital", 50))),
+            current_capital=float(raw.get("current_capital", _sc)),
+            starting_capital=float(raw.get("starting_capital", _sc)),
+            peak_capital=float(raw.get("peak_capital", raw.get("current_capital", _sc))),
             phase=str(raw.get("phase", "phase_1")),
             last_updated=str(raw.get("last_updated", _iso())),
             total_trades=int(raw.get("total_trades", 0)),
             winning_trades=int(raw.get("winning_trades", 0)),
             losing_trades=int(raw.get("losing_trades", 0)),
-            monthly_start_capital=float(raw.get("monthly_start_capital", 50)),
+            monthly_start_capital=float(raw.get("monthly_start_capital", _sc)),
             monthly_target=float(raw.get("monthly_target", 375)),
             year_end_target=float(raw.get("year_end_target", YEAR_END_TARGET_DEFAULT)),
             acceleration_mode=bool(raw.get("acceleration_mode", True)),
