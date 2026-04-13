@@ -34,6 +34,11 @@ def ezras_dry_run_from_env() -> bool:
     return v in ("1", "true", "yes")
 
 
+def manifold_real_money_execution_enabled() -> bool:
+    """Manifold is play-money (mana) unless ``MANIFOLD_REAL_MONEY`` is exactly ``true``."""
+    return (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() == "true"
+
+
 def submit_order(intent: ExecutionIntent) -> OrderResult:
     """
     Live submit — credentials:
@@ -61,6 +66,9 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
 
         return submit_polymarket_order(intent)
     if o == "manifold":
+        if not manifold_real_money_execution_enabled():
+            logger.info("Manifold skipped — play money only")
+            raise ValueError("manifold_play_money_skip")
         from trading_ai.shark.manifold_live import submit_manifold_bet
 
         return submit_manifold_bet(intent)

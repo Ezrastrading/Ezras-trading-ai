@@ -15,7 +15,7 @@ from trading_ai.governance.position_sizing_policy import default_caps_for_capita
 from trading_ai.governance.storage_architecture import append_shark_audit_record
 from trading_ai.shark.capital_phase import detect_phase, phase_params
 from trading_ai.shark.dotenv_load import load_shark_dotenv
-from trading_ai.shark.execution_live import ezras_dry_run_from_env
+from trading_ai.shark.execution_live import ezras_dry_run_from_env, manifold_real_money_execution_enabled
 from trading_ai.shark.executor import build_execution_intent
 from trading_ai.shark.models import ExecutionIntent, ScoredOpportunity
 from trading_ai.shark.risk_context import build_risk_context
@@ -89,6 +89,11 @@ def run_execution_chain(
     if intent is None:
         _append(audit, "1_precheck", skipped=True, reason="no_intent_tier_or_edge")
         return ChainResult(False, "precheck", audit, None)
+
+    if (outlet or "").lower() == "manifold" and not manifold_real_money_execution_enabled():
+        logging.getLogger(__name__).info("Manifold skipped — play money only")
+        _append(audit, "manifold_play_money_skip", outlet=outlet)
+        return ChainResult(False, "manifold_play_money", audit, intent)
 
     edge = intent.edge_after_fees
 
