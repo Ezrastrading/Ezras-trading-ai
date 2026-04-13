@@ -36,7 +36,7 @@ _DEFAULTS: Dict[str, Any] = {
     "manifold_balance_usd": 0.00,
     "usdc_target_pct": 60,
     "eth_target_pct": 40,
-    "withdrawal_alert_threshold": 2000.00,
+    "withdrawal_alert_threshold": 5000.00,
     "last_updated": "",
     "withdrawal_history": [],
 }
@@ -103,12 +103,21 @@ def save_treasury(state: Dict[str, Any]) -> None:
     treasury_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def update_platform_balances(kalshi_usd: float, manifold_mana: float) -> None:
-    """Update Kalshi USD + Manifold mana. Net USD = Kalshi + manifold USD only (mana excluded unless MANIFOLD_REAL_MONEY)."""
+def _manifold_real_money_enabled() -> bool:
+    v = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def update_platform_balances(
+    kalshi_usd: float,
+    manifold_usd: float,
+    manifold_mana: float = 0.0,
+) -> None:
+    """Kalshi is USD. Manifold balance is mana (play money); USD fields are 0 unless MANIFOLD_REAL_MONEY=true."""
     state = load_treasury()
     state["kalshi_balance_usd"] = round(kalshi_usd, 2)
     state["manifold_mana_balance"] = round(float(manifold_mana), 2)
-    musd = _manifold_usd_from_mana(state["manifold_mana_balance"])
+    musd = round(float(manifold_usd), 2) if _manifold_real_money_enabled() else 0.0
     state["manifold_usd_balance"] = musd
     state["manifold_balance_usd"] = musd
     state["net_worth_usd"] = round(kalshi_usd + musd, 2)
@@ -120,17 +129,17 @@ def update_platform_balances(kalshi_usd: float, manifold_mana: float) -> None:
 
 
 def check_withdrawal_alert() -> bool:
-    """Return True if net_worth > threshold. Sends Telegram alert when fired."""
+    """Return True if Kalshi USD (real trading capital) exceeds threshold. Never based on Manifold mana."""
     state = load_treasury()
     net = state.get("net_worth_usd", 0.0)
-    threshold = state.get("withdrawal_alert_threshold", 2000.0)
-    if net <= threshold:
+    threshold = state.get("withdrawal_alert_threshold", 5000.0)
+    kalshi = float(state.get("kalshi_balance_usd", 0.0))
+    if kalshi <= threshold:
         return False
 
     addr = state.get("master_wallet_address") or "(not set)"
     usdc_pct = state.get("usdc_target_pct", 60)
     eth_pct = state.get("eth_target_pct", 40)
-    kalshi = state.get("kalshi_balance_usd", 0.0)
     mana = float(state.get("manifold_mana_balance", 0.0) or 0.0)
     musd = float(state.get("manifold_usd_balance", 0.0) or 0.0)
     if musd > 0:
@@ -140,10 +149,10 @@ def check_withdrawal_alert() -> bool:
 
     msg = (
         "💰 WITHDRAWAL ALERT\n"
-        f"Treasury: ${net:.2f}\n"
-        f"Kalshi: ${kalshi:.2f}\n"
+        f"Kalshi (trading capital): ${kalshi:.2f} — exceeds threshold ${threshold:.2f}\n"
+        f"Treasury net (incl. Manifold USD if any): ${net:.2f}\n"
         f"{manifold_line}"
-        f"Threshold hit: ${threshold:.2f}\n\n"
+        "Threshold applies to Kalshi USD only (not mana).\n\n"
         "Action required:\n"
         "1. Log into Kalshi/Manifold\n"
         "2. Withdraw profits\n"

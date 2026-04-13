@@ -353,37 +353,30 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
-    """Show live Kalshi USD + Manifold mana; trading capital is Kalshi-only unless real-money Manifold."""
-    kalshi = mana = musd = total_trading = None
+    """Kalshi = trading capital (USD). Manifold = mana (play money), never USD unless MANIFOLD_REAL_MONEY."""
+    kalshi = mana = None
     try:
         from trading_ai.shark.treasury import load_treasury
 
         t = load_treasury()
         kalshi = float(t.get("kalshi_balance_usd", 0.0))
         mana = float(t.get("manifold_mana_balance", 0.0))
-        musd = float(t.get("manifold_usd_balance", 0.0))
-        total_trading = kalshi + musd if musd > 0 else kalshi
     except Exception:
         pass
-    if kalshi is not None and mana is not None and total_trading is not None:
-        mana_line = (
-            f" Manifold: {mana:.2f} mana (play money)\n"
-            if musd <= 0
-            else f" Manifold: ${musd:.2f} USD (real money)\n"
-        )
+    if kalshi is not None and mana is not None:
         cap_block = (
-            f"Capital: ${kalshi:.2f} (Kalshi)\n"
-            + mana_line
-            + f" Total trading capital: ${total_trading:.2f}\n"
+            f" Kalshi: ${kalshi:.2f} (trading capital)\n"
+            f" Manifold: {mana:.0f} mana (play money — not USD)\n"
+            f" Total trading capital: ${kalshi:.2f}\n"
         )
     else:
-        cap_block = f"Capital: ${capital:.2f} (treasury unavailable — book)\n"
+        cap_block = f" Kalshi: ${capital:.2f} (treasury unavailable — book)\n"
     return (
         "🦈 Ezras Shark System — LIVE\n"
         + cap_block
-        + f"Phase: {phase}\n"
-        "Scanning: ALL OUTLETS | Mode: 24/7\n"
-        f"Gaps monitored: {gaps_n}\n"
-        "Targets: MINIMUM expectations. Faster is always better. 🦈\n"
-        "System is hunting. Always."
+        + f" Phase: {phase}\n"
+        " Scanning: ALL OUTLETS | Mode: 24/7\n"
+        " Targets: MINIMUM expectations.\n"
+        " Faster is always better. 🦈\n"
+        " System is hunting. Always."
     )

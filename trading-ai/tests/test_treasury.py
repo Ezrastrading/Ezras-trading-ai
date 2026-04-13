@@ -27,7 +27,7 @@ def test_76_treasury_initializes_at_10():
     assert state["manifold_mana_balance"] == 0.00
     assert state["manifold_usd_balance"] == 0.00
     assert state["manifold_balance_usd"] == 0.00
-    assert state["withdrawal_alert_threshold"] == 2000.00
+    assert state["withdrawal_alert_threshold"] == 5000.00
     assert state["withdrawal_history"] == []
     assert "last_updated" in state
 
@@ -37,7 +37,7 @@ def test_76_treasury_initializes_at_10():
 def test_77_balance_update_recalculates_net_worth():
     from trading_ai.shark.treasury import load_treasury, update_platform_balances
 
-    update_platform_balances(kalshi_usd=35.50, manifold_mana=5000.00)
+    update_platform_balances(kalshi_usd=35.50, manifold_usd=0.0, manifold_mana=5000.00)
     state = load_treasury()
 
     assert state["kalshi_balance_usd"] == 35.50
@@ -66,11 +66,11 @@ def test_78_withdrawal_alert_fires_at_threshold(monkeypatch):
     )
 
     # Below threshold — no alert
-    update_platform_balances(50.0, 0.0)
+    update_platform_balances(50.0, 0.0, 0.0)
     assert len(alerts) == 0
 
-    # Above threshold — alert fires
-    update_platform_balances(150.0, 0.0)
+    # Above threshold — alert fires (Kalshi only; mana never counts)
+    update_platform_balances(150.0, 0.0, 0.0)
     assert len(alerts) == 1
     assert "WITHDRAWAL ALERT" in alerts[0]
     assert "$150.00" in alerts[0]

@@ -84,8 +84,6 @@ def sync_all_platforms() -> Dict:
     """
     from trading_ai.shark.treasury import load_treasury, update_platform_balances
 
-    from trading_ai.shark.treasury import _manifold_usd_from_mana
-
     existing = load_treasury()
     kalshi_fetched = fetch_kalshi_balance_usd()
     manifold_fetched = fetch_manifold_balance_mana()
@@ -96,9 +94,12 @@ def sync_all_platforms() -> Dict:
     else:
         manifold_mana_final = float(existing.get("manifold_mana_balance", existing.get("manifold_balance_usd", 0.0)) or 0.0)
 
-    update_platform_balances(kalshi_final, manifold_mana_final)
+    rm = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() in ("1", "true", "yes")
+    manifold_usd_final = round(float(manifold_mana_final), 2) if rm else 0.0
 
-    net = round(kalshi_final + _manifold_usd_from_mana(manifold_mana_final), 2)
+    update_platform_balances(kalshi_final, manifold_usd_final, manifold_mana_final)
+
+    net = round(kalshi_final + manifold_usd_final, 2)
     try:
         from trading_ai.shark.state_store import load_capital, save_capital
 
