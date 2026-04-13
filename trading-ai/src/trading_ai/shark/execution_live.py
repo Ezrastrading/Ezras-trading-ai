@@ -170,6 +170,7 @@ def monitor_position(
             "expected_edge": position.expected_edge,
             "condition_id": position.condition_id,
             "token_id": position.token_id,
+            "margin_borrowed_usd": position.margin_borrowed_usd,
         }
     )
     data["open_positions"] = ops
@@ -225,6 +226,7 @@ def handle_resolution(
         hour_utc=hour_utc,
         pnl_dollars=None,
         update_capital=False,
+        margin_borrowed_usd=position.margin_borrowed_usd,
     )
 
     append_shark_audit_record(
@@ -275,6 +277,7 @@ def build_open_position_from_intent(
         expected_edge=intent.edge_after_fees,
         condition_id=intent.meta.get("condition_id"),
         token_id=intent.meta.get("token_id"),
+        margin_borrowed_usd=float(intent.meta.get("margin_borrowed", 0.0)),
     )
 
 

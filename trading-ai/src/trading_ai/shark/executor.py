@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.governance.position_sizing_policy import HardCaps, clamp_to_hard_cap, default_caps_for_capital
@@ -12,8 +13,11 @@ from trading_ai.shark.capital_phase import (
     phase_tier_combined_multiplier,
 )
 from trading_ai.shark.kelly import apply_kelly_scaling, kelly_full_fraction
+from trading_ai.shark.margin_control import check_margin_safety, effective_margin_pct_cap, get_margin_allowance
 from trading_ai.shark.models import ExecutionIntent, HuntType, MarketSnapshot, OpportunityTier, ScoredOpportunity
 from trading_ai.shark.state import LOSS_TRACKER
+
+_log = logging.getLogger(__name__)
 
 HUNT6_MAX_AGGREGATE_FRACTION = 0.08
 HUNT6_KELLY_BASE = 0.25
@@ -87,6 +91,7 @@ def build_execution_intent(
     hunt6_aggregate_exposure_usd: float = 0.0,
     wallet_copy_trade: bool = False,
     is_mana: bool = False,
+    current_drawdown_pct: float = 0.0,
 ) -> Optional[ExecutionIntent]:
     if scored.tier == OpportunityTier.BELOW_THRESHOLD:
         return None
@@ -133,6 +138,22 @@ def build_execution_intent(
     exp_price = m.yes_price if side == "yes" else m.no_price
     notional = max(0.0, capital * stake)
     shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
+    margin_borrowed = 0.0
+    if not is_mana:
+        margin_allowance = get_margin_allowance(
+            capital=capital,
+            confidence=scored.confidence,
+            hunt_tier=scored.tier.value,
+            current_drawdown_pct=current_drawdown_pct,
+            near_zero_hunt=_has_near_zero(scored.hunts),
+        )
+        if notional > capital + 1e-9:
+            if not check_margin_safety(notional, capital, margin_allowance):
+                _log.info("Margin limit applied")
+                notional = min(notional, capital)
+                stake = notional / max(capital, 1e-9)
+                shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
+        margin_borrowed = max(0.0, notional - capital)
     u = m.underlying_data_if_available or {}
     meta = {
         "phase": phase.value,
@@ -140,6 +161,8 @@ def build_execution_intent(
         "token_id": u.get("token_id"),
         "condition_id": u.get("condition_id"),
         "market_category": market_category,
+        "margin_borrowed": margin_borrowed,
+        "margin_cap_pct": effective_margin_pct_cap(capital, scored.confidence) if not is_mana else 0.0,
     }
     if wallet_copy_trade:
         meta["trade_type"] = "wallet_copy"

@@ -133,6 +133,7 @@ class OpenPosition:
     expected_edge: float = 0.0
     condition_id: Optional[str] = None
     token_id: Optional[str] = None
+    margin_borrowed_usd: float = 0.0
 
 
 @dataclass

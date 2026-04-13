@@ -74,6 +74,27 @@ def send_setup_ping() -> bool:
     return send_telegram("🦈 Ezras setup test — system initializing")
 
 
+def send_margin_trade_alert(
+    *,
+    intent: Any,
+    deposited_capital: float,
+    confidence: float,
+) -> bool:
+    """Telegram when a fill uses borrowed notional above cash capital."""
+    mb = float(intent.meta.get("margin_borrowed", 0.0))
+    cap_pct = float(intent.meta.get("margin_cap_pct", 0.0)) * 100.0
+    text = (
+        "⚠️ MARGIN TRADE\n"
+        f" Position: ${float(intent.notional_usd):.2f}\n"
+        f" Deposited capital: ${deposited_capital:.2f}\n"
+        f" Borrowed: ${mb:.2f}\n"
+        f" Margin used: {(mb / max(deposited_capital, 1e-9)) * 100:.1f}%\n"
+        f" Confidence: {confidence:.2f}\n"
+        f" Max allowed: {cap_pct:.1f}%"
+    )
+    return send_telegram(text)
+
+
 def _remember(kind: str, payload: Dict[str, Any]) -> None:
     _LAST_ALERTS.append({"kind": kind, "ts": datetime.now(timezone.utc).isoformat(), **payload})
     if len(_LAST_ALERTS) > 500:

@@ -1509,3 +1509,119 @@ def test_101_kalshi_still_routes_to_run_execution_chain(tmp_path, monkeypatch):
     assert att == 1
     assert len(calls) == 1
     assert calls[0][0] == "kalshi"
+
+
+def test_111_phase_1_margin_capped_at_20pct():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    a = get_margin_allowance(25.0, 0.9, "TIER_A", 0.05, near_zero_hunt=False)
+    assert a == pytest.approx(5.0)
+
+
+def test_112_phase_3_margin_capped_at_10pct_when_confidence_high():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    a = get_margin_allowance(5000.0, 0.85, "TIER_A", 0.05, near_zero_hunt=False)
+    assert a == pytest.approx(500.0)
+
+
+def test_113_phase_3_margin_capped_at_7pct_when_confidence_low():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    a = get_margin_allowance(5000.0, 0.75, "TIER_B", 0.05, near_zero_hunt=False)
+    assert a == pytest.approx(350.0)
+
+
+def test_114_margin_blocked_when_drawdown_over_15pct():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    assert get_margin_allowance(5000.0, 0.9, "TIER_A", 0.16, near_zero_hunt=False) == 0.0
+
+
+def test_115_margin_blocked_for_tier_c_always():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    assert get_margin_allowance(5000.0, 0.99, "TIER_C", 0.0, near_zero_hunt=False) == 0.0
+
+
+def test_116_margin_blocked_for_hunt6_near_zero():
+    from trading_ai.shark.margin_control import get_margin_allowance
+
+    assert get_margin_allowance(5000.0, 0.99, "TIER_A", 0.0, near_zero_hunt=True) == 0.0
+
+
+def test_117_hard_check_in_execution_chain_blocks_oversized_margin_trade(tmp_path, monkeypatch):
+    from trading_ai.shark.execution import run_execution_chain
+    from trading_ai.shark.models import (
+        ExecutionIntent,
+        HuntSignal,
+        HuntType,
+        MarketSnapshot,
+        OpportunityTier,
+        ScoredOpportunity,
+    )
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    m = MarketSnapshot(
+        market_id="margin-block-1",
+        outlet="kalshi",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_24h=1000.0,
+        time_to_resolution_seconds=8000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+    )
+    hs = [HuntSignal(HuntType.STRUCTURAL_ARBITRAGE, 0.08, 0.85, {})]
+    scored = ScoredOpportunity(
+        market=m,
+        hunts=hs,
+        edge_size=0.08,
+        confidence=0.85,
+        liquidity_score=0.9,
+        resolution_speed_score=0.8,
+        strategy_performance_weight=0.5,
+        score=0.85,
+        tier=OpportunityTier.TIER_A,
+        tier_sizing_multiplier=1.3,
+    )
+    bad = ExecutionIntent(
+        market_id="margin-block-1",
+        outlet="kalshi",
+        side="yes",
+        stake_fraction_of_capital=0.15,
+        edge_after_fees=0.08,
+        estimated_win_probability=0.6,
+        hunt_types=[HuntType.STRUCTURAL_ARBITRAGE],
+        source="shark_compounding",
+        notional_usd=500.0,
+        expected_price=0.45,
+        shares=100,
+        meta={"margin_borrowed": 400.0, "tier": "TIER_A", "margin_cap_pct": 0.2},
+    )
+    monkeypatch.setattr("trading_ai.shark.execution.build_execution_intent", lambda *a, **k: bad)
+
+    r = run_execution_chain(scored, capital=50.0, outlet="kalshi", peak_capital=50.0, execute_live=False)
+    assert r.ok is False
+    assert r.halted_at == "margin_unsafe"
+
+
+def test_118_margin_status_returns_correct_structure(tmp_path, monkeypatch):
+    from trading_ai.shark.margin_control import get_margin_status
+    from trading_ai.shark.state_store import CapitalRecord, save_capital
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0, starting_capital=100.0))
+
+    s = get_margin_status()
+    for k in (
+        "deposited_capital",
+        "max_borrowable",
+        "currently_borrowed",
+        "remaining_margin",
+        "margin_pct",
+        "margin_allowed",
+    ):
+        assert k in s
+    assert isinstance(s["deposited_capital"], (int, float))
+    assert isinstance(s["margin_allowed"], bool)

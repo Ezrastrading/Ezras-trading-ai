@@ -17,7 +17,7 @@ from trading_ai.shark.capital_phase import detect_phase, phase_params
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 from trading_ai.shark.execution_live import ezras_dry_run_from_env
 from trading_ai.shark.executor import build_execution_intent
-from trading_ai.shark.models import ExecutionIntent, ScoredOpportunity
+from trading_ai.shark.models import ExecutionIntent, HuntType, ScoredOpportunity
 from trading_ai.shark.risk_context import build_risk_context
 from trading_ai.shark.reporting import alert_trade_fired
 from trading_ai.shark.state import BAYES, MANDATE
@@ -85,6 +85,7 @@ def run_execution_chain(
         risk_position_multiplier=risk.position_size_multiplier,
         market_category=scored.market.market_category,
         strategy_key=strategy_key,
+        current_drawdown_pct=risk.drawdown_from_peak,
     )
     if intent is None:
         _append(audit, "1_precheck", skipped=True, reason="no_intent_tier_or_edge")
@@ -166,6 +167,30 @@ def run_execution_chain(
     _append(audit, "8_log_intent", market_id=intent.market_id)
     append_shark_audit_record({"step": "intent", "intent": intent.meta | {"market_id": intent.market_id}})
 
+    # Step 8b — Margin safety (hard gate; non-bypassable)
+    from trading_ai.shark.margin_control import check_margin_safety, get_margin_allowance, record_margin_position_open
+
+    margin_allowance = get_margin_allowance(
+        capital=capital,
+        confidence=scored.confidence,
+        hunt_tier=scored.tier.value,
+        current_drawdown_pct=risk.drawdown_from_peak,
+        near_zero_hunt=any(ht == HuntType.NEAR_ZERO_ACCUMULATION for ht in intent.hunt_types),
+    )
+    if not check_margin_safety(intent.notional_usd, capital, margin_allowance):
+        _append(
+            audit,
+            "8b_margin_gate",
+            ok=False,
+            notional=intent.notional_usd,
+            capital=capital,
+            allowance=margin_allowance,
+        )
+        return ChainResult(False, "margin_unsafe", audit, intent)
+    _append(audit, "8b_margin_gate", ok=True, allowance=margin_allowance)
+
+    mb_pre = float(intent.meta.get("margin_borrowed", 0.0))
+
     if run_live:
         from trading_ai.shark import execution_live as el
         from trading_ai.shark.reporting import send_telegram_live
@@ -205,6 +230,21 @@ def run_execution_chain(
         )
         if not conf.confirmed:
             return ChainResult(False, "unfilled", audit, intent)
+
+        if not getattr(intent, "is_mana", False) and mb_pre > 1e-9:
+            record_margin_position_open(mb_pre)
+            try:
+                from trading_ai.shark.reporting import send_margin_trade_alert
+                from trading_ai.shark.state_store import load_capital as _lc
+
+                rec = _lc()
+                send_margin_trade_alert(
+                    intent=intent,
+                    deposited_capital=rec.starting_capital,
+                    confidence=scored.confidence,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("send_margin_trade_alert failed", exc_info=True)
 
         pos = el.build_open_position_from_intent(intent, order_res, conf)
         el.monitor_position(pos)
@@ -261,9 +301,15 @@ def hook_post_trade_resolution(
     pnl_dollars: Optional[float] = None,
     update_capital: bool = True,
     is_mana: bool = False,
+    margin_borrowed_usd: float = 0.0,
 ) -> None:
     from trading_ai.shark.models import HuntType
     from trading_ai.shark.state import LOSS_TRACKER
+
+    if margin_borrowed_usd > 1e-9:
+        from trading_ai.shark.margin_control import release_margin_after_close
+
+        release_margin_after_close()
 
     hts = [h if isinstance(h, HuntType) else HuntType(h) for h in hunt_types]
     trigger_bayesian_after_resolution(

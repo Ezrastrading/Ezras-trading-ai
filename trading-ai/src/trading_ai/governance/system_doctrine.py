@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+MARGIN_DOCTRINE: Dict[str, Any] = {
+    "never_borrow_for_low_confidence": True,
+    "never_borrow_during_drawdown": True,
+    "max_simultaneous_margin_positions": 1,
+    "margin_requires_tier_a_or_b": True,
+    "phase_1_max_margin_pct": 0.20,
+    "phase_3_plus_max_margin_pct": 0.10,
+    "phase_3_plus_high_conf_only": True,
+}
+
 
 @dataclass
 class DoctrineContext:

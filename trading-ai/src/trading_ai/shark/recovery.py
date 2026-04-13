@@ -48,6 +48,7 @@ def _open_position_from_dict(p: Dict[str, Any]) -> Any:
         expected_edge=float(p.get("expected_edge", 0.0)),
         condition_id=p.get("condition_id"),
         token_id=p.get("token_id"),
+        margin_borrowed_usd=float(p.get("margin_borrowed_usd", 0.0)),
     )
 
 

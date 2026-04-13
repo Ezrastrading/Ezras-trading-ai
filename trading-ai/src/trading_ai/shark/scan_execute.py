@@ -90,6 +90,7 @@ def run_scan_execution_cycle(
                 risk_position_multiplier=risk.position_size_multiplier,
                 market_category=m.market_category,
                 is_mana=True,
+                current_drawdown_pct=risk.drawdown_from_peak,
             )
             if intent is not None:
                 try:
