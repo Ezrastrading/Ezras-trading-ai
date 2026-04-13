@@ -332,7 +332,7 @@ def sample_outputs_for_docs() -> Dict[str, Any]:
             "capital_phase": memo.capital_phase,
         },
         "daily_summary": format_daily_summary(
-            capital=50.0,
+            kalshi_usd=50.0,
             win_rate=0.58,
             best_hunt="structural_arbitrage",
             trades_today=3,

@@ -19,6 +19,17 @@ load_shark_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def trading_capital_usd_for_alerts(*, fallback: float) -> float:
+    """Kalshi USD from treasury (live balance sync); else ``fallback`` (e.g. capital.json)."""
+    try:
+        from trading_ai.shark.treasury import load_treasury
+
+        t = load_treasury()
+        return float(t.get("kalshi_balance_usd", fallback) or 0.0)
+    except Exception:
+        return fallback
+
+
 def require_telegram_credentials() -> tuple[str, str]:
     """Raise `EnvironmentError` if Telegram env is incomplete (for explicit checks / tests)."""
     from trading_ai.shark.required_env import require_telegram_credentials as _req
@@ -229,6 +240,19 @@ class DailyMemo:
     pace_status: str = ""
 
 
+def _best_outlet_label_for_memo(outlet_scores: Dict[str, float]) -> str:
+    """Highest Bayesian outlet excluding Manifold unless ``MANIFOLD_REAL_MONEY=true``."""
+    if not outlet_scores:
+        return "n/a"
+    rm = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() == "true"
+    ranked = sorted(outlet_scores.items(), key=lambda x: x[1], reverse=True)
+    for name, _ in ranked:
+        if name.lower() == "manifold" and not rm:
+            continue
+        return name
+    return "n/a"
+
+
 def build_daily_decision_memo(
     *,
     hunt_leaderboard: Dict[str, float],
@@ -248,7 +272,7 @@ def build_daily_decision_memo(
     )
 
     best_hunt = max(hunt_leaderboard, key=hunt_leaderboard.get) if hunt_leaderboard else "n/a"
-    best_out = max(outlet_scores, key=outlet_scores.get) if outlet_scores else "n/a"
+    best_out = _best_outlet_label_for_memo(outlet_scores)
     mp = ""
     ye = ""
     pace = ""
@@ -273,7 +297,7 @@ def build_daily_decision_memo(
 
 def format_daily_summary(
     *,
-    capital: float,
+    kalshi_usd: float,
     win_rate: float,
     best_hunt: str,
     trades_today: int,
@@ -281,7 +305,7 @@ def format_daily_summary(
 ) -> str:
     return (
         "DAILY SHARK SUMMARY (08:00)\n"
-        f"Capital: ${capital:.2f}\n"
+        f"Capital: ${kalshi_usd:.2f}\n"
         f"Win rate (7d proxy): {win_rate*100:.1f}%\n"
         f"Best hunt type: {best_hunt}\n"
         f"Trades fired: {trades_today}\n"
@@ -306,7 +330,7 @@ def format_weekly_summary(
 
 
 def format_weekly_mana_section() -> str:
-    """Telegram block for Sunday 9pm weekly job — mana sandbox only (not daily memo)."""
+    """CLI / operator diagnostics only — never sent via Telegram."""
     from trading_ai.shark.mana_sandbox import get_mana_summary, top_mana_strategy
 
     s = get_mana_summary()
@@ -352,12 +376,13 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
     uptime_h = (time.time() - started_at) / 3600.0
     rec = load_capital()
+    cap_usd = trading_capital_usd_for_alerts(fallback=rec.current_capital)
     total = max(rec.total_trades, 1)
     wr = (rec.winning_trades / total) if rec.total_trades else None
     server = "railway" if (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip() else "local"
     text = format_shark_heartbeat_message(
         uptime_hours=uptime_h,
-        capital=rec.current_capital,
+        capital=cap_usd,
         trades_today=rec.total_trades,
         win_rate_pct=wr,
         server_label=server,
@@ -373,27 +398,24 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
-    """Kalshi = trading capital (USD). Manifold = mana (play money), never USD unless MANIFOLD_REAL_MONEY."""
-    kalshi = mana = None
-    try:
-        from trading_ai.shark.treasury import load_treasury
+    """Banner: Kalshi USD only unless ``MANIFOLD_REAL_MONEY`` (then optional Manifold USD line)."""
+    _ = gaps_n
+    k = trading_capital_usd_for_alerts(fallback=capital)
+    extra = ""
+    rm = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() == "true"
+    if rm:
+        try:
+            from trading_ai.shark.treasury import load_treasury
 
-        t = load_treasury()
-        kalshi = float(t.get("kalshi_balance_usd", 0.0))
-        mana = float(t.get("manifold_mana_balance", 0.0))
-    except Exception:
-        pass
-    if kalshi is not None and mana is not None:
-        cap_block = (
-            f" Kalshi: ${kalshi:.2f} (trading capital)\n"
-            f" Manifold: {mana:.0f} mana (play money — not USD)\n"
-            f" Total trading capital: ${kalshi:.2f}\n"
-        )
-    else:
-        cap_block = f" Kalshi: ${capital:.2f} (treasury unavailable — book)\n"
+            musd = float(load_treasury().get("manifold_usd_balance", 0.0) or 0.0)
+            if musd > 0:
+                extra = f" Manifold (USD): ${musd:.2f}\n"
+        except Exception:
+            pass
     return (
         "🦈 Ezras Shark System — LIVE\n"
-        + cap_block
+        f" Capital: ${k:.2f}\n"
+        + extra
         + f" Phase: {phase}\n"
         " Scanning: ALL OUTLETS | Mode: 24/7\n"
         " Targets: MINIMUM expectations.\n"

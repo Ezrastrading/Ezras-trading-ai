@@ -140,27 +140,28 @@ def check_withdrawal_alert() -> bool:
     addr = state.get("master_wallet_address") or "(not set)"
     usdc_pct = state.get("usdc_target_pct", 60)
     eth_pct = state.get("eth_target_pct", 40)
-    mana = float(state.get("manifold_mana_balance", 0.0) or 0.0)
     musd = float(state.get("manifold_usd_balance", 0.0) or 0.0)
-    if musd > 0:
-        manifold_line = f"Manifold USD: ${musd:.2f} (real money)\n"
-    else:
-        manifold_line = f"Manifold: {mana:.0f} mana (play money)\n"
-
-    msg = (
-        "💰 WITHDRAWAL ALERT\n"
-        f"Kalshi (trading capital): ${kalshi:.2f} — exceeds threshold ${threshold:.2f}\n"
-        f"Treasury net (incl. Manifold USD if any): ${net:.2f}\n"
-        f"{manifold_line}"
-        "Threshold applies to Kalshi USD only (not mana).\n\n"
-        "Action required:\n"
-        "1. Log into Kalshi/Manifold\n"
-        "2. Withdraw profits\n"
-        f"3. Send to MetaMask: {addr}\n"
-        f"4. Split: {usdc_pct}% USDC / {eth_pct}% ETH\n\n"
-        "Run: python -m trading_ai shark treasury confirm-withdrawal"
-        f" --amount {net:.2f}"
+    lines = [
+        "💰 WITHDRAWAL ALERT",
+        f"Kalshi: ${kalshi:.2f} — exceeds threshold ${threshold:.2f}",
+        f"Treasury net: ${net:.2f}",
+    ]
+    if _manifold_real_money_enabled() and musd > 0:
+        lines.append(f"Manifold (USD): ${musd:.2f}")
+    lines.extend(
+        [
+            "",
+            "Action required:",
+            "1. Log into Kalshi",
+            "2. Withdraw profits",
+            f"3. Send to MetaMask: {addr}",
+            f"4. Split: {usdc_pct}% USDC / {eth_pct}% ETH",
+            "",
+            "Run: python -m trading_ai shark treasury confirm-withdrawal"
+            f" --amount {net:.2f}",
+        ]
     )
+    msg = "\n".join(lines)
     try:
         _reporting.send_telegram(msg)
     except Exception:

@@ -156,7 +156,7 @@ def main() -> None:
 
     def daily_memo() -> None:
         try:
-            from trading_ai.shark.reporting import format_daily_summary, send_telegram
+            from trading_ai.shark.reporting import format_daily_summary, send_telegram, trading_capital_usd_for_alerts
             from trading_ai.shark.state import BAYES
 
             rec = load_capital()
@@ -171,8 +171,9 @@ def main() -> None:
             total = max(rec.total_trades, 1)
             wr = rec.winning_trades / total
             best_h = max(BAYES.hunt_weights, key=BAYES.hunt_weights.get) if BAYES.hunt_weights else "n/a"
+            kalshi = trading_capital_usd_for_alerts(fallback=rec.current_capital)
             text = format_daily_summary(
-                capital=rec.current_capital,
+                kalshi_usd=kalshi,
                 win_rate=wr,
                 best_hunt=str(best_h),
                 trades_today=rec.total_trades,
@@ -184,14 +185,8 @@ def main() -> None:
             log.warning("daily memo failed (non-blocking): %s", exc)
 
     def weekly_summary() -> None:
-        try:
-            from trading_ai.shark.reporting import format_weekly_mana_section, send_telegram
-
-            text = format_weekly_mana_section()
-            if send_telegram(text):
-                log.info("weekly summary (mana sandbox) Telegram sent")
-        except Exception as exc:
-            log.warning("weekly summary failed (non-blocking): %s", exc)
+        """Mana sandbox is silent — no Telegram."""
+        return
 
     def state_backup() -> None:
         backup_all_state_files()

@@ -987,9 +987,16 @@ def test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rec_mod, "reconcile_open_positions", lambda: {"checked": 0, "resolved": 0})
 
+    from trading_ai.shark.treasury import load_treasury, save_treasury
+
+    st = load_treasury()
+    st["kalshi_balance_usd"] = 10.50
+    save_treasury(st)
+
     rep = run_startup_recovery(boot_unix=time.time(), send_telegram=True)
     assert rep.get("restart_alert_sent") is True
     assert sent and "SHARK RESTARTED" in sent[0]
+    assert "$10.50" in sent[0]
 
 
 def test_94_supabase_push_pull_roundtrip(monkeypatch):

@@ -117,6 +117,7 @@ def run_startup_recovery(
     Run after state restore + integrity check.
     Returns a JSON-serializable report for logs.
     """
+    from trading_ai.shark.reporting import trading_capital_usd_for_alerts
     from trading_ai.shark.state_store import load_capital, load_positions
 
     report: Dict[str, Any] = {
@@ -134,6 +135,7 @@ def run_startup_recovery(
     now = time.time()
     last = read_last_scan_unix()
     rec = load_capital()
+    cap_display = trading_capital_usd_for_alerts(fallback=rec.current_capital)
     pdata = load_positions()
     n_open = len((pdata.get("open_positions") or []))
 
@@ -150,7 +152,7 @@ def run_startup_recovery(
                     "⚠️ SHARK RESTARTED\n"
                     f"Was offline (scan gap): ~{mins} min since last scan\n"
                     f"Open positions: {n_open}\n"
-                    f"Capital: ${rec.current_capital:.2f}\n"
+                    f"Capital: ${cap_display:.2f}\n"
                     "Resuming hunting now."
                 )
                 report["restart_alert_sent"] = True
@@ -164,7 +166,7 @@ def run_startup_recovery(
                 "⚠️ SHARK RESTARTED\n"
                 "No prior scan timestamp (cold start / new deploy).\n"
                 f"Open positions: {n_open}\n"
-                f"Capital: ${rec.current_capital:.2f}\n"
+                f"Capital: ${cap_display:.2f}\n"
                 "Resuming hunting now."
             )
             report["restart_alert_sent"] = True
