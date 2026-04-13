@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import requests as _requests
 
 from trading_ai.config import Settings, get_settings
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -27,91 +27,35 @@ def require_telegram_credentials() -> tuple[str, str]:
 
 _LAST_ALERTS: List[Dict[str, Any]] = []
 
-_TG_QUEUE: "queue.Queue[str]" = queue.Queue()
-_TG_WORKER_STARTED = False
-_TG_LOCK = threading.Lock()
-_LAST_TG_SEND = 0.0
-_TG_MIN_INTERVAL = 3.0
-
 
 def log_telegram_failure(message: str, err: str) -> None:
     logger.error("telegram failure: %s | %s", err, message[:200])
 
 
-def _tg_post_once(text: str) -> bool:
-    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
-    if not token or not chat:
-        return False
-    try:
-        import requests
-    except ImportError:
-        logger.warning("requests not installed; pip install requests")
-        return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat, "text": text, "parse_mode": "HTML"}
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            log_telegram_failure(text, f"HTTP {r.status_code}: {r.text[:200]}")
-            time.sleep(5)
-            r2 = requests.post(url, json=payload, timeout=10)
-            if r2.status_code != 200:
-                log_telegram_failure(text, f"retry HTTP {r2.status_code}")
-                return False
-        return True
-    except Exception as exc:
-        log_telegram_failure(text, str(exc))
-        try:
-            time.sleep(5)
-            r3 = requests.post(url, json=payload, timeout=10)
-            return r3.status_code == 200
-        except Exception as exc2:
-            log_telegram_failure(text, str(exc2))
-            return False
-
-
-def _tg_worker() -> None:
-    global _LAST_TG_SEND
-    while True:
-        text = _TG_QUEUE.get()
-        if text is None:
-            _TG_QUEUE.task_done()
-            break
-        with _TG_LOCK:
-            now = time.time()
-            wait = _TG_MIN_INTERVAL - (now - _LAST_TG_SEND)
-            if wait > 0:
-                time.sleep(wait)
-            _LAST_TG_SEND = time.time()
-        _tg_post_once(text)
-        _TG_QUEUE.task_done()
-
-
-def _ensure_tg_worker() -> None:
-    global _TG_WORKER_STARTED
-    if _TG_WORKER_STARTED:
-        return
-    with _TG_LOCK:
-        if _TG_WORKER_STARTED:
-            return
-        t = threading.Thread(target=_tg_worker, name="telegram-sender", daemon=True)
-        t.start()
-        _TG_WORKER_STARTED = True
-
-
 def send_telegram(message: str) -> bool:
-    """
-    Queue message (rate-limited 1/3s). Retries once on failure inside _tg_post_once.
-    Never raises.
-    """
-    _ensure_tg_worker()
-    _TG_QUEUE.put(message)
-    return True
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = _requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception as e:
+        logger.warning("Telegram send failed: %s", e)
+        return False
 
 
 def send_telegram_live(message: str) -> bool:
-    """Alias for live path; returns True when queued (delivery async)."""
+    """Alias for live path."""
     return send_telegram(message)
 
 
@@ -383,7 +327,7 @@ def format_shark_heartbeat_message(
 
 
 def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
-    """Scheduled heartbeat (e.g. every 6h) — queue Telegram summary."""
+    """Scheduled heartbeat (e.g. every 6h) — Telegram summary."""
     from trading_ai.shark.state_store import load_capital
 
     uptime_h = (time.time() - started_at) / 3600.0

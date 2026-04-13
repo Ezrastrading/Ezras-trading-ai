@@ -756,10 +756,10 @@ def test_38_telegram_send_succeeds_and_returns_true(monkeypatch):
     mock_resp.status_code = 200
     mock_resp.text = '{"ok":true}'
 
-    from trading_ai.shark.reporting import _tg_post_once
+    from trading_ai.shark.reporting import send_telegram
 
-    with patch("requests.post", return_value=mock_resp):
-        assert _tg_post_once("hello") is True
+    with patch("trading_ai.shark.reporting._requests.post", return_value=mock_resp):
+        assert send_telegram("hello") is True
 
 
 def test_39_telegram_failure_does_not_block_trade_execution(monkeypatch):

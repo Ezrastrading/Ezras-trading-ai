@@ -74,15 +74,15 @@ def main() -> None:
     from trading_ai.shark.capital_phase import detect_phase
 
     ph = detect_phase(rec.current_capital)
-    print(startup_banner(capital=rec.current_capital, phase=ph.value, gaps_n=gaps_n))
-
+    banner = startup_banner(capital=rec.current_capital, phase=ph.value, gaps_n=gaps_n)
+    print(banner)
     try:
-        from trading_ai.shark.reporting import send_setup_ping
+        from trading_ai.shark.reporting import send_telegram
 
-        if send_setup_ping():
-            log.info("Telegram setup ping queued")
+        if send_telegram(banner):
+            log.info("Telegram startup banner sent")
     except Exception as exc:
-        log.warning("Telegram startup test failed (non-blocking): %s", exc)
+        log.warning("Telegram startup banner failed (non-blocking): %s", exc)
 
     try:
         from trading_ai.shark.scheduler import build_shark_scheduler
@@ -127,7 +127,33 @@ def main() -> None:
         pass
 
     def daily_memo() -> None:
-        log.info("daily memo slot (wire Telegram)")
+        try:
+            from trading_ai.shark.reporting import format_daily_summary, send_telegram
+            from trading_ai.shark.state import BAYES
+
+            rec = load_capital()
+            g = load_gaps()
+            raw = g.get("gaps_under_observation")
+            if isinstance(raw, list):
+                gaps_monitored = [str(x) for x in raw]
+            elif isinstance(raw, dict):
+                gaps_monitored = list(raw.keys())
+            else:
+                gaps_monitored = []
+            total = max(rec.total_trades, 1)
+            wr = rec.winning_trades / total
+            best_h = max(BAYES.hunt_weights, key=BAYES.hunt_weights.get) if BAYES.hunt_weights else "n/a"
+            text = format_daily_summary(
+                capital=rec.current_capital,
+                win_rate=wr,
+                best_hunt=str(best_h),
+                trades_today=rec.total_trades,
+                gaps_monitored=gaps_monitored,
+            )
+            send_telegram(text)
+            log.info("daily memo Telegram sent")
+        except Exception as exc:
+            log.warning("daily memo failed (non-blocking): %s", exc)
 
     def weekly_summary() -> None:
         log.info("weekly summary slot (wire Telegram)")
