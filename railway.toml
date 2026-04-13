@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "PYTHONPATH=src python3 -m trading_ai.shark.run_shark"
+restartPolicyType = "ALWAYS"
+restartPolicyMaxRetries = 10

@@ -1,0 +1,110 @@
+"""Fetch live balances from Kalshi and Manifold; push to treasury every 30 min."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from typing import Dict, Optional
+
+from trading_ai.shark.dotenv_load import load_shark_dotenv
+
+load_shark_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+def _iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fetch_kalshi_balance_usd() -> Optional[float]:
+    """
+    GET /portfolio/balance → available_balance (cents) → USD.
+    Returns None if auth unavailable or request fails.
+    """
+    try:
+        from trading_ai.shark.outlets.kalshi import KalshiClient
+
+        client = KalshiClient()
+        if not client.uses_rsa_auth():
+            logger.debug("Kalshi: no RSA auth configured; skipping balance fetch")
+            return None
+        url = client.base_url + "/portfolio/balance"
+        headers = client._auth_headers("GET", url)
+        headers["User-Agent"] = "EzrasTreasury/1.0"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        cents = body.get("available_balance", 0)
+        return round(float(cents) / 100, 2)
+    except urllib.error.HTTPError as e:
+        logger.warning("Kalshi balance fetch HTTP %s: %s", e.code, e.reason)
+        return None
+    except Exception as exc:
+        logger.warning("Kalshi balance fetch error: %s", exc)
+        return None
+
+
+def fetch_manifold_balance_mana() -> Optional[float]:
+    """
+    GET /v0/me → balance in mana (play money unless real-money markets enabled).
+    Returns None if credentials missing or request fails.
+    """
+    try:
+        api_key = (os.environ.get("MANIFOLD_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        base = (os.environ.get("MANIFOLD_API_BASE") or "https://api.manifold.markets/v0").rstrip("/")
+        url = f"{base}/me"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Key {api_key}",
+                "User-Agent": "EzrasTreasury/1.0",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        return round(float(body.get("balance", 0)), 2)
+    except Exception as exc:
+        logger.warning("Manifold balance fetch error: %s", exc)
+        return None
+
+
+def sync_all_platforms() -> Dict:
+    """
+    Fetch balances from all platforms and update treasury.
+    Falls back to last-known value when a fetch fails.
+    Returns sync result dict.
+    """
+    from trading_ai.shark.treasury import load_treasury, update_platform_balances
+
+    existing = load_treasury()
+    kalshi_fetched = fetch_kalshi_balance_usd()
+    manifold_fetched = fetch_manifold_balance_mana()
+
+    kalshi_final = kalshi_fetched if kalshi_fetched is not None else existing.get("kalshi_balance_usd", 0.0)
+    manifold_final = manifold_fetched if manifold_fetched is not None else existing.get("manifold_balance_usd", 0.0)
+
+    update_platform_balances(kalshi_final, manifold_final)
+
+    result = {
+        "synced_at": _iso(),
+        "kalshi_usd": kalshi_final,
+        "kalshi_fetched": kalshi_fetched is not None,
+        "manifold_mana": manifold_final,
+        "manifold_fetched": manifold_fetched is not None,
+        "net_worth_usd": round(kalshi_final + manifold_final, 2),
+    }
+    logger.info(
+        "balance sync: kalshi=$%.2f manifold=%.0f mana net=$%.2f",
+        kalshi_final,
+        manifold_final,
+        result["net_worth_usd"],
+    )
+    return result
