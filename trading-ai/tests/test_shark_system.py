@@ -914,14 +914,18 @@ def test_63_missing_poly_wallet_key_raises_clear_environment_error(monkeypatch):
     assert "POLY_WALLET_KEY" in str(exc.value)
 
 
-def test_64_missing_ezras_runtime_root_raises_clear_environment_error(monkeypatch):
+def test_64_missing_ezras_runtime_root_gets_sensible_default(monkeypatch):
     monkeypatch.delenv("EZRAS_RUNTIME_ROOT", raising=False)
     from trading_ai.shark.state_store import require_ezras_runtime_root_configured
 
     with patch("trading_ai.shark.required_env.load_shark_dotenv", lambda: None):
-        with pytest.raises(EnvironmentError) as exc:
-            require_ezras_runtime_root_configured()
-    assert "EZRAS_RUNTIME_ROOT" in str(exc.value)
+        require_ezras_runtime_root_configured()
+    root = os.environ.get("EZRAS_RUNTIME_ROOT", "")
+    assert root
+    if os.path.exists("/app"):
+        assert root == "/app/ezras-runtime"
+    else:
+        assert root == str(Path.home() / "ezras-runtime")
 
 
 def test_73_setup_env_exits_zero_with_empty_poly_keys(tmp_path, monkeypatch):

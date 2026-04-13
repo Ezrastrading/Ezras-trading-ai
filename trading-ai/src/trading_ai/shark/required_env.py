@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 
@@ -68,7 +69,16 @@ def require_telegram_credentials() -> tuple[str, str]:
     return token, chat
 
 
-def require_ezras_runtime_root() -> None:
+def require_ezras_runtime_root() -> str:
     load_shark_dotenv()
-    if not (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip():
-        raise EnvironmentError(_missing_msg("EZRAS_RUNTIME_ROOT"))
+    val = (os.getenv("EZRAS_RUNTIME_ROOT") or "").strip()
+    if not val:
+        # Default to /app/ezras-runtime on Railway
+        # Default to ~/ezras-runtime locally
+        if os.path.exists("/app"):
+            val = "/app/ezras-runtime"
+        else:
+            val = str(Path.home() / "ezras-runtime")
+        os.environ["EZRAS_RUNTIME_ROOT"] = val
+    Path(val).mkdir(parents=True, exist_ok=True)
+    return val

@@ -12,6 +12,19 @@ from trading_ai.shark.dotenv_load import load_shark_dotenv
 
 load_shark_dotenv()
 
+from pathlib import Path
+
+runtime = (os.getenv("EZRAS_RUNTIME_ROOT") or "").strip()
+if not runtime:
+    runtime = "/app/ezras-runtime" if os.path.exists("/app") else str(Path.home() / "ezras-runtime")
+Path(runtime).mkdir(parents=True, exist_ok=True)
+for subdir in [
+    "shark/state",
+    "shark/logs",
+    "shark/state/backups",
+]:
+    Path(runtime, subdir).mkdir(parents=True, exist_ok=True)
+
 from trading_ai.shark.required_env import require_ezras_runtime_root
 
 require_ezras_runtime_root()

@@ -40,7 +40,7 @@ def _iso() -> str:
 
 
 def require_ezras_runtime_root_configured() -> None:
-    """Raise if `EZRAS_RUNTIME_ROOT` is unset (daemon / live entry)."""
+    """Ensure `EZRAS_RUNTIME_ROOT` is set (default: `/app/ezras-runtime` or `~/ezras-runtime`)."""
     from trading_ai.shark.required_env import require_ezras_runtime_root
 
     require_ezras_runtime_root()
