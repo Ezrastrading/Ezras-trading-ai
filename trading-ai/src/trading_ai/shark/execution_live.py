@@ -43,7 +43,7 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
     """
     Live submit — credentials:
     Kalshi: ``KALSHI_API_KEY`` (``KalshiClient.place_order``).
-    Polymarket: ``submit_polymarket_order`` (requires ``POLY_WALLET_KEY`` for execution; optional for scan-only).
+    Polymarket: ``outlets.polymarket.submit_polymarket_order`` (``POLY_WALLET_KEY`` + ``POLY_API_KEY``/``POLY_API_SECRET``).
     Manifold: ``MANIFOLD_API_KEY`` (``submit_manifold_bet``).
     """
     o = (intent.outlet or "").lower()
@@ -62,7 +62,7 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             yes_price_cents=max(1, min(99, yes_cents)),
         )
     if o == "polymarket":
-        from trading_ai.shark.polymarket_live import submit_polymarket_order
+        from trading_ai.shark.outlets.polymarket import submit_polymarket_order
 
         return submit_polymarket_order(intent)
     if o == "manifold":

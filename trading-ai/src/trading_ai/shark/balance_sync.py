@@ -88,18 +88,29 @@ def sync_all_platforms() -> Dict:
     kalshi_fetched = fetch_kalshi_balance_usd()
     manifold_fetched = fetch_manifold_balance_mana()
 
+    try:
+        from trading_ai.shark.outlets.polymarket import fetch_polymarket_balance
+
+        poly_fetched = fetch_polymarket_balance()
+    except Exception as exc:
+        logger.warning("Polymarket balance sync skipped: %s", exc)
+        poly_fetched = None
+
     kalshi_final = kalshi_fetched if kalshi_fetched is not None else float(existing.get("kalshi_balance_usd", 0.0))
     if manifold_fetched is not None:
         manifold_mana_final = manifold_fetched
     else:
         manifold_mana_final = float(existing.get("manifold_mana_balance", existing.get("manifold_balance_usd", 0.0)) or 0.0)
 
+    poly_final = poly_fetched if poly_fetched is not None else float(existing.get("polymarket_balance_usd", 0.0))
+
     rm = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() in ("1", "true", "yes")
     manifold_usd_final = round(float(manifold_mana_final), 2) if rm else 0.0
 
-    update_platform_balances(kalshi_final, manifold_usd_final, manifold_mana_final)
+    update_platform_balances(kalshi_final, manifold_usd_final, manifold_mana_final, poly_final)
 
-    net = round(kalshi_final + manifold_usd_final, 2)
+    st_after = load_treasury()
+    net = float(st_after.get("net_worth_usd", 0.0))
     try:
         from trading_ai.shark.state_store import load_capital, save_capital
 
@@ -115,13 +126,16 @@ def sync_all_platforms() -> Dict:
         "synced_at": _iso(),
         "kalshi_usd": kalshi_final,
         "kalshi_fetched": kalshi_fetched is not None,
+        "polymarket_usd": poly_final,
+        "polymarket_fetched": poly_fetched is not None,
         "manifold_mana": manifold_mana_final,
         "manifold_fetched": manifold_fetched is not None,
         "net_worth_usd": net,
     }
     logger.info(
-        "balance sync: kalshi=$%.2f manifold_mana=%.0f net_usd=$%.2f (capital.json updated)",
+        "balance sync: kalshi=$%.2f poly=$%.2f manifold_mana=%.0f net_usd=$%.2f (capital.json updated)",
         kalshi_final,
+        poly_final,
         manifold_mana_final,
         result["net_worth_usd"],
     )

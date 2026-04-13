@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 
 def get_master_dashboard() -> Dict[str, Any]:
     """
-    Aggregate view across all 5 avenues + treasury.
+    Aggregate view across all avenues + treasury.
 
     Returns:
         {
           total_capital_deployed, total_current_value, total_profit,
           total_profit_pct, best_avenue, worst_avenue,
-          avenues: {kalshi, manifold, tastytrade, webull, sports_manual},
+          avenues: {kalshi, manifold, polymarket, tastytrade, webull, sports_manual},
           treasury: {coinbase_usdc, coinbase_eth, total_withdrawn},
           month_4_projection, year_end_projection
         }

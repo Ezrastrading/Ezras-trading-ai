@@ -1625,3 +1625,61 @@ def test_118_margin_status_returns_correct_structure(tmp_path, monkeypatch):
         assert k in s
     assert isinstance(s["deposited_capital"], (int, float))
     assert isinstance(s["margin_allowed"], bool)
+
+
+def test_119_polymarket_balance_fetch_returns_float_when_credentials_set(monkeypatch):
+    import base64
+    import json
+
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    pk = Ed25519PrivateKey.generate()
+    raw = pk.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    monkeypatch.setenv("POLY_API_KEY", "test-access-key")
+    monkeypatch.setenv("POLY_API_SECRET", base64.b64encode(raw).decode("ascii"))
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"balance": 25.0}).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: Resp())
+
+    from trading_ai.shark.outlets.polymarket import fetch_polymarket_balance
+
+    bal = fetch_polymarket_balance()
+    assert isinstance(bal, float)
+    assert bal == pytest.approx(25.0)
+
+
+def test_120_polymarket_api_signing_produces_valid_ed25519_signature():
+    import base64
+
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from trading_ai.shark.outlets.polymarket import sign_polymarket_request
+
+    pk = Ed25519PrivateKey.generate()
+    raw = pk.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    secret_b64 = base64.b64encode(raw).decode("ascii")
+    ts = 1_700_000_000_000
+    sig_b64 = sign_polymarket_request(ts, secret_b64)
+    sig = base64.b64decode(sig_b64)
+    pk.public_key().verify(sig, str(ts).encode("utf-8"))

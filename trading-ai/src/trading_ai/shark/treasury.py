@@ -31,6 +31,7 @@ _DEFAULTS: Dict[str, Any] = {
     "total_withdrawn_usd": 0.00,
     "net_worth_usd": 10.00,
     "kalshi_balance_usd": 10.00,
+    "polymarket_balance_usd": 0.00,
     "manifold_mana_balance": 0.00,
     "manifold_usd_balance": 0.00,
     "manifold_balance_usd": 0.00,
@@ -88,7 +89,8 @@ def load_treasury() -> Dict[str, Any]:
         raw["manifold_usd_balance"] = _manifold_usd_from_mana(mana)
         raw["manifold_balance_usd"] = raw["manifold_usd_balance"]
         kbal = float(raw.get("kalshi_balance_usd", 0) or 0)
-        raw["net_worth_usd"] = round(kbal + raw["manifold_usd_balance"], 2)
+        pbal = float(raw.get("polymarket_balance_usd", 0) or 0)
+        raw["net_worth_usd"] = round(kbal + pbal + raw["manifold_usd_balance"], 2)
         _apply_env_overrides(raw)
         return raw
     except (OSError, json.JSONDecodeError, ValueError):
@@ -112,15 +114,17 @@ def update_platform_balances(
     kalshi_usd: float,
     manifold_usd: float,
     manifold_mana: float = 0.0,
+    polymarket_usd: float = 0.0,
 ) -> None:
-    """Kalshi is USD. Manifold balance is mana (play money); USD fields are 0 unless MANIFOLD_REAL_MONEY=true."""
+    """Kalshi + Polymarket are USD. Manifold balance is mana unless MANIFOLD_REAL_MONEY=true."""
     state = load_treasury()
     state["kalshi_balance_usd"] = round(kalshi_usd, 2)
+    state["polymarket_balance_usd"] = round(float(polymarket_usd), 2)
     state["manifold_mana_balance"] = round(float(manifold_mana), 2)
     musd = round(float(manifold_usd), 2) if _manifold_real_money_enabled() else 0.0
     state["manifold_usd_balance"] = musd
     state["manifold_balance_usd"] = musd
-    state["net_worth_usd"] = round(kalshi_usd + musd, 2)
+    state["net_worth_usd"] = round(kalshi_usd + state["polymarket_balance_usd"] + musd, 2)
     deposited = state.get("total_deposited_usd", 10.0)
     withdrawn = state.get("total_withdrawn_usd", 0.0)
     state["total_profit_usd"] = round(state["net_worth_usd"] - deposited + withdrawn, 2)

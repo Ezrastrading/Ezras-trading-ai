@@ -24,6 +24,7 @@ def test_76_treasury_initializes_at_10():
     assert state["total_deposited_usd"] == 10.00
     assert state["net_worth_usd"] == 10.00
     assert state["kalshi_balance_usd"] == 10.00
+    assert state["polymarket_balance_usd"] == 0.00
     assert state["manifold_mana_balance"] == 0.00
     assert state["manifold_usd_balance"] == 0.00
     assert state["manifold_balance_usd"] == 0.00
@@ -114,6 +115,7 @@ def test_80_cli_treasury_returns_expected_structure(capsys):
     for key in (
         "net_worth_usd",
         "kalshi_balance_usd",
+        "polymarket_balance_usd",
         "manifold_mana_balance",
         "manifold_usd_balance",
         "manifold_balance_usd",

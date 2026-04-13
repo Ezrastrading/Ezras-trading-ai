@@ -20,7 +20,7 @@ def test_81_avenue_registry_has_five_avenues():
     from trading_ai.shark.avenues import load_avenues
 
     avenues = load_avenues()
-    assert set(avenues.keys()) == {"kalshi", "manifold", "tastytrade", "webull", "sports_manual"}
+    assert set(avenues.keys()) == {"kalshi", "manifold", "polymarket", "tastytrade", "webull", "sports_manual"}
     for name, av in avenues.items():
         assert av.starting_capital == 25.0, f"{name} starting_capital should be 25.00"
         assert av.current_capital == 25.0, f"{name} current_capital should equal starting on init"
@@ -55,14 +55,14 @@ def test_83_dashboard_aggregates_total_capital():
 
     dash = get_master_dashboard()
 
-    # 5 avenues × $25 = $125 total deployed
-    assert dash["total_capital_deployed"] == pytest.approx(125.0, abs=0.01)
-    assert dash["total_current_value"] == pytest.approx(125.0, abs=0.01)
-    assert set(dash["avenues"].keys()) == {"kalshi", "manifold", "tastytrade", "webull", "sports_manual"}
+    # 6 avenues × $25 = $150 total deployed
+    assert dash["total_capital_deployed"] == pytest.approx(150.0, abs=0.01)
+    assert dash["total_current_value"] == pytest.approx(150.0, abs=0.01)
+    assert set(dash["avenues"].keys()) == {"kalshi", "manifold", "polymarket", "tastytrade", "webull", "sports_manual"}
     assert "treasury" in dash
     assert "month_4_projection" in dash
     assert "year_end_projection" in dash
-    # Month 4 projections across all 5 avenues should exceed $40k
+    # Month 4 projections across all avenues should exceed $40k
     assert dash["month_4_projection"] > 40_000
 
 

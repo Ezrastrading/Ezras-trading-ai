@@ -89,8 +89,7 @@ def submit_polymarket_order(intent: ExecutionIntent) -> OrderResult:
     api_key = (os.environ.get("POLY_API_KEY") or "").strip()
     if not key:
         raise RuntimeError(
-            "Polymarket execution unavailable: POLY_WALLET_KEY unset "
-            "(scan-only mode; US operators cannot execute on Polymarket)."
+            "Polymarket execution unavailable: POLY_WALLET_KEY unset (set wallet key for CLOB orders)."
         )
     if not api_key:
         logger.warning("POLY_API_KEY empty — submitting order with public CLOB headers only")
@@ -127,12 +126,15 @@ def submit_polymarket_order(intent: ExecutionIntent) -> OrderResult:
             "signature": sig,
         }
     }
-    hdrs: Dict[str, str] = {
-        "Content-Type": "application/json",
-        "User-Agent": "EzrasShark/1.0",
-    }
-    if api_key:
-        hdrs["POLY_API_KEY"] = api_key
+    from trading_ai.shark.outlets.polymarket import get_polymarket_headers
+
+    hdrs: Dict[str, str] = {"User-Agent": "EzrasShark/1.0"}
+    if (os.environ.get("POLY_API_SECRET") or "").strip():
+        hdrs.update(get_polymarket_headers())
+    else:
+        hdrs["Content-Type"] = "application/json"
+        if api_key:
+            hdrs["POLY_API_KEY"] = api_key
     req = urllib.request.Request(
         CLOB_ORDER_URL,
         data=json.dumps(body).encode("utf-8"),

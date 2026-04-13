@@ -83,6 +83,14 @@ def _default_avenues() -> Dict[str, Avenue]:
             automation_level="full",
             **_t,
         ),
+        "polymarket": Avenue(
+            name="Polymarket",
+            platform="polymarket",
+            avenue_type="prediction_market",
+            starting_capital=25.00,
+            automation_level="full",
+            **_t,
+        ),
         "tastytrade": Avenue(
             name="Tastytrade",
             platform="tastytrade",
