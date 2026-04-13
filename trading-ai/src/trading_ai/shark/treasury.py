@@ -31,13 +31,23 @@ _DEFAULTS: Dict[str, Any] = {
     "total_withdrawn_usd": 0.00,
     "net_worth_usd": 10.00,
     "kalshi_balance_usd": 10.00,
+    "manifold_mana_balance": 0.00,
+    "manifold_usd_balance": 0.00,
     "manifold_balance_usd": 0.00,
     "usdc_target_pct": 60,
     "eth_target_pct": 40,
-    "withdrawal_alert_threshold": 500.00,
+    "withdrawal_alert_threshold": 2000.00,
     "last_updated": "",
     "withdrawal_history": [],
 }
+
+
+def _manifold_usd_from_mana(mana: float) -> float:
+    """Manifold balance is mana (play money). USD component only if MANIFOLD_REAL_MONEY=true."""
+    v = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return round(float(mana), 2)
+    return 0.0
 
 
 def _apply_env_overrides(state: Dict[str, Any]) -> None:
@@ -70,8 +80,15 @@ def load_treasury() -> Dict[str, Any]:
         raw = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("not a dict")
+        if "manifold_mana_balance" not in raw:
+            raw["manifold_mana_balance"] = float(raw.get("manifold_balance_usd", 0) or 0)
         for k, v in _DEFAULTS.items():
             raw.setdefault(k, v)
+        mana = float(raw.get("manifold_mana_balance", 0) or 0)
+        raw["manifold_usd_balance"] = _manifold_usd_from_mana(mana)
+        raw["manifold_balance_usd"] = raw["manifold_usd_balance"]
+        kbal = float(raw.get("kalshi_balance_usd", 0) or 0)
+        raw["net_worth_usd"] = round(kbal + raw["manifold_usd_balance"], 2)
         _apply_env_overrides(raw)
         return raw
     except (OSError, json.JSONDecodeError, ValueError):
@@ -86,12 +103,15 @@ def save_treasury(state: Dict[str, Any]) -> None:
     treasury_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def update_platform_balances(kalshi_usd: float, manifold_usd: float) -> None:
-    """Update balances, recalculate net_worth_usd, save, check withdrawal alert."""
+def update_platform_balances(kalshi_usd: float, manifold_mana: float) -> None:
+    """Update Kalshi USD + Manifold mana. Net USD = Kalshi + manifold USD only (mana excluded unless MANIFOLD_REAL_MONEY)."""
     state = load_treasury()
     state["kalshi_balance_usd"] = round(kalshi_usd, 2)
-    state["manifold_balance_usd"] = round(manifold_usd, 2)
-    state["net_worth_usd"] = round(kalshi_usd + manifold_usd, 2)
+    state["manifold_mana_balance"] = round(float(manifold_mana), 2)
+    musd = _manifold_usd_from_mana(state["manifold_mana_balance"])
+    state["manifold_usd_balance"] = musd
+    state["manifold_balance_usd"] = musd
+    state["net_worth_usd"] = round(kalshi_usd + musd, 2)
     deposited = state.get("total_deposited_usd", 10.0)
     withdrawn = state.get("total_withdrawn_usd", 0.0)
     state["total_profit_usd"] = round(state["net_worth_usd"] - deposited + withdrawn, 2)
@@ -103,7 +123,7 @@ def check_withdrawal_alert() -> bool:
     """Return True if net_worth > threshold. Sends Telegram alert when fired."""
     state = load_treasury()
     net = state.get("net_worth_usd", 0.0)
-    threshold = state.get("withdrawal_alert_threshold", 500.0)
+    threshold = state.get("withdrawal_alert_threshold", 2000.0)
     if net <= threshold:
         return False
 
@@ -111,13 +131,18 @@ def check_withdrawal_alert() -> bool:
     usdc_pct = state.get("usdc_target_pct", 60)
     eth_pct = state.get("eth_target_pct", 40)
     kalshi = state.get("kalshi_balance_usd", 0.0)
-    manifold = state.get("manifold_balance_usd", 0.0)
+    mana = float(state.get("manifold_mana_balance", 0.0) or 0.0)
+    musd = float(state.get("manifold_usd_balance", 0.0) or 0.0)
+    if musd > 0:
+        manifold_line = f"Manifold USD: ${musd:.2f} (real money)\n"
+    else:
+        manifold_line = f"Manifold: {mana:.0f} mana (play money)\n"
 
     msg = (
         "💰 WITHDRAWAL ALERT\n"
         f"Treasury: ${net:.2f}\n"
         f"Kalshi: ${kalshi:.2f}\n"
-        f"Manifold: ${manifold:.2f}\n"
+        f"{manifold_line}"
         f"Threshold hit: ${threshold:.2f}\n\n"
         "Action required:\n"
         "1. Log into Kalshi/Manifold\n"
@@ -142,6 +167,7 @@ def log_withdrawal(amount_usd: float) -> None:
         "timestamp": _iso(),
         "kalshi_balance_at_time": state.get("kalshi_balance_usd", 0.0),
         "manifold_balance_at_time": state.get("manifold_balance_usd", 0.0),
+        "manifold_mana_at_time": state.get("manifold_mana_balance", 0.0),
     }
     history: List[Any] = state.get("withdrawal_history", [])
     history.append(entry)

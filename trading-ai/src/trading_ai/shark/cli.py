@@ -215,6 +215,8 @@ def cmd_networth(_: argparse.Namespace) -> int:
             {
                 "net_worth_usd": state.get("net_worth_usd", 0.0),
                 "kalshi_balance_usd": state.get("kalshi_balance_usd", 0.0),
+                "manifold_mana_balance": state.get("manifold_mana_balance", 0.0),
+                "manifold_usd_balance": state.get("manifold_usd_balance", 0.0),
                 "manifold_balance_usd": state.get("manifold_balance_usd", 0.0),
                 "last_updated": state.get("last_updated", ""),
             },

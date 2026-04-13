@@ -84,16 +84,21 @@ def sync_all_platforms() -> Dict:
     """
     from trading_ai.shark.treasury import load_treasury, update_platform_balances
 
+    from trading_ai.shark.treasury import _manifold_usd_from_mana
+
     existing = load_treasury()
     kalshi_fetched = fetch_kalshi_balance_usd()
     manifold_fetched = fetch_manifold_balance_mana()
 
-    kalshi_final = kalshi_fetched if kalshi_fetched is not None else existing.get("kalshi_balance_usd", 0.0)
-    manifold_final = manifold_fetched if manifold_fetched is not None else existing.get("manifold_balance_usd", 0.0)
+    kalshi_final = kalshi_fetched if kalshi_fetched is not None else float(existing.get("kalshi_balance_usd", 0.0))
+    if manifold_fetched is not None:
+        manifold_mana_final = manifold_fetched
+    else:
+        manifold_mana_final = float(existing.get("manifold_mana_balance", existing.get("manifold_balance_usd", 0.0)) or 0.0)
 
-    update_platform_balances(kalshi_final, manifold_final)
+    update_platform_balances(kalshi_final, manifold_mana_final)
 
-    net = round(kalshi_final + manifold_final, 2)
+    net = round(kalshi_final + _manifold_usd_from_mana(manifold_mana_final), 2)
     try:
         from trading_ai.shark.state_store import load_capital, save_capital
 
@@ -109,14 +114,14 @@ def sync_all_platforms() -> Dict:
         "synced_at": _iso(),
         "kalshi_usd": kalshi_final,
         "kalshi_fetched": kalshi_fetched is not None,
-        "manifold_mana": manifold_final,
+        "manifold_mana": manifold_mana_final,
         "manifold_fetched": manifold_fetched is not None,
         "net_worth_usd": net,
     }
     logger.info(
-        "balance sync: kalshi=$%.2f manifold=%.0f mana net=$%.2f (capital.json updated)",
+        "balance sync: kalshi=$%.2f manifold_mana=%.0f net_usd=$%.2f (capital.json updated)",
         kalshi_final,
-        manifold_final,
+        manifold_mana_final,
         result["net_worth_usd"],
     )
     return result

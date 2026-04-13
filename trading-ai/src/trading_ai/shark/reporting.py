@@ -353,22 +353,28 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
-    """Show live Kalshi + Manifold breakdown from treasury when available."""
-    kalshi = manifold = total = None
+    """Show live Kalshi USD + Manifold mana; trading capital is Kalshi-only unless real-money Manifold."""
+    kalshi = mana = musd = total_trading = None
     try:
         from trading_ai.shark.treasury import load_treasury
 
         t = load_treasury()
         kalshi = float(t.get("kalshi_balance_usd", 0.0))
-        manifold = float(t.get("manifold_balance_usd", 0.0))
-        total = float(t.get("net_worth_usd", kalshi + manifold))
+        mana = float(t.get("manifold_mana_balance", 0.0))
+        musd = float(t.get("manifold_usd_balance", 0.0))
+        total_trading = kalshi + musd if musd > 0 else kalshi
     except Exception:
         pass
-    if kalshi is not None and manifold is not None and total is not None:
+    if kalshi is not None and mana is not None and total_trading is not None:
+        mana_line = (
+            f" Manifold: {mana:.2f} mana (play money)\n"
+            if musd <= 0
+            else f" Manifold: ${musd:.2f} USD (real money)\n"
+        )
         cap_block = (
             f"Capital: ${kalshi:.2f} (Kalshi)\n"
-            f" + ${manifold:.2f} (Manifold)\n"
-            f" Total: ${total:.2f}\n"
+            + mana_line
+            + f" Total trading capital: ${total_trading:.2f}\n"
         )
     else:
         cap_block = f"Capital: ${capital:.2f} (treasury unavailable — book)\n"

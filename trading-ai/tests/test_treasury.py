@@ -24,7 +24,10 @@ def test_76_treasury_initializes_at_10():
     assert state["total_deposited_usd"] == 10.00
     assert state["net_worth_usd"] == 10.00
     assert state["kalshi_balance_usd"] == 10.00
+    assert state["manifold_mana_balance"] == 0.00
+    assert state["manifold_usd_balance"] == 0.00
     assert state["manifold_balance_usd"] == 0.00
+    assert state["withdrawal_alert_threshold"] == 2000.00
     assert state["withdrawal_history"] == []
     assert "last_updated" in state
 
@@ -34,14 +37,16 @@ def test_76_treasury_initializes_at_10():
 def test_77_balance_update_recalculates_net_worth():
     from trading_ai.shark.treasury import load_treasury, update_platform_balances
 
-    update_platform_balances(kalshi_usd=35.50, manifold_usd=5.00)
+    update_platform_balances(kalshi_usd=35.50, manifold_mana=5000.00)
     state = load_treasury()
 
     assert state["kalshi_balance_usd"] == 35.50
-    assert state["manifold_balance_usd"] == 5.00
-    assert state["net_worth_usd"] == 40.50
-    # profit = net_worth - deposited + withdrawn = 40.50 - 10.00 + 0 = 30.50
-    assert state["total_profit_usd"] == pytest.approx(30.50, abs=0.01)
+    assert state["manifold_mana_balance"] == 5000.00
+    assert state["manifold_usd_balance"] == 0.00
+    assert state["manifold_balance_usd"] == 0.00
+    assert state["net_worth_usd"] == 35.50
+    # profit = net_worth - deposited + withdrawn = 35.50 - 10.00 + 0 = 25.50
+    assert state["total_profit_usd"] == pytest.approx(25.50, abs=0.01)
 
 
 # ── Test 78 ─────────────────────────────────────────────────────────────────
@@ -106,8 +111,16 @@ def test_80_cli_treasury_returns_expected_structure(capsys):
     captured = capsys.readouterr()
     data = json.loads(captured.out)
 
-    for key in ("net_worth_usd", "kalshi_balance_usd", "manifold_balance_usd",
-                "total_deposited_usd", "all_time_profit_usd", "return_on_investment_pct"):
+    for key in (
+        "net_worth_usd",
+        "kalshi_balance_usd",
+        "manifold_mana_balance",
+        "manifold_usd_balance",
+        "manifold_balance_usd",
+        "total_deposited_usd",
+        "all_time_profit_usd",
+        "return_on_investment_pct",
+    ):
         assert key in data, f"missing key: {key}"
 
     assert isinstance(data["net_worth_usd"], (int, float))
