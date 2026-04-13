@@ -15,7 +15,7 @@ from trading_ai.governance.position_sizing_policy import default_caps_for_capita
 from trading_ai.governance.storage_architecture import append_shark_audit_record
 from trading_ai.shark.capital_phase import detect_phase, phase_params
 from trading_ai.shark.dotenv_load import load_shark_dotenv
-from trading_ai.shark.execution_live import ezras_dry_run_from_env, manifold_real_money_execution_enabled
+from trading_ai.shark.execution_live import ezras_dry_run_from_env
 from trading_ai.shark.executor import build_execution_intent
 from trading_ai.shark.models import ExecutionIntent, ScoredOpportunity
 from trading_ai.shark.risk_context import build_risk_context
@@ -90,11 +90,6 @@ def run_execution_chain(
         _append(audit, "1_precheck", skipped=True, reason="no_intent_tier_or_edge")
         return ChainResult(False, "precheck", audit, None)
 
-    if (outlet or "").lower() == "manifold" and not manifold_real_money_execution_enabled():
-        logging.getLogger(__name__).info("Manifold skipped — play money only")
-        _append(audit, "manifold_play_money_skip", outlet=outlet)
-        return ChainResult(False, "manifold_play_money", audit, intent)
-
     edge = intent.edge_after_fees
 
     # Step 1 — Doctrine gate
@@ -152,19 +147,20 @@ def run_execution_chain(
         return ChainResult(False, "latency_kill", audit, intent)
     _append(audit, "7_execution_delay", ok=True, seconds=estimated_execution_delay_seconds)
 
-    try:
-        alert_trade_fired(
-            hunt_types=[h.value for h in intent.hunt_types],
-            edge=intent.edge_after_fees,
-            position_fraction=intent.stake_fraction_of_capital,
-            capital=capital,
-            tier=str(intent.meta.get("tier", "B")),
-            outlet=intent.outlet,
-            market_desc=str(intent.market_id),
-            resolves_in="TBD",
-        )
-    except Exception:
-        logging.getLogger(__name__).debug("alert_trade_fired failed", exc_info=True)
+    if not getattr(intent, "is_mana", False):
+        try:
+            alert_trade_fired(
+                hunt_types=[h.value for h in intent.hunt_types],
+                edge=intent.edge_after_fees,
+                position_fraction=intent.stake_fraction_of_capital,
+                capital=capital,
+                tier=str(intent.meta.get("tier", "B")),
+                outlet=intent.outlet,
+                market_desc=str(intent.market_id),
+                resolves_in="TBD",
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("alert_trade_fired failed", exc_info=True)
 
     # Step 8 — Log submission intent JSONL
     _append(audit, "8_log_intent", market_id=intent.market_id)
@@ -180,10 +176,11 @@ def run_execution_chain(
             logging.getLogger(__name__).exception("submit_order failed")
             _append(audit, "9_submit_order", status="FAILED", error=str(exc))
             append_shark_audit_record({"step": "submit_failed", "market_id": intent.market_id, "error": str(exc)})
-            try:
-                send_telegram_live(f"❌ ORDER FAILED\n{intent.outlet} {intent.market_id}\n{exc!s}")
-            except Exception:
-                pass
+            if not getattr(intent, "is_mana", False):
+                try:
+                    send_telegram_live(f"❌ ORDER FAILED\n{intent.outlet} {intent.market_id}\n{exc!s}")
+                except Exception:
+                    pass
             return ChainResult(False, "submit_failed", audit, intent)
 
         _append(audit, "9_submit_order", status="submitted", order_id=order_res.order_id)
@@ -263,6 +260,7 @@ def hook_post_trade_resolution(
     hour_utc: Optional[int] = None,
     pnl_dollars: Optional[float] = None,
     update_capital: bool = True,
+    is_mana: bool = False,
 ) -> None:
     from trading_ai.shark.models import HuntType
     from trading_ai.shark.state import LOSS_TRACKER
@@ -271,14 +269,15 @@ def hook_post_trade_resolution(
     trigger_bayesian_after_resolution(
         strategy=strategy, hunt_types=hts, outlet=outlet, win=win, hour_utc=hour_utc
     )
-    LOSS_TRACKER.record_outcome(
-        strategy=strategy,
-        hunt_type=hts[0],
-        outlet=outlet,
-        market_category=market_category,
-        win=win,
-    )
-    if pnl_dollars is not None and update_capital:
+    if not is_mana:
+        LOSS_TRACKER.record_outcome(
+            strategy=strategy,
+            hunt_type=hts[0],
+            outlet=outlet,
+            market_category=market_category,
+            win=win,
+        )
+    if pnl_dollars is not None and update_capital and not is_mana:
         from trading_ai.shark.state_store import apply_win_loss_to_capital
 
         apply_win_loss_to_capital(pnl_dollars)

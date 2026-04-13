@@ -77,7 +77,7 @@ def init_capital(rt: Path) -> None:
         return
     from datetime import datetime, timezone
 
-    cap = float(os.environ.get("STARTING_CAPITAL", "50"))
+    cap = float(os.environ.get("STARTING_CAPITAL", "25"))
     data = {
         "current_capital": cap,
         "starting_capital": cap,

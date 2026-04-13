@@ -92,6 +92,7 @@ class ExecutionIntent:
     expected_price: float = 0.0
     notional_usd: float = 0.0
     shares: int = 0
+    is_mana: bool = False
 
 
 @dataclass

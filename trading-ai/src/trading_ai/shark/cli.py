@@ -226,6 +226,25 @@ def cmd_networth(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mana(_: argparse.Namespace) -> int:
+    from trading_ai.shark.mana_sandbox import get_mana_summary
+    from trading_ai.shark.reporting import format_weekly_mana_section
+
+    s = get_mana_summary()
+    print(json.dumps(s, indent=2))
+    print()
+    print(format_weekly_mana_section())
+    perf = s.get("strategy_performance") or {}
+    validated = [
+        name
+        for name, row in perf.items()
+        if isinstance(row, dict) and int(row.get("wins", 0) or 0) > 0
+    ]
+    print()
+    print("Strategies with mana wins (signal for Bayesian / real routing):", ", ".join(validated) or "none yet")
+    return 0
+
+
 def main_shark(argv: List[str] | None = None) -> int:
     from trading_ai.shark.dotenv_load import load_shark_dotenv
 
@@ -252,6 +271,7 @@ def main_shark(argv: List[str] | None = None) -> int:
 
     sub.add_parser("growth", help="Growth tracker vs monthly compound targets")
     sub.add_parser("networth", help="Net worth across all platforms")
+    sub.add_parser("mana", help="Manifold mana sandbox summary (silent learning)")
     sub.add_parser("avenues", help="All revenue avenues with performance")
     sub.add_parser("dashboard", help="Master dashboard across all avenues + treasury")
 
@@ -278,6 +298,7 @@ def main_shark(argv: List[str] | None = None) -> int:
         "treasury": cmd_treasury,
         "growth": cmd_growth,
         "networth": cmd_networth,
+        "mana": cmd_mana,
         "avenues": cmd_avenues,
         "dashboard": cmd_dashboard,
         "sports": cmd_sports,

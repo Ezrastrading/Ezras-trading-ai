@@ -20,6 +20,12 @@ def _setup_logging() -> None:
 
 def main() -> None:
     _setup_logging()
+    # python -m trading_ai shark … → Ezras Shark CLI (see trading_ai.shark.cli)
+    if len(sys.argv) >= 2 and sys.argv[1] == "shark":
+        from trading_ai.shark.cli import main_shark
+
+        sys.exit(main_shark(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(prog="trading-ai", description="Prediction market AI partner (Phase 1)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

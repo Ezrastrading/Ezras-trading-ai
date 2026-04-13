@@ -145,7 +145,14 @@ def main() -> None:
         log.info("gap_active: markets=%s execution_attempts=%s", n, att)
 
     def resolution_monitor() -> None:
-        pass
+        try:
+            from trading_ai.shark.mana_sandbox import tick_mana_resolutions
+
+            n = tick_mana_resolutions()
+            if n:
+                log.info("mana sandbox: resolved %s position(s)", n)
+        except Exception as exc:
+            log.warning("mana resolution monitor failed (non-blocking): %s", exc)
 
     def daily_memo() -> None:
         try:
@@ -177,7 +184,14 @@ def main() -> None:
             log.warning("daily memo failed (non-blocking): %s", exc)
 
     def weekly_summary() -> None:
-        log.info("weekly summary slot (wire Telegram)")
+        try:
+            from trading_ai.shark.reporting import format_weekly_mana_section, send_telegram
+
+            text = format_weekly_mana_section()
+            if send_telegram(text):
+                log.info("weekly summary (mana sandbox) Telegram sent")
+        except Exception as exc:
+            log.warning("weekly summary failed (non-blocking): %s", exc)
 
     def state_backup() -> None:
         backup_all_state_files()

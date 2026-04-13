@@ -305,6 +305,26 @@ def format_weekly_summary(
     )
 
 
+def format_weekly_mana_section() -> str:
+    """Telegram block for Sunday 9pm weekly job — mana sandbox only (not daily memo)."""
+    from trading_ai.shark.mana_sandbox import get_mana_summary, top_mana_strategy
+
+    s = get_mana_summary()
+    bal = float(s.get("mana_balance", 0) or 0)
+    n = int(s.get("total_mana_trades", 0) or 0)
+    wr = s.get("mana_win_rate")
+    wr_pct = f"{float(wr) * 100:.1f}%" if wr is not None else "n/a"
+    top = top_mana_strategy(dict(s.get("strategy_performance") or {}))
+    return (
+        "📊 MANA SANDBOX (Learning Mode)\n"
+        f" Mana balance: {bal:.2f}\n"
+        f" Mana trades: {n}\n"
+        f" Mana win rate: {wr_pct}\n"
+        f" Top strategy: {top}\n"
+        " Insights applied to real trades: ✅"
+    )
+
+
 def format_shark_heartbeat_message(
     *,
     uptime_hours: float,

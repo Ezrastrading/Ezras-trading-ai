@@ -86,6 +86,7 @@ def build_execution_intent(
     market_category: str = "default",
     hunt6_aggregate_exposure_usd: float = 0.0,
     wallet_copy_trade: bool = False,
+    is_mana: bool = False,
 ) -> Optional[ExecutionIntent]:
     if scored.tier == OpportunityTier.BELOW_THRESHOLD:
         return None
@@ -156,4 +157,5 @@ def build_execution_intent(
         expected_price=exp_price,
         notional_usd=notional,
         shares=shr,
+        is_mana=is_mana,
     )

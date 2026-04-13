@@ -1,5 +1,6 @@
 """
 Bridge: market scan → hunts → score → ``run_execution_chain`` (live venues when not dry-run).
+Manifold routes to mana sandbox (silent learning); Kalshi/Polymarket use real chain.
 """
 
 from __future__ import annotations
@@ -51,6 +52,48 @@ def run_scan_execution_cycle(
         record_opportunity_for_burst(now)
         attempts += 1
         outlet = (m.outlet or "").strip() or "unknown"
+        if outlet.lower() == "manifold":
+            from trading_ai.shark.capital_phase import detect_phase, phase_params
+            from trading_ai.shark.executor import build_execution_intent
+            from trading_ai.shark.mana_sandbox import execute_mana_trade, load_mana_state
+            from trading_ai.shark.risk_context import build_risk_context
+
+            ms = load_mana_state()
+            mana_cap = float(ms.get("mana_balance", 0) or 0)
+            mana_peak = float(ms.get("mana_peak", mana_cap) or mana_cap)
+            phase = detect_phase(mana_cap)
+            pp = phase_params(phase)
+            risk = build_risk_context(
+                current_capital=mana_cap,
+                peak_capital=mana_peak,
+                base_min_edge=pp.min_edge,
+                last_trade_unix=rec.last_trade_unix,
+                now_unix=now,
+            )
+            intent = build_execution_intent(
+                scored,
+                capital=mana_cap,
+                outlet="manifold",
+                gap_exploitation_mode=False,
+                current_gap_exposure_fraction=0.0,
+                min_edge_effective=risk.effective_min_edge,
+                risk_position_multiplier=risk.position_size_multiplier,
+                market_category=m.market_category,
+                is_mana=True,
+            )
+            if intent is not None:
+                try:
+                    execute_mana_trade(intent, scored=scored)
+                except Exception:
+                    logger.exception("%s: mana sandbox failed for %s", tag, m.market_id)
+            logger.info(
+                "%s mana_sandbox: market=%s ok=intent=%s",
+                tag,
+                m.market_id,
+                intent is not None,
+            )
+            continue
+
         try:
             res = run_execution_chain(
                 scored,

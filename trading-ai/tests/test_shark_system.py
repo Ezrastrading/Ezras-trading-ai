@@ -805,18 +805,18 @@ def test_40_setup_env_creates_all_required_directories(tmp_path):
     assert (rt / "shark" / "logs").is_dir()
 
 
-def test_41_setup_env_initializes_capital_json_at_50(tmp_path, monkeypatch):
+def test_41_setup_env_initializes_capital_json_at_starting_capital(tmp_path, monkeypatch):
     se = _load_setup_env()
     rt = tmp_path / "runtime"
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(rt))
-    monkeypatch.setenv("STARTING_CAPITAL", "50")
+    monkeypatch.setenv("STARTING_CAPITAL", "25")
     se.ensure_dirs(rt)
     cap_path = rt / "shark" / "state" / "capital.json"
     assert not cap_path.exists()
     se.init_capital(rt)
     data = json.loads(cap_path.read_text(encoding="utf-8"))
-    assert data["current_capital"] == 50.0
-    assert data["starting_capital"] == 50.0
+    assert data["current_capital"] == 25.0
+    assert data["starting_capital"] == 25.0
     assert data["phase"] == "phase_1"
 
 
@@ -1306,3 +1306,199 @@ def test_72_wallet_registry_persists_and_loads(tmp_path, monkeypatch):
     save_wallets_registry(payload)
     data = load_wallets_registry()
     assert data["tracked_wallets"][0]["address"] == "0x1234"
+
+
+def test_97_manifold_routes_to_mana_sandbox_not_execution_chain(tmp_path, monkeypatch):
+    from trading_ai.shark import scan_execute as se
+    from trading_ai.shark.execution import ChainResult
+    from trading_ai.shark.models import (
+        HuntSignal,
+        HuntType,
+        MarketSnapshot,
+        OpportunityTier,
+        ScoredOpportunity,
+    )
+    from trading_ai.shark.state_store import CapitalRecord, save_capital
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0))
+
+    m = MarketSnapshot(
+        market_id="manifold:test-1",
+        outlet="manifold",
+        yes_price=0.45,
+        no_price=0.51,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=8000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+    )
+    hs = [
+        HuntSignal(HuntType.STRUCTURAL_ARBITRAGE, 0.05, 0.8, {}),
+        HuntSignal(HuntType.DEAD_MARKET_CONVERGENCE, 0.08, 0.75, {"side": "yes"}),
+    ]
+    scored = ScoredOpportunity(
+        market=m,
+        hunts=hs,
+        edge_size=0.08,
+        confidence=0.7,
+        liquidity_score=0.9,
+        resolution_speed_score=0.8,
+        strategy_performance_weight=0.5,
+        score=0.85,
+        tier=OpportunityTier.TIER_A,
+        tier_sizing_multiplier=1.3,
+    )
+
+    monkeypatch.setattr(se, "scan_markets", lambda fetchers, fallback_demo=False: [m])
+    monkeypatch.setattr(se, "run_hunts_on_market", lambda *a, **k: hs)
+    monkeypatch.setattr(se, "score_opportunity", lambda mm, hh: scored)
+
+    chain_calls = []
+    mana_calls = []
+
+    def capture_chain(*a, **k):
+        chain_calls.append(1)
+        return ChainResult(True, "complete", [], a[0] if a else None, 0.0)
+
+    def capture_mana(intent, scored=None):
+        mana_calls.append(getattr(intent, "is_mana", None))
+
+    monkeypatch.setattr(se, "run_execution_chain", capture_chain)
+    monkeypatch.setattr("trading_ai.shark.mana_sandbox.execute_mana_trade", capture_mana)
+
+    class FF:
+        outlet_name = "manifold"
+
+        def fetch_binary_markets(self):
+            return [m]
+
+    n, att = se.run_scan_execution_cycle((FF(),), tag="unit")
+    assert n == 1
+    assert att == 1
+    assert chain_calls == []
+    assert mana_calls == [True]
+
+
+def test_98_mana_trade_does_not_update_capital_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    from trading_ai.shark.mana_sandbox import update_mana_outcome
+    from trading_ai.shark.models import HuntType
+
+    save_capital(CapitalRecord(current_capital=25.0, peak_capital=25.0, starting_capital=25.0))
+    before = load_capital().current_capital
+    update_mana_outcome(
+        "m1",
+        "YES",
+        10.0,
+        strategy="shark_default",
+        hunt_types=[HuntType.STRUCTURAL_ARBITRAGE],
+        win=True,
+    )
+    assert load_capital().current_capital == before
+
+
+def test_99_mana_outcome_updates_bayesian_weights(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    from trading_ai.shark.mana_sandbox import update_mana_outcome
+    from trading_ai.shark.models import HuntType
+
+    w0 = BAYES.outlet_weights.get("manifold", 0.5)
+    update_mana_outcome(
+        "m2",
+        "YES",
+        5.0,
+        strategy="shark_default",
+        hunt_types=[HuntType.STRUCTURAL_ARBITRAGE],
+        win=True,
+    )
+    w1 = BAYES.outlet_weights.get("manifold", 0.5)
+    assert w1 != w0
+
+
+def test_100_mana_summary_returns_expected_structure(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    from trading_ai.shark.mana_sandbox import get_mana_summary
+
+    s = get_mana_summary()
+    for key in (
+        "mana_balance",
+        "mana_starting",
+        "mana_peak",
+        "total_mana_trades",
+        "winning_mana_trades",
+        "mana_win_rate",
+        "strategy_performance",
+        "last_updated",
+        "monthly_target_mana",
+        "growth_multiplier",
+        "open_mana_positions",
+    ):
+        assert key in s
+
+
+def test_101_kalshi_still_routes_to_run_execution_chain(tmp_path, monkeypatch):
+    from trading_ai.shark import scan_execute as se
+    from trading_ai.shark.execution import ChainResult
+    from trading_ai.shark.models import (
+        HuntSignal,
+        HuntType,
+        MarketSnapshot,
+        OpportunityTier,
+        ScoredOpportunity,
+    )
+    from trading_ai.shark.state_store import CapitalRecord, save_capital
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0))
+
+    m = MarketSnapshot(
+        market_id="kx-real-1",
+        outlet="kalshi",
+        yes_price=0.45,
+        no_price=0.51,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=8000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+    )
+    hs = [
+        HuntSignal(HuntType.STRUCTURAL_ARBITRAGE, 0.05, 0.8, {}),
+        HuntSignal(HuntType.DEAD_MARKET_CONVERGENCE, 0.08, 0.75, {"side": "yes"}),
+    ]
+    scored = ScoredOpportunity(
+        market=m,
+        hunts=hs,
+        edge_size=0.08,
+        confidence=0.7,
+        liquidity_score=0.9,
+        resolution_speed_score=0.8,
+        strategy_performance_weight=0.5,
+        score=0.85,
+        tier=OpportunityTier.TIER_A,
+        tier_sizing_multiplier=1.3,
+    )
+
+    monkeypatch.setattr(se, "scan_markets", lambda fetchers, fallback_demo=False: [m])
+    monkeypatch.setattr(se, "run_hunts_on_market", lambda *a, **k: hs)
+    monkeypatch.setattr(se, "score_opportunity", lambda mm, hh: scored)
+
+    calls = []
+
+    def capture(s, **kwargs):
+        calls.append((kwargs.get("outlet"), kwargs.get("capital")))
+        return ChainResult(True, "complete", [], s, 0.0)
+
+    monkeypatch.setattr(se, "run_execution_chain", capture)
+
+    class FF:
+        outlet_name = "kalshi"
+
+        def fetch_binary_markets(self):
+            return [m]
+
+    n, att = se.run_scan_execution_cycle((FF(),), tag="unit")
+    assert n == 1
+    assert att == 1
+    assert len(calls) == 1
+    assert calls[0][0] == "kalshi"
