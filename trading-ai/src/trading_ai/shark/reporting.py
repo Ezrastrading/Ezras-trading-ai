@@ -353,9 +353,29 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
+    """Show live Kalshi + Manifold breakdown from treasury when available."""
+    kalshi = manifold = total = None
+    try:
+        from trading_ai.shark.treasury import load_treasury
+
+        t = load_treasury()
+        kalshi = float(t.get("kalshi_balance_usd", 0.0))
+        manifold = float(t.get("manifold_balance_usd", 0.0))
+        total = float(t.get("net_worth_usd", kalshi + manifold))
+    except Exception:
+        pass
+    if kalshi is not None and manifold is not None and total is not None:
+        cap_block = (
+            f"Capital: ${kalshi:.2f} (Kalshi)\n"
+            f" + ${manifold:.2f} (Manifold)\n"
+            f" Total: ${total:.2f}\n"
+        )
+    else:
+        cap_block = f"Capital: ${capital:.2f} (treasury unavailable — book)\n"
     return (
         "🦈 Ezras Shark System — LIVE\n"
-        f"Capital: ${capital:.2f} | Phase: {phase}\n"
+        + cap_block
+        + f"Phase: {phase}\n"
         "Scanning: ALL OUTLETS | Mode: 24/7\n"
         f"Gaps monitored: {gaps_n}\n"
         "Targets: MINIMUM expectations. Faster is always better. 🦈\n"

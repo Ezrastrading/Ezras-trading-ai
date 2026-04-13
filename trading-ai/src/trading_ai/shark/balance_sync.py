@@ -93,16 +93,28 @@ def sync_all_platforms() -> Dict:
 
     update_platform_balances(kalshi_final, manifold_final)
 
+    net = round(kalshi_final + manifold_final, 2)
+    try:
+        from trading_ai.shark.state_store import load_capital, save_capital
+
+        rec = load_capital()
+        rec.current_capital = net
+        if rec.peak_capital < net:
+            rec.peak_capital = net
+        save_capital(rec)
+    except Exception as exc:
+        logger.warning("capital.json mirror after balance sync failed: %s", exc)
+
     result = {
         "synced_at": _iso(),
         "kalshi_usd": kalshi_final,
         "kalshi_fetched": kalshi_fetched is not None,
         "manifold_mana": manifold_final,
         "manifold_fetched": manifold_fetched is not None,
-        "net_worth_usd": round(kalshi_final + manifold_final, 2),
+        "net_worth_usd": net,
     }
     logger.info(
-        "balance sync: kalshi=$%.2f manifold=%.0f mana net=$%.2f",
+        "balance sync: kalshi=$%.2f manifold=%.0f mana net=$%.2f (capital.json updated)",
         kalshi_final,
         manifold_final,
         result["net_worth_usd"],

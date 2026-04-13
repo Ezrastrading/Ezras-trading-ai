@@ -68,6 +68,14 @@ def main() -> None:
     except Exception as exc:
         log.warning("Startup recovery failed (non-blocking): %s", exc)
 
+    try:
+        from trading_ai.shark.balance_sync import sync_all_platforms
+
+        sync_all_platforms()
+        log.info("Initial balance sync completed")
+    except Exception as exc:
+        log.warning("Initial balance sync failed (non-blocking): %s", exc)
+
     rec = load_capital()
     g = load_gaps()
     gaps_n = len(g.get("gaps_under_observation") or [])
