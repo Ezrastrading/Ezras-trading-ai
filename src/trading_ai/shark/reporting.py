@@ -361,6 +361,53 @@ def format_weekly_summary(
     )
 
 
+def format_shark_heartbeat_message(
+    *,
+    uptime_hours: float,
+    capital: float,
+    trades_today: int,
+    win_rate_pct: Optional[float],
+    server_label: str,
+    next_scan_seconds: float,
+) -> str:
+    wr = f"{win_rate_pct * 100:.1f}%" if win_rate_pct is not None else "n/a"
+    return (
+        "🦈 SHARK ALIVE\n"
+        f"Uptime: {uptime_hours:.1f}h\n"
+        f"Capital: ${capital:.2f}\n"
+        f"Trades today: {trades_today}\n"
+        f"Win rate: {wr}\n"
+        f"Server: {server_label}\n"
+        f"Next scan: ~{int(next_scan_seconds)}s\n"
+    )
+
+
+def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
+    """Scheduled heartbeat (e.g. every 6h) — queue Telegram summary."""
+    from trading_ai.shark.state_store import load_capital
+
+    uptime_h = (time.time() - started_at) / 3600.0
+    rec = load_capital()
+    total = max(rec.total_trades, 1)
+    wr = (rec.winning_trades / total) if rec.total_trades else None
+    server = "railway" if (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip() else "local"
+    text = format_shark_heartbeat_message(
+        uptime_hours=uptime_h,
+        capital=rec.current_capital,
+        trades_today=rec.total_trades,
+        win_rate_pct=wr,
+        server_label=server,
+        next_scan_seconds=300.0,
+    )
+    _remember("heartbeat", {"text": text})
+    return send_telegram_text(
+        None,
+        text,
+        dedupe_key=f"shark:heartbeat:{int(started_at // 21600)}",
+        event_label="shark_heartbeat",
+    )
+
+
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
     return (
         "🦈 Ezras Shark System — LIVE\n"

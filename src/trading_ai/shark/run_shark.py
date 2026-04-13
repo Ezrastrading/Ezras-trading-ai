@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import time
@@ -17,7 +18,13 @@ require_ezras_runtime_root()
 
 from trading_ai.shark.reporting import startup_banner
 from trading_ai.shark.scan_execute import run_gap_confirmed_hook, run_scan_execution_cycle
-from trading_ai.shark.state_store import backup_all_state_files, integrity_check_or_restore, load_capital, load_gaps
+from trading_ai.shark.state_store import (
+    backup_all_state_files,
+    integrity_check_or_restore,
+    load_bayesian_into_memory,
+    load_capital,
+    load_gaps,
+)
 
 
 def _setup_logging() -> None:
@@ -30,7 +37,37 @@ def _setup_logging() -> None:
 def main() -> None:
     _setup_logging()
     log = logging.getLogger("shark.run")
+    boot_unix = time.time()
+
+    try:
+        from trading_ai.shark.remote_state import restore_state_from_supabase
+
+        n = restore_state_from_supabase()
+        if n:
+            log.info("Restored %s state file(s) from Supabase", n)
+    except Exception as exc:
+        log.warning("Supabase restore skipped: %s", exc)
+
     integrity_check_or_restore()
+    load_bayesian_into_memory()
+
+    try:
+        from trading_ai.shark.health_server import start_health_server
+
+        hp = int(os.environ.get("PORT") or 8080)
+        start_health_server(hp)
+        log.info("Health server on 0.0.0.0:%s /health", hp)
+    except Exception as exc:
+        log.warning("Health server failed (non-blocking): %s", exc)
+
+    try:
+        from trading_ai.shark.recovery import run_startup_recovery
+
+        rep = run_startup_recovery(boot_unix=boot_unix)
+        log.info("Startup recovery: %s", rep)
+    except Exception as exc:
+        log.warning("Startup recovery failed (non-blocking): %s", exc)
+
     rec = load_capital()
     g = load_gaps()
     gaps_n = len(g.get("gaps_under_observation") or [])
@@ -110,6 +147,14 @@ def main() -> None:
         except Exception as exc:
             log.warning("balance sync error (non-blocking): %s", exc)
 
+    def _heartbeat() -> None:
+        try:
+            from trading_ai.shark.reporting import send_shark_heartbeat_alert
+
+            send_shark_heartbeat_alert(started_at=boot_unix)
+        except Exception as exc:
+            log.warning("heartbeat failed: %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -123,6 +168,7 @@ def main() -> None:
         hot_window_active=lambda: HOT.is_hot(time.time()),
         gap_active=lambda: gap_state["active"],
         balance_sync=_balance_sync,
+        heartbeat=_heartbeat,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

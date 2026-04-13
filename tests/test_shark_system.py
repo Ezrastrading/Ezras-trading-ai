@@ -942,6 +942,138 @@ def test_73_setup_env_exits_zero_with_empty_poly_keys(tmp_path, monkeypatch):
         assert se.main() == 0
 
 
+def test_92_health_server_returns_200_on_health(tmp_path, monkeypatch):
+    import json
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("PORT", "18888")
+    from trading_ai.shark.health_server import start_health_server
+
+    srv = start_health_server(18888)
+    try:
+        r = urllib.request.urlopen("http://127.0.0.1:18888/health", timeout=3)
+        assert r.getcode() == 200
+        body = json.loads(r.read().decode("utf-8"))
+        assert body.get("status") == "alive"
+    finally:
+        srv.shutdown()
+
+
+def test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch):
+    """Stale last_scan triggers restart alert when scan age > 10 min."""
+    import time
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+    from trading_ai.shark.recovery import last_scan_path, run_startup_recovery
+    from trading_ai.shark.state_store import CapitalRecord, save_capital
+
+    save_capital(CapitalRecord(current_capital=50.0, peak_capital=50.0))
+    last_scan_path().parent.mkdir(parents=True, exist_ok=True)
+    old = time.time() - 700
+    last_scan_path().write_text(json.dumps({"last_unix": old}), encoding="utf-8")
+
+    sent = []
+
+    def cap(msg: str):
+        sent.append(msg)
+
+    monkeypatch.setattr("trading_ai.shark.reporting.send_telegram_live", cap)
+    from trading_ai.shark import recovery as rec_mod
+
+    monkeypatch.setattr(rec_mod, "reconcile_open_positions", lambda: {"checked": 0, "resolved": 0})
+
+    rep = run_startup_recovery(boot_unix=time.time(), send_telegram=True)
+    assert rep.get("restart_alert_sent") is True
+    assert sent and "SHARK RESTARTED" in sent[0]
+
+
+def test_94_supabase_push_pull_roundtrip(monkeypatch):
+    import io
+
+    monkeypatch.setenv("SUPABASE_URL", "https://xyz.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+    store: dict[str, dict] = {}
+
+    class Resp:
+        def __init__(self, code: int = 200, body: str = "[]") -> None:
+            self.status_code = code
+            self.text = body
+
+        def json(self):
+            import json as _j
+
+            return _j.loads(self.text)
+
+    def fake_post(url, headers=None, json=None, timeout=30):
+        k = json.get("key")
+        store[k] = json
+        return Resp(201, "[]")
+
+    def fake_get(url, headers=None, timeout=30):
+        return Resp(200, '[{"value": {"a": 1}}]')
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("requests.patch", lambda *a, **k: Resp(204, ""))
+
+    from trading_ai.shark import remote_state as rs
+
+    assert rs.push_state_to_supabase("capital", {"x": 1}) is True
+    out = rs.pull_state_from_supabase("capital")
+    assert out == {"a": 1}
+
+
+def test_95_crash_recovery_sends_telegram_restart_alert(tmp_path, monkeypatch):
+    """Same as test_93 naming for deployment checklist — alert on stale scan."""
+    test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch)
+
+
+def test_96_heartbeat_message_and_scheduler_heartbeat_job():
+    import time
+
+    from trading_ai.shark.reporting import format_shark_heartbeat_message, send_shark_heartbeat_alert
+
+    msg = format_shark_heartbeat_message(
+        uptime_hours=2.5,
+        capital=100.0,
+        trades_today=3,
+        win_rate_pct=0.4,
+        server_label="local",
+        next_scan_seconds=300.0,
+    )
+    assert "SHARK ALIVE" in msg
+    assert "40.0%" in msg
+
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    seen = []
+
+    def hb():
+        seen.append(time.time())
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        heartbeat=hb,
+    )
+    assert sched is not None
+    ids = [j.id for j in sched.get_jobs()]
+    assert "heartbeat" in ids
+
+
 def test_91_scan_loop_calls_run_execution_chain_when_valid_opportunity(tmp_path, monkeypatch):
     """``run_scan_execution_cycle`` invokes ``run_execution_chain`` for tier-qualified markets."""
     from trading_ai.shark import scan_execute as se

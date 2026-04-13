@@ -40,6 +40,7 @@ def build_shark_scheduler(
     hot_window_active: Callable[[], bool],
     gap_active: Callable[[], bool],
     balance_sync: Optional[Callable[[], None]] = None,
+    heartbeat: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -68,4 +69,6 @@ def build_shark_scheduler(
     sched.add_job(health_check, IntervalTrigger(minutes=30), id="health", replace_existing=True)
     if balance_sync is not None:
         sched.add_job(balance_sync, IntervalTrigger(minutes=30), id="balance_sync", replace_existing=True)
+    if heartbeat is not None:
+        sched.add_job(heartbeat, IntervalTrigger(hours=6), id="heartbeat", replace_existing=True)
     return sched

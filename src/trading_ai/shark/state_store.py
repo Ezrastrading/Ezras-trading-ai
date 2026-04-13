@@ -123,6 +123,13 @@ def save_capital(rec: CapitalRecord) -> None:
     p = capital_path()
     p.write_text(json.dumps(asdict(rec), indent=2), encoding="utf-8")
     _maybe_halt_drawdown(rec)
+    try:
+        from trading_ai.shark import remote_state
+
+        if remote_state.supabase_configured():
+            remote_state.sync_all_state_to_supabase()
+    except Exception:
+        pass
 
 
 def _maybe_halt_drawdown(rec: CapitalRecord) -> None:
@@ -149,6 +156,13 @@ def load_positions() -> Dict[str, Any]:
 
 def save_positions(data: Dict[str, Any]) -> None:
     positions_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+    try:
+        from trading_ai.shark import remote_state
+
+        if remote_state.supabase_configured():
+            remote_state.sync_all_state_to_supabase()
+    except Exception:
+        pass
 
 
 def load_gaps() -> Dict[str, Any]:
