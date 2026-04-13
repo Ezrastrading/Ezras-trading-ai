@@ -44,17 +44,27 @@ class KalshiAuthError(Exception):
     pass
 
 
-def normalize_kalshi_key_material(raw: str) -> str:
-    """Turn .env single-line PEM (with ``\\n`` escapes) into a proper PEM string."""
-    s = (raw or "").strip()
-    if "\\n" in s:
-        s = s.replace("\\n", "\n")
-    return s
-
-
 def is_kalshi_pem_private_key(material: str) -> bool:
     m = material.strip()
     return "-----BEGIN" in m and "PRIVATE KEY-----" in m
+
+
+def normalize_kalshi_key_material(raw: str) -> str:
+    """Turn .env single-line PEM (with ``\\n`` escapes) into a proper PEM string."""
+    if not raw:
+        return raw
+    normalized = raw.replace("\\n", "\n")
+    normalized = normalized.strip()
+    if is_kalshi_pem_private_key(normalized):
+        try:
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+            load_pem_private_key(normalized.encode("utf-8"), password=None)
+            logger.info("Kalshi RSA key loaded OK")
+        except Exception as e:
+            logger.error("Kalshi PEM failed: %s", e)
+            logger.error("Key preview: %s", normalized[:80])
+    return normalized
 
 
 def _load_rsa_private_key(pem: str) -> Any:
