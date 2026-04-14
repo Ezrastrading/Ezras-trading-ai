@@ -318,7 +318,7 @@ def handle_resolution(
     hour_utc: Optional[int] = None,
 ) -> None:
     from trading_ai.shark.execution import hook_post_trade_resolution
-    from trading_ai.shark.reporting import format_loss_resolved, format_win_resolved, send_telegram_live
+    from trading_ai.shark.reporting import format_loss_resolved, format_win_resolved, send_telegram_trade_resolution
     from trading_ai.shark.state_store import apply_win_loss_to_capital
 
     rec_before = load_capital()
@@ -377,7 +377,7 @@ def handle_resolution(
     )
 
     if win:
-        send_telegram_live(
+        send_telegram_trade_resolution(
             format_win_resolved(
                 pnl=pnl,
                 ret_pct=pnl / max(rec_before.current_capital, 1e-9),
@@ -386,7 +386,7 @@ def handle_resolution(
             )
         )
     else:
-        send_telegram_live(
+        send_telegram_trade_resolution(
             format_loss_resolved(pnl=pnl, capital=rec_after.current_capital, cluster_status="ok")
         )
 

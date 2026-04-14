@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from trading_ai.shark.dotenv_load import load_shark_dotenv
 
 load_shark_dotenv()
 
-from trading_ai.shark import reporting as _reporting
+logger = logging.getLogger(__name__)
 
 
 def _iso() -> str:
@@ -166,10 +167,7 @@ def check_withdrawal_alert() -> bool:
         ]
     )
     msg = "\n".join(lines)
-    try:
-        _reporting.send_telegram(msg)
-    except Exception:
-        pass
+    logger.warning("%s", msg)
     return True
 
 

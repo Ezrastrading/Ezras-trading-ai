@@ -303,7 +303,6 @@ def run_execution_chain(
 
     if run_live:
         from trading_ai.shark import execution_live as el
-        from trading_ai.shark.reporting import send_telegram_live
 
         submit_start = time.time()
         try:
@@ -312,11 +311,6 @@ def run_execution_chain(
             logging.getLogger(__name__).exception("submit_order failed")
             _append(audit, "9_submit_order", status="FAILED", error=str(exc))
             append_shark_audit_record({"step": "submit_failed", "market_id": intent.market_id, "error": str(exc)})
-            if not getattr(intent, "is_mana", False) and (intent.outlet or "").strip().lower() == "kalshi":
-                try:
-                    send_telegram_live(f"❌ ORDER FAILED\n{intent.outlet} {intent.market_id}\n{exc!s}")
-                except Exception:
-                    pass
             return ChainResult(False, "submit_failed", audit, intent)
 
         if not getattr(order_res, "success", True):

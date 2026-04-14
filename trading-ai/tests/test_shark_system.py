@@ -899,11 +899,6 @@ def test_39_telegram_failure_does_not_block_trade_execution(monkeypatch):
 
     monkeypatch.setattr("trading_ai.shark.execution_live.submit_order", boom)
 
-    def boom_tg(msg):
-        raise RuntimeError("telegram down")
-
-    monkeypatch.setattr("trading_ai.shark.reporting.send_telegram_live", boom_tg)
-
     res = run_execution_chain(sc, capital=80.0, outlet="kalshi", estimated_execution_delay_seconds=1.0, execute_live=True)
     assert res.ok is False
     assert res.halted_at == "submit_failed"
@@ -975,7 +970,7 @@ def test_42_post_trade_hooks_fire_in_correct_order_after_resolution(tmp_path, mo
     with patch("trading_ai.shark.state_store.apply_win_loss_to_capital", side_effect=track_apply), patch(
         "trading_ai.shark.execution.hook_post_trade_resolution", side_effect=track_hook
     ), patch("trading_ai.shark.execution_live.append_shark_audit_record", side_effect=track_audit), patch(
-        "trading_ai.shark.reporting.send_telegram_live", side_effect=track_tg
+        "trading_ai.shark.reporting.send_telegram_trade_resolution", side_effect=track_tg
     ), patch("trading_ai.shark.execution_live.check_drawdown_after_resolution", side_effect=track_dd):
         handle_resolution(
             pos,
@@ -1086,7 +1081,7 @@ def test_92_health_server_returns_200_on_health(tmp_path, monkeypatch):
 
 
 def test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch):
-    """Stale last_scan triggers restart alert when scan age > 10 min."""
+    """Stale last_scan records offline gap; no Telegram on restart."""
     import time
 
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
@@ -1100,12 +1095,6 @@ def test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch):
     old = time.time() - 700
     last_scan_path().write_text(json.dumps({"last_unix": old}), encoding="utf-8")
 
-    sent = []
-
-    def cap(msg: str):
-        sent.append(msg)
-
-    monkeypatch.setattr("trading_ai.shark.reporting.send_telegram_live", cap)
     from trading_ai.shark import recovery as rec_mod
 
     monkeypatch.setattr(rec_mod, "reconcile_open_positions", lambda: {"checked": 0, "resolved": 0})
@@ -1116,10 +1105,10 @@ def test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch):
     st["kalshi_balance_usd"] = 10.50
     save_treasury(st)
 
-    rep = run_startup_recovery(boot_unix=time.time(), send_telegram=True)
-    assert rep.get("restart_alert_sent") is True
-    assert sent and "SHARK RESTARTED" in sent[0]
-    assert "$10.50" in sent[0]
+    rep = run_startup_recovery(boot_unix=time.time())
+    assert rep.get("restart_alert_sent") is False
+    assert rep.get("offline_human") is not None
+    assert rep.get("last_scan_age_seconds", 0) > 600
 
 
 def test_94_supabase_push_pull_roundtrip(monkeypatch):
@@ -1159,8 +1148,8 @@ def test_94_supabase_push_pull_roundtrip(monkeypatch):
     assert out == {"a": 1}
 
 
-def test_95_crash_recovery_sends_telegram_restart_alert(tmp_path, monkeypatch):
-    """Same as test_93 naming for deployment checklist — alert on stale scan."""
+def test_95_crash_recovery_no_telegram_restart_alert(tmp_path, monkeypatch):
+    """Same as test_93 — stale scan recorded without restart Telegram."""
     test_93_recovery_flags_stale_scan_gap(tmp_path, monkeypatch)
 
 
@@ -1533,14 +1522,16 @@ def test_scheduler_kalshi_full_and_ceo_jobs_registered():
     assert sum(1 for i in ids if str(i).startswith("ceo_")) == 4
 
 
-def test_execution_submit_fail_sends_telegram_only_for_kalshi():
+def test_execution_submit_fail_does_not_use_telegram():
     import inspect
 
     from trading_ai.shark import execution
 
     src = inspect.getsource(execution.run_execution_chain)
-    assert "send_telegram_live" in src
-    assert '.lower()=="kalshi"' in src.replace(" ", "")
+    fail_ret = src.index('return ChainResult(False, "submit_failed"')
+    window = src[max(0, fail_ret - 500) : fail_ret + 80]
+    assert "submit_order" in window
+    assert "send_telegram" not in window
 
 
 def test_74_kalshi_401_does_not_block_all_systems_go(tmp_path, monkeypatch):

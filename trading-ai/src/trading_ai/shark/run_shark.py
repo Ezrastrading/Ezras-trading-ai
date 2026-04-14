@@ -133,13 +133,6 @@ def main() -> None:
     ph = detect_phase(rec.current_capital)
     banner = startup_banner(capital=rec.current_capital, phase=ph.value, gaps_n=gaps_n)
     print(banner)
-    try:
-        from trading_ai.shark.reporting import send_telegram
-
-        if send_telegram(banner):
-            log.info("Telegram startup banner sent")
-    except Exception as exc:
-        log.warning("Telegram startup banner failed (non-blocking): %s", exc)
 
     try:
         from trading_ai.shark.scheduler import build_shark_scheduler
@@ -436,4 +429,25 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise
+    except SystemExit as e:
+        code = e.code
+        if code not in (0, None, False):
+            try:
+                from trading_ai.shark.reporting import send_telegram_fatal_once
+
+                send_telegram_fatal_once(f"🛑 SHARK EXIT\nnon-zero exit: {code!r}")
+            except Exception:
+                pass
+        raise
+    except Exception as exc:
+        try:
+            from trading_ai.shark.reporting import send_telegram_fatal_once
+
+            send_telegram_fatal_once(f"🛑 SHARK FATAL\n{type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+        raise

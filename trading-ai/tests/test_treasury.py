@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_77_balance_update_recalculates_net_worth():
 
 # ── Test 78 ─────────────────────────────────────────────────────────────────
 
-def test_78_withdrawal_alert_fires_at_threshold(monkeypatch):
+def test_78_withdrawal_alert_fires_at_threshold(monkeypatch, caplog):
     from trading_ai.shark.treasury import load_treasury, save_treasury, update_platform_balances
 
     # Lower the threshold so we can test without large numbers
@@ -60,21 +61,17 @@ def test_78_withdrawal_alert_fires_at_threshold(monkeypatch):
     state["withdrawal_alert_threshold"] = 100.0
     save_treasury(state)
 
-    alerts: list = []
-    monkeypatch.setattr(
-        "trading_ai.shark.reporting.send_telegram",
-        lambda msg: alerts.append(msg) or True,
-    )
+    caplog.set_level(logging.WARNING, logger="trading_ai.shark.treasury")
 
     # Below threshold — no alert
     update_platform_balances(50.0, 0.0, 0.0)
-    assert len(alerts) == 0
+    assert not any("WITHDRAWAL ALERT" in r.message for r in caplog.records)
 
-    # Above threshold — alert fires (Kalshi only; mana never counts)
+    # Above threshold — logged (Telegram disabled for treasury sync)
     update_platform_balances(150.0, 0.0, 0.0)
-    assert len(alerts) == 1
-    assert "WITHDRAWAL ALERT" in alerts[0]
-    assert "$150.00" in alerts[0]
+    joined = " ".join(r.message for r in caplog.records)
+    assert "WITHDRAWAL ALERT" in joined
+    assert "$150.00" in joined
 
 
 # ── Test 79 ─────────────────────────────────────────────────────────────────

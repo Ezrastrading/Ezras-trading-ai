@@ -117,11 +117,10 @@ def reconcile_open_positions() -> Dict[str, int]:
 def run_startup_recovery(
     *,
     boot_unix: float,
-    send_telegram: bool = True,
 ) -> Dict[str, Any]:
     """
     Run after state restore + integrity check.
-    Returns a JSON-serializable report for logs.
+    Returns a JSON-serializable report for logs. Restart / scan-gap notices are log-only (no Telegram).
     """
     from trading_ai.shark.reporting import trading_capital_usd_for_alerts
     from trading_ai.shark.state_store import load_capital, load_positions
@@ -148,36 +147,21 @@ def run_startup_recovery(
     if last is not None:
         age = now - last
         report["last_scan_age_seconds"] = age
-        if age > 600 and send_telegram:
+        if age > 600:
             mins = int(age // 60)
             report["offline_human"] = f"{mins}m"
-            try:
-                from trading_ai.shark.reporting import send_telegram_live
-
-                send_telegram_live(
-                    "⚠️ SHARK RESTARTED\n"
-                    f"Was offline (scan gap): ~{mins} min since last scan\n"
-                    f"Open positions: {n_open}\n"
-                    f"Capital: ${cap_display:.2f}\n"
-                    "Resuming hunting now."
-                )
-                report["restart_alert_sent"] = True
-            except Exception as exc:
-                logger.warning("restart telegram failed: %s", exc)
-    elif send_telegram and (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
-        try:
-            from trading_ai.shark.reporting import send_telegram_live
-
-            send_telegram_live(
-                "⚠️ SHARK RESTARTED\n"
-                "No prior scan timestamp (cold start / new deploy).\n"
-                f"Open positions: {n_open}\n"
-                f"Capital: ${cap_display:.2f}\n"
-                "Resuming hunting now."
+            logger.info(
+                "startup recovery: scan gap ~%s min (no Telegram); open=%s capital=$%.2f",
+                mins,
+                n_open,
+                cap_display,
             )
-            report["restart_alert_sent"] = True
-        except Exception as exc:
-            logger.warning("restart telegram failed: %s", exc)
+    elif (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
+        logger.info(
+            "startup recovery: no prior scan timestamp (cold start); open=%s capital=$%.2f",
+            n_open,
+            cap_display,
+        )
 
     report["boot_unix"] = boot_unix
     return report

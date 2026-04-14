@@ -38,6 +38,7 @@ def require_telegram_credentials() -> tuple[str, str]:
     return _req()
 
 _LAST_ALERTS: List[Dict[str, Any]] = []
+_FATAL_TELEGRAM_SENT = False
 
 
 def log_telegram_failure(message: str, err: str) -> None:
@@ -66,13 +67,30 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def send_telegram_live(message: str) -> bool:
-    """Alias for live path."""
+def send_telegram_fatal_once(message: str) -> bool:
+    """Send at most one Telegram per process for uncaught fatal errors (crash path)."""
+    global _FATAL_TELEGRAM_SENT
+    if _FATAL_TELEGRAM_SENT:
+        logger.debug("fatal telegram skipped (already sent this process)")
+        return False
+    _FATAL_TELEGRAM_SENT = True
     return send_telegram(message)
 
 
+def send_telegram_trade_resolution(message: str) -> bool:
+    """Win/loss resolution only — do not use for status or operational alerts."""
+    return send_telegram(message)
+
+
+def send_telegram_live(message: str) -> bool:
+    """Deprecated: operational alerts must not use Telegram; log only."""
+    logger.info("telegram_live suppressed: %s", (message or "")[:500])
+    return False
+
+
 def send_setup_ping() -> bool:
-    return send_telegram("🦈 Ezras setup test — system initializing")
+    logger.info("setup ping (Telegram disabled): Ezras initializing")
+    return False
 
 
 def send_margin_trade_alert(
@@ -93,7 +111,8 @@ def send_margin_trade_alert(
         f" Confidence: {confidence:.2f}\n"
         f" Max allowed: {cap_pct:.1f}%"
     )
-    return send_telegram(text)
+    logger.info("margin trade (Telegram disabled): %s", text.replace("\n", " | "))
+    return False
 
 
 def _remember(kind: str, payload: Dict[str, Any]) -> None:
@@ -410,13 +429,15 @@ def alert_gap_detected(
         recommended_allocation=recommended_allocation,
     )
     _remember("gap_detected", {"text": body})
-    return send_telegram_text(settings, body, dedupe_key=f"shark:gap:{gap_type}:{score:.4f}", event_label="shark_gap_detected")
+    logger.debug("gap_detected alert (Telegram disabled): %s", body[:300])
+    return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 
 def alert_gap_closure(*, reason: str, settings: Optional[Settings] = None) -> Dict[str, Any]:
     text = f"🔒 GAP CLOSURE\nReason: {reason}"
     _remember("gap_closure", {"text": text})
-    return send_telegram_text(settings, text, dedupe_key=f"shark:gap_close:{reason}", event_label="shark_gap_closure")
+    logger.debug("gap_closure alert (Telegram disabled): %s", reason)
+    return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 
 @dataclass
@@ -562,7 +583,7 @@ def format_shark_heartbeat_message(
 
 
 def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
-    """Scheduled heartbeat (e.g. every 6h) — Telegram summary."""
+    """Scheduled heartbeat — logs/metrics only; no Telegram."""
     from trading_ai.shark.state_store import load_capital
 
     uptime_h = (time.time() - started_at) / 3600.0
@@ -580,12 +601,8 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
         next_scan_seconds=300.0,
     )
     _remember("heartbeat", {"text": text})
-    return send_telegram_text(
-        None,
-        text,
-        dedupe_key=f"shark:heartbeat:{int(started_at // 21600)}",
-        event_label="shark_heartbeat",
-    )
+    logger.debug("heartbeat (Telegram disabled): %s", text[:400])
+    return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:

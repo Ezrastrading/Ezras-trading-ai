@@ -108,7 +108,7 @@ def _save_activation_snapshot(rows: List[AvenueRuntimeStatus]) -> None:
 
 
 def scan_and_alert_transitions() -> List[str]:
-    """Telegram when a venue moves PENDING→READY/ACTIVE (deduped via snapshot file)."""
+    """Log when a venue moves PENDING→READY/ACTIVE (deduped via snapshot file)."""
     rows = evaluate_avenues()
     prev = _load_activation_snapshot()
     alerts: List[str] = []
@@ -119,12 +119,7 @@ def scan_and_alert_transitions() -> List[str]:
         if r.state in ("ACTIVE", "READY") and old in (None, "", "PENDING", "ERROR"):
             msg = f"✅ [{r.label}] activated — {r.state} ({r.detail})"
             alerts.append(msg)
-            try:
-                from trading_ai.shark.reporting import send_telegram
-
-                send_telegram(msg)
-            except Exception as exc:
-                logger.debug("avenue_pulse telegram: %s", exc)
+            logger.info("avenue transition (Telegram disabled): %s", msg)
     _save_activation_snapshot(rows)
     return alerts
 
@@ -166,12 +161,7 @@ def on_avenue_became_active(avenue_name: str, previous_status: str) -> None:
         + "\n".join(f"  • {n}" for n in labels)
         + "\nCapital threshold reached!"
     )
-    try:
-        from trading_ai.shark.reporting import send_telegram
-
-        send_telegram(msg)
-    except Exception as exc:
-        logger.warning("avenue activator Telegram failed: %s", exc)
+    logger.info("strategy unlock (Telegram disabled): %s", msg.replace("\n", " | "))
     logger.info(
         "Avenue %s became active (was %s); unlocked strategies: %s",
         avenue_name,
