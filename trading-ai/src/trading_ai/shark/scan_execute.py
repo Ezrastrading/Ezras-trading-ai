@@ -59,6 +59,31 @@ def run_scan_execution_cycle(
         _post_scan_balance_sync()
         return 0, 0
 
+    n_m = len(markets)
+    yes_none = sum(1 for m in markets if getattr(m, "yes_price", None) is None)
+    yes_float = sum(1 for m in markets if getattr(m, "yes_price", None) is not None)
+    end_none = sum(1 for m in markets if getattr(m, "end_date_seconds", None) is None)
+    sample_sums = [round(float(m.yes_price) + float(m.no_price), 4) for m in markets[: min(n_m, 20)]]
+    logger.info(
+        "hunt_diag tag=%s markets=%s yes_price_is_none=%s yes_price_present=%s "
+        "end_date_seconds_is_none=%s yes_plus_no_sum_sample_first20=%s",
+        tag,
+        n_m,
+        yes_none,
+        yes_float,
+        end_none,
+        sample_sums,
+    )
+    for m in markets[:5]:
+        logger.info(
+            "Sample market: id=%s yes=%s no=%s end=%s vol=%s",
+            str(m.market_id)[:20],
+            m.yes_price,
+            m.no_price,
+            getattr(m, "end_date_seconds", None),
+            getattr(m, "volume_24h", None),
+        )
+
     logger.info("Processing %s markets through hunt engine (batched)", len(markets))
     cross = group_markets_by_event(markets)
     now = time.time()
@@ -70,12 +95,14 @@ def run_scan_execution_cycle(
     for i in range(0, len(markets), _BATCH_SIZE):
         batch = markets[i : i + _BATCH_SIZE]
         batch_rows: list[tuple] = []
-        for m in batch:
+        for j, m in enumerate(batch):
+            global_idx = i + j
             hunts = run_hunts_on_market(
                 m,
                 cross_context=cross,
                 now=now,
                 hunt_types_filter=hunt_types_filter,
+                hunt_diag_index=global_idx if global_idx < 10 else None,
             )
             if not hunts:
                 continue

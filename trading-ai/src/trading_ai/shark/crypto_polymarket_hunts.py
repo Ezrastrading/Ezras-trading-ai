@@ -10,6 +10,8 @@ import logging
 import math
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import List, Optional, Set
 
 import requests
@@ -17,6 +19,23 @@ import requests
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 
 logger = logging.getLogger(__name__)
+
+_diag_market_index: ContextVar[Optional[int]] = ContextVar("_diag_market_index", default=None)
+
+
+@contextmanager
+def hunt_diagnostic_context(market_index: Optional[int]):
+    """When ``market_index`` is 0..9, near-resolution / arb hunt checks log at INFO."""
+    token = _diag_market_index.set(market_index)
+    try:
+        yield
+    finally:
+        _diag_market_index.reset(token)
+
+
+def _hunt_diag_use_info() -> bool:
+    i = _diag_market_index.get()
+    return i is not None and 0 <= int(i) < 10
 
 _BTC_CACHE: tuple[float, float] = (0.0, 0.0)  # (price, ts)
 _BTC_CACHE_TTL = 10.0
@@ -45,38 +64,12 @@ def _end_seconds(m: MarketSnapshot) -> Optional[float]:
 
 
 def _is_short_resolution_market(snapshot: MarketSnapshot) -> bool:
-    """True when the market resolves within ~60 minutes (any category / outlet)."""
-    now = time.time()
-    end = _end_seconds(snapshot)
-    if end is not None:
-        minutes_left = (end - now) / 60.0
-        return 0 <= minutes_left <= 60
-    ttr = float(snapshot.time_to_resolution_seconds or 0.0)
-    if ttr <= 0:
+    """True when ``end_date_seconds`` is set and resolution is within 60 minutes (any category)."""
+    end = getattr(snapshot, "end_date_seconds", None)
+    if end is None:
         return False
-    return (ttr / 60.0) <= 60.0
-
-
-def _is_crypto_short_market(snapshot: MarketSnapshot) -> bool:
-    """Polymarket BTC/ETH strike markets resolving within ~30 minutes (crypto scalp only)."""
-    if (snapshot.outlet or "").lower() != "polymarket":
-        return False
-    q = _market_question(snapshot).lower()
-    if not q:
-        return False
-    crypto = (
-        "bitcoin" in q
-        or "btc" in q
-        or "ethereum" in q
-        or bool(re.search(r"\beth\b", q))
-    )
-    strike_q = "above" in q or "below" in q
-    end = _end_seconds(snapshot)
-    now = time.time()
-    if end is not None:
-        return crypto and strike_q and (end - now) < 1800
-    ttr = snapshot.time_to_resolution_seconds
-    return crypto and strike_q and ttr < 1800
+    minutes_left = (float(end) - time.time()) / 60.0
+    return 0 <= minutes_left <= 60
 
 
 def get_btc_price_usd() -> Optional[float]:
@@ -144,7 +137,9 @@ def calc_crypto_prob(
 
 
 def hunt_crypto_scalp(m: MarketSnapshot) -> Optional[HuntSignal]:
-    if not _is_crypto_short_market(m):
+    if (m.outlet or "").lower() != "polymarket":
+        return None
+    if not _is_short_resolution_market(m):
         return None
     btc = get_btc_price_usd()
     if btc is None:
@@ -185,10 +180,19 @@ def hunt_crypto_scalp(m: MarketSnapshot) -> Optional[HuntSignal]:
 
 
 def hunt_pure_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
+    if (m.outlet or "").lower() not in ("polymarket", "kalshi"):
+        return None
     yes = m.yes_price
     no = m.no_price
+    _log = logger.info if _hunt_diag_use_info() else logger.debug
+    _log(
+        "arb check: yes=%s no=%s total=%.3f",
+        yes,
+        no,
+        float(yes) + float(no),
+    )
     total_cost = yes + no
-    if total_cost > 0.99:
+    if total_cost >= 0.99:
         return None
     edge = 1.0 - total_cost
     return HuntSignal(
@@ -206,16 +210,26 @@ def hunt_pure_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
 
 
 def hunt_near_resolution(m: MarketSnapshot) -> Optional[HuntSignal]:
-    if not _is_short_resolution_market(m):
+    if (m.outlet or "").lower() not in ("polymarket", "kalshi"):
         return None
     yes = m.yes_price
     no = m.no_price
+    _log = logger.info if _hunt_diag_use_info() else logger.debug
+    _log(
+        "near_res check: yes=%s no=%s end=%s market=%s",
+        yes,
+        no,
+        getattr(m, "end_date_seconds", None),
+        str(m.market_id)[:20],
+    )
     now = time.time()
     end = _end_seconds(m)
     if end is None:
         minutes_left = m.time_to_resolution_seconds / 60.0
     else:
         minutes_left = (end - now) / 60.0
+    if minutes_left > 30 or minutes_left < 0:
+        return None
     if yes >= 0.93:
         edge = 1.0 - yes
         return HuntSignal(
@@ -317,9 +331,9 @@ def run_filtered_polymarket_hunts(
     *,
     now: Optional[float] = None,
 ) -> List[HuntSignal]:
-    """Run only selected :class:`HuntType` runners (fast scans). Polymarket + Kalshi where applicable."""
+    """Run only selected :class:`HuntType` runners (fast scans). Polymarket + Kalshi + Manifold (hunts no-op when inapplicable)."""
     o = (m.outlet or "").lower()
-    if o not in ("polymarket", "kalshi"):
+    if o not in ("polymarket", "kalshi", "manifold"):
         return []
     mapping = {
         HuntType.CRYPTO_SCALP: hunt_crypto_scalp,
