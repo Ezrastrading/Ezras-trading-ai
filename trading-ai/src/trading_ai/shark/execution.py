@@ -358,6 +358,37 @@ def run_execution_chain(
         )
         if tid:
             intent.meta["trade_id"] = tid
+            try:
+                from datetime import datetime, timezone
+
+                from trading_ai.automation.telegram_trade_events import maybe_notify_trade_placed
+
+                m = scored.market if scored is not None else None
+                if m is not None:
+                    q = str(
+                        getattr(m, "question_text", None) or m.resolution_criteria or intent.market_id
+                    )[:2000]
+                    mcat = str(getattr(m, "market_category", None) or "").strip() or None
+                else:
+                    q = str(intent.market_id)[:2000]
+                    mcat = None
+                side = str(intent.side or "yes").lower()
+                pos_lbl = "YES" if side == "yes" else "NO"
+                maybe_notify_trade_placed(
+                    None,
+                    {
+                        "trade_id": tid,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "market": q,
+                        "ticker": str(intent.market_id),
+                        "position": pos_lbl,
+                        "entry_price": float(conf.actual_fill_price),
+                        "capital_allocated": float(intent.notional_usd),
+                        "market_category": mcat,
+                    },
+                )
+            except Exception:
+                logging.getLogger(__name__).warning("post_trade placed notify failed", exc_info=True)
 
         if not getattr(intent, "is_mana", False) and mb_pre > 1e-9:
             record_margin_position_open(mb_pre)

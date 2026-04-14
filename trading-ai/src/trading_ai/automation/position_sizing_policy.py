@@ -802,23 +802,12 @@ def record_position_sizing_decision(
 
 
 def maybe_notify_trade_blocked_by_sizing(exc: TradePlacementBlocked) -> None:
-    """Best-effort Telegram for blocked placement; never raises."""
+    """Log blocked placement; Telegram disabled for operational noise."""
     try:
         from trading_ai.automation.telegram_trade_events import format_trade_sizing_blocked_alert
-        from trading_ai.automation.telegram_ops import send_telegram_with_idempotency
-        from trading_ai.config import get_settings
 
-        settings = get_settings()
         text = format_trade_sizing_blocked_alert(exc.trade_snapshot, exc.decision)
-        tid = str(exc.trade_snapshot.get("trade_id") or "unknown")
-        req = exc.decision.get("requested_size")
-        dk = f"blocked:{tid}:{req}"
-        send_telegram_with_idempotency(
-            settings,
-            text,
-            dedupe_key=dk,
-            event_label="trade_blocked_sizing",
-        )
+        logger.info("trade blocked by sizing (Telegram disabled): %s", (text or "")[:800])
     except Exception as e:
         logger.warning("maybe_notify_trade_blocked_by_sizing failed: %s", e)
 

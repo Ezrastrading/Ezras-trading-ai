@@ -961,7 +961,7 @@ def test_42_post_trade_hooks_fire_in_correct_order_after_resolution(tmp_path, mo
     def track_audit(rec):
         order_calls.append("audit")
 
-    def track_tg(msg):
+    def track_tg(_settings, _trade):
         order_calls.append("telegram")
 
     def track_dd():
@@ -970,7 +970,7 @@ def test_42_post_trade_hooks_fire_in_correct_order_after_resolution(tmp_path, mo
     with patch("trading_ai.shark.state_store.apply_win_loss_to_capital", side_effect=track_apply), patch(
         "trading_ai.shark.execution.hook_post_trade_resolution", side_effect=track_hook
     ), patch("trading_ai.shark.execution_live.append_shark_audit_record", side_effect=track_audit), patch(
-        "trading_ai.shark.reporting.send_telegram_trade_resolution", side_effect=track_tg
+        "trading_ai.automation.telegram_trade_events.maybe_notify_trade_closed", side_effect=track_tg
     ), patch("trading_ai.shark.execution_live.check_drawdown_after_resolution", side_effect=track_dd):
         handle_resolution(
             pos,

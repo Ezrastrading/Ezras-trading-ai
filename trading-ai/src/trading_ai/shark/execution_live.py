@@ -21,7 +21,7 @@ from trading_ai.shark.models import (
     OrderResult,
 )
 from trading_ai.shark.risk_context import check_drawdown_after_resolution
-from trading_ai.shark.state_store import load_capital, load_positions, save_positions
+from trading_ai.shark.state_store import load_positions, save_positions
 
 logger = logging.getLogger(__name__)
 
@@ -317,13 +317,13 @@ def handle_resolution(
     market_category: str,
     hour_utc: Optional[int] = None,
 ) -> None:
+    from datetime import datetime, timezone
+
+    from trading_ai.automation.telegram_trade_events import maybe_notify_trade_closed
     from trading_ai.shark.execution import hook_post_trade_resolution
-    from trading_ai.shark.reporting import format_loss_resolved, format_win_resolved, send_telegram_trade_resolution
     from trading_ai.shark.state_store import apply_win_loss_to_capital
 
-    rec_before = load_capital()
     apply_win_loss_to_capital(pnl)
-    rec_after = load_capital()
 
     data = load_positions()
     ops = [p for p in (data.get("open_positions") or []) if p.get("position_id") != position.position_id]
@@ -376,19 +376,29 @@ def handle_resolution(
         }
     )
 
-    if win:
-        send_telegram_trade_resolution(
-            format_win_resolved(
-                pnl=pnl,
-                ret_pct=pnl / max(rec_before.current_capital, 1e-9),
-                capital=rec_after.current_capital,
-                day_pnl=pnl,
-            )
+    jid = (position.journal_trade_id or "").strip() or str(trade_id).strip()
+    notional = float(position.notional_usd or 0.0)
+    roi = (pnl / notional * 100.0) if notional > 1e-9 else 0.0
+    ps = str(position.side or "yes").lower()
+    pos_lbl = "YES" if ps == "yes" else "NO"
+    try:
+        maybe_notify_trade_closed(
+            None,
+            {
+                "trade_id": jid,
+                "result": "win" if win else "loss",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "market": f"{position.outlet} {position.market_id}",
+                "ticker": position.market_id,
+                "position": pos_lbl,
+                "gross_pnl_dollars": pnl,
+                "net_pnl_dollars": pnl,
+                "capital_allocated": notional,
+                "roi_percent": roi,
+            },
         )
-    else:
-        send_telegram_trade_resolution(
-            format_loss_resolved(pnl=pnl, capital=rec_after.current_capital, cluster_status="ok")
-        )
+    except Exception:
+        logger.exception("post_trade closed notify failed")
 
     check_drawdown_after_resolution()
 

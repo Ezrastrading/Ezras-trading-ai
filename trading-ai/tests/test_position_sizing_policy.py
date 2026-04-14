@@ -180,19 +180,11 @@ def test_enrich_preview_does_not_mutate_capital(monkeypatch, tmp_path: Path) -> 
     assert t["position_sizing_meta"].get("requested_size") == 200.0
 
 
-def test_blocked_alert_uses_trade_blocked_formatter(monkeypatch, tmp_path: Path) -> None:
+def test_blocked_alert_uses_trade_blocked_formatter(monkeypatch, tmp_path: Path, caplog) -> None:
+    import logging
+
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
-    sent = {}
-
-    def fake_send(settings, text, *, dedupe_key, event_label):
-        sent["text"] = text
-        sent["event_label"] = event_label
-        return {"sent": True, "skipped_duplicate": False, "ok": True}
-
-    monkeypatch.setattr(
-        "trading_ai.automation.telegram_ops.send_telegram_with_idempotency",
-        fake_send,
-    )
+    caplog.set_level(logging.INFO, logger="trading_ai.automation.position_sizing_policy")
     exc = TradePlacementBlocked(
         "x",
         decision={
@@ -204,10 +196,10 @@ def test_blocked_alert_uses_trade_blocked_formatter(monkeypatch, tmp_path: Path)
         trade_snapshot={"trade_id": "t1", "market": "M", "position": "YES"},
     )
     maybe_notify_trade_blocked_by_sizing(exc)
-    assert "TRADE BLOCKED" in sent["text"]
-    assert "TRADE OPEN" not in sent["text"]
-    assert "Block Reason:" in sent["text"]
-    assert sent["event_label"] == "trade_blocked_sizing"
+    joined = " ".join(r.message for r in caplog.records)
+    assert "TRADE BLOCKED" in joined
+    assert "TRADE OPEN" not in joined
+    assert "Block Reason:" in joined
 
 
 def test_compute_preview_invalid_size() -> None:

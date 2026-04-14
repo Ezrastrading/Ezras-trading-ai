@@ -220,7 +220,8 @@ def alert_hv_trade_fired(
         progress_pct=prog,
     )
     _remember("trade_fired", {"text": text})
-    return send_telegram_text(settings, text, dedupe_key=f"shark:hv:{intent.market_id}:{stake:.0f}", event_label="shark_hv_trade")
+    logger.debug("hv trade intent (Telegram disabled): %s", text[:400])
+    return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 
 def format_trade_fired(
@@ -317,15 +318,12 @@ def send_loss_postmortem_alert(postmortem: Dict[str, Any], analysis: Dict[str, A
         "System is adapting. 🦈"
     )
     _remember("journal_loss_postmortem" if is_journal else "mana_loss_postmortem", {"text": body})
-    return bool(send_telegram(body))
+    logger.info("loss postmortem (Telegram disabled): %s", body[:800])
+    return True
 
 
 def send_excel_report(file_path: Path, date_str: str, stats: Dict[str, Any]) -> bool:
-    """Send daily Excel workbook via Telegram ``sendDocument``."""
-    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
-    if not token or not chat_id:
-        return False
+    """Log daily Excel workbook path; Telegram ``sendDocument`` disabled."""
     p = Path(file_path)
     if not p.is_file():
         logger.warning("excel report file missing: %s", p)
@@ -333,35 +331,16 @@ def send_excel_report(file_path: Path, date_str: str, stats: Dict[str, Any]) -> 
     wr = float(stats.get("win_rate", 0) or 0)
     tp = float(stats.get("total_pnl", 0) or 0)
     nt = int(stats.get("total_trades", 0) or 0)
-    caption = (
-        f"📊 Daily Trading Report — {date_str}\n\n"
-        f"Trades: {nt}\n"
-        f"Win Rate: {wr:.1%}\n"
-        f"Total P/L: ${tp:+.2f}\n\n"
-        "Full breakdown in Excel ↑"
+    logger.info(
+        "daily excel report (Telegram disabled): path=%s date=%s trades=%s win_rate=%.1f%% pnl=%+.2f",
+        p,
+        date_str,
+        nt,
+        wr * 100.0,
+        tp,
     )
-    try:
-        with p.open("rb") as f:
-            resp = _requests.post(
-                f"https://api.telegram.org/bot{token}/sendDocument",
-                data={"chat_id": chat_id, "caption": caption},
-                files={
-                    "document": (
-                        p.name,
-                        f,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                },
-                timeout=120,
-            )
-        ok = resp.status_code == 200
-        if not ok:
-            logger.warning("sendDocument failed: %s %s", resp.status_code, resp.text[:300])
-        _remember("daily_excel_report", {"date": date_str, "path": str(p), "ok": ok})
-        return ok
-    except Exception as exc:
-        logger.warning("send_excel_report failed: %s", exc)
-        return False
+    _remember("daily_excel_report", {"date": date_str, "path": str(p), "ok": True})
+    return True
 
 
 def format_gap_closed(*, duration: str, total_captured: float) -> str:
@@ -407,7 +386,8 @@ def alert_trade_fired(
         claude_confidence=claude_confidence,
     )
     _remember("trade_fired", {"text": text})
-    return send_telegram_text(settings, text, dedupe_key=f"shark:fire:{hash(text)%10**9}", event_label="shark_trade_fired")
+    logger.debug("trade intent (Telegram disabled): %s", text[:400])
+    return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 
 def alert_gap_detected(

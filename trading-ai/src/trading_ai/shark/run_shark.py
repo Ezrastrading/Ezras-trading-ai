@@ -133,6 +133,7 @@ def main() -> None:
     ph = detect_phase(rec.current_capital)
     banner = startup_banner(capital=rec.current_capital, phase=ph.value, gaps_n=gaps_n)
     print(banner)
+    log.info("%s", banner)
 
     try:
         from trading_ai.shark.scheduler import build_shark_scheduler
@@ -384,6 +385,10 @@ def main() -> None:
         except Exception as exc:
             log.warning("daily excel report failed: %s", exc)
 
+    from trading_ai.shark.avenue_activator import scan_and_alert_transitions
+
+    def avenue_pulse() -> None:
+        scan_and_alert_transitions()
 
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
