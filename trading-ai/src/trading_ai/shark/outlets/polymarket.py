@@ -8,6 +8,7 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -60,50 +61,154 @@ def get_polymarket_headers() -> Dict[str, str]:
     }
 
 
-def fetch_polymarket_balance() -> Optional[float]:
-    """
-    GET /balance on CLOB with auth headers.
-    Returns USD balance as float, or None if unconfigured / request fails.
-    """
-    base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
-    if not (os.getenv("POLY_API_KEY") or "").strip() or not (os.getenv("POLY_API_SECRET") or "").strip():
-        logger.debug("Polymarket balance: no API key/secret — skip")
-        return None
-    override = (os.environ.get("POLY_CLOB_BALANCE_URL") or "").strip()
-    if override:
-        url = override if override.startswith("http") else f"{base}/{override.lstrip('/')}"
-    else:
-        url = f"{base}/balance"
+def _http_get_balance_json(url: str, headers: Optional[Dict[str, str]]) -> Optional[Any]:
     try:
-        hdrs = dict(get_polymarket_headers())
-        hdrs["User-Agent"] = "EzrasTreasury/1.0"
+        hdrs: Dict[str, str] = {"User-Agent": "EzrasTreasury/1.0"}
+        if headers:
+            hdrs.update(headers)
         req = urllib.request.Request(url, headers=hdrs, method="GET")
         with urllib.request.urlopen(req, timeout=20) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            if not raw.strip():
+                return None
+            return json.loads(raw)
     except urllib.error.HTTPError as e:
-        logger.warning("Polymarket balance HTTP %s: %s", e.code, e.reason)
+        logger.debug("Polymarket balance %s → HTTP %s", url, e.code)
         return None
     except Exception as exc:
-        logger.warning("Polymarket balance fetch error: %s", exc)
+        logger.debug("Polymarket balance %s → %s", url, exc)
         return None
 
-    bal: float
-    if isinstance(body, (int, float)):
-        bal = float(body)
-    elif isinstance(body, dict):
-        bal = float(
-            body.get("balance")
-            or body.get("usd")
-            or body.get("available")
-            or body.get("available_balance")
-            or body.get("collateral")
-            or 0.0
-        )
+
+def _coerce_usdc_balance_field(raw: Any) -> Optional[float]:
+    """
+    CLOB /balance-allowance returns USDC in micro-units (1e6 per 1 USDC).
+    Integer-like values >= 1000 are treated as micro-units; smaller values as USD.
+    """
+    try:
+        if isinstance(raw, str):
+            val = float(raw.replace(",", "").strip())
+        else:
+            val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val >= 1000 and abs(val - round(val)) < 1e-9:
+        return round(val / 1e6, 2)
+    return round(val, 2)
+
+
+def _extract_balance_from_json(obj: Any) -> Optional[float]:
+    """Pull a USD-like balance from JSON (flat dict, nested, or list)."""
+    priority_keys = (
+        "portfolio_value",
+        "balance",
+        "usd",
+        "amount",
+        "available",
+        "available_balance",
+        "collateral",
+        "value",
+        "totalValue",
+        "total_value",
+        "cash",
+        "equity",
+    )
+    if isinstance(obj, (int, float)):
+        return round(float(obj), 2)
+    if isinstance(obj, dict):
+        if "balance" in obj and obj["balance"] is not None:
+            coerced = _coerce_usdc_balance_field(obj["balance"])
+            if coerced is not None:
+                return coerced
+        for k in priority_keys:
+            if k in obj and obj[k] is not None:
+                try:
+                    return round(float(obj[k]), 2)
+                except (TypeError, ValueError):
+                    continue
+        for k, v in obj.items():
+            lk = str(k).lower()
+            if any(x in lk for x in ("balance", "usd", "portfolio", "amount", "value", "cash", "equity")):
+                try:
+                    if isinstance(v, (int, float)):
+                        return round(float(v), 2)
+                    if isinstance(v, str) and v.strip():
+                        return round(float(v.replace(",", "")), 2)
+                except (TypeError, ValueError):
+                    continue
+        for v in obj.values():
+            nested = _extract_balance_from_json(v)
+            if nested is not None:
+                return nested
+    if isinstance(obj, list):
+        for item in obj:
+            nested = _extract_balance_from_json(item)
+            if nested is not None:
+                return nested
+    return None
+
+
+def fetch_polymarket_balance() -> Optional[float]:
+    """
+    Try CLOB balance URLs (official /balance-allowance, then legacy paths), with L2 auth when set,
+    then the same URLs without auth, then data-api portfolio (wallet-only, no auth).
+    """
+    base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
+    fixed_clob = "https://clob.polymarket.com"
+    wallet = (os.environ.get("POLY_WALLET_ADDRESS") or "").strip()
+    has_pm_auth = bool((os.getenv("POLY_API_KEY") or "").strip() and (os.getenv("POLY_API_SECRET") or "").strip())
+
+    ba_params: Dict[str, str] = {"asset_type": "COLLATERAL"}
+    sig = (os.environ.get("POLY_SIGNATURE_TYPE") or "").strip()
+    if sig.isdigit():
+        ba_params["signature_type"] = sig
+    balance_allowance_q = urllib.parse.urlencode(ba_params)
+
+    override = (os.environ.get("POLY_CLOB_BALANCE_URL") or "").strip()
+    clob_urls: List[str] = []
+    if override:
+        clob_urls.append(override if override.startswith("http") else f"{base}/{override.lstrip('/')}")
+    clob_urls.extend(
+        [
+            f"{fixed_clob}/balance-allowance?{balance_allowance_q}",
+            f"{fixed_clob}/balance",
+            f"{fixed_clob}/accounts/balance",
+            f"{fixed_clob}/v1/balance",
+        ]
+    )
+
+    auth_headers = dict(get_polymarket_headers()) if has_pm_auth else None
+
+    for url in clob_urls:
+        if has_pm_auth:
+            body = _http_get_balance_json(url, auth_headers)
+            if body is not None:
+                bal = _extract_balance_from_json(body)
+                if bal is not None:
+                    logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, url)
+                    return bal
+        body = _http_get_balance_json(url, None)
+        if body is not None:
+            bal = _extract_balance_from_json(body)
+            if bal is not None:
+                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, url)
+                return bal
+
+    if wallet:
+        q = urllib.parse.urlencode({"user": wallet})
+        data_url = f"https://data-api.polymarket.com/portfolio?{q}"
+        body = _http_get_balance_json(data_url, None)
+        if body is not None:
+            bal = _extract_balance_from_json(body)
+            if bal is not None:
+                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, data_url)
+                return bal
+
+    if not has_pm_auth and not wallet:
+        logger.debug("Polymarket balance: set POLY_API_KEY+POLY_API_SECRET and/or POLY_WALLET_ADDRESS")
     else:
-        bal = 0.0
-    bal = round(bal, 2)
-    logger.info("Polymarket balance: $%.2f", bal)
-    return bal
+        logger.warning("Polymarket balance: no endpoint returned a parseable USD balance")
+    return None
 
 
 def submit_polymarket_order(intent: "ExecutionIntent") -> "OrderResult":
