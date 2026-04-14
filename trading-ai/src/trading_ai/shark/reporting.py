@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests as _requests
@@ -187,9 +188,11 @@ def format_loss_resolved(*, pnl: float, capital: float, cluster_status: str) -> 
 
 
 def send_loss_postmortem_alert(postmortem: Dict[str, Any], analysis: Dict[str, Any]) -> bool:
-    """Telegram summary after mana loss post-mortem + Claude adaptation (HTML-safe)."""
+    """Telegram summary after loss post-mortem + Claude adaptation (HTML-safe)."""
     import html
 
+    src = str(postmortem.get("source") or "")
+    is_journal = src == "trade_journal_all_venues"
     mana = float(postmortem.get("total_mana_lost", 0) or 0)
     n = int(postmortem.get("total_losses", 0) or 0)
     root = html.escape(str(analysis.get("root_cause", ""))[:500])
@@ -213,9 +216,13 @@ def send_loss_postmortem_alert(postmortem: Dict[str, Any], analysis: Dict[str, A
     if not edge_lines:
         edge_lines = "- (none)"
     hunts_txt = ", ".join(html.escape(str(h)) for h in hunts) if hunts else "(none)"
+    header = "📉 FULL JOURNAL LOSS ANALYSIS" if is_journal else "📉 MANA LOSS ANALYSIS"
+    lost_line = (
+        f" Lost (abs P/L, mixed notionals): ${mana:.2f}\n" if is_journal else f" Lost: {mana:.0f} mana\n"
+    )
     body = (
-        "📉 MANA LOSS ANALYSIS\n"
-        f" Lost: {mana:.0f} mana\n"
+        f"{header}\n"
+        f"{lost_line}"
         f" Trades: {n} losing trades\n\n"
         "🤖 Claude Analysis:\n"
         f"Root cause: {root}\n\n"
@@ -228,8 +235,52 @@ def send_loss_postmortem_alert(postmortem: Dict[str, Any], analysis: Dict[str, A
         f"- Edge adjustments:\n{edge_lines}\n\n"
         "System is adapting. 🦈"
     )
-    _remember("mana_loss_postmortem", {"text": body})
+    _remember("journal_loss_postmortem" if is_journal else "mana_loss_postmortem", {"text": body})
     return bool(send_telegram(body))
+
+
+def send_excel_report(file_path: Path, date_str: str, stats: Dict[str, Any]) -> bool:
+    """Send daily Excel workbook via Telegram ``sendDocument``."""
+    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    if not token or not chat_id:
+        return False
+    p = Path(file_path)
+    if not p.is_file():
+        logger.warning("excel report file missing: %s", p)
+        return False
+    wr = float(stats.get("win_rate", 0) or 0)
+    tp = float(stats.get("total_pnl", 0) or 0)
+    nt = int(stats.get("total_trades", 0) or 0)
+    caption = (
+        f"📊 Daily Trading Report — {date_str}\n\n"
+        f"Trades: {nt}\n"
+        f"Win Rate: {wr:.1%}\n"
+        f"Total P/L: ${tp:+.2f}\n\n"
+        "Full breakdown in Excel ↑"
+    )
+    try:
+        with p.open("rb") as f:
+            resp = _requests.post(
+                f"https://api.telegram.org/bot{token}/sendDocument",
+                data={"chat_id": chat_id, "caption": caption},
+                files={
+                    "document": (
+                        p.name,
+                        f,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                timeout=120,
+            )
+        ok = resp.status_code == 200
+        if not ok:
+            logger.warning("sendDocument failed: %s %s", resp.status_code, resp.text[:300])
+        _remember("daily_excel_report", {"date": date_str, "path": str(p), "ok": ok})
+        return ok
+    except Exception as exc:
+        logger.warning("send_excel_report failed: %s", exc)
+        return False
 
 
 def format_gap_closed(*, duration: str, total_captured: float) -> str:

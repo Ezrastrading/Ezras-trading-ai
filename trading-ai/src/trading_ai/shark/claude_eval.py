@@ -216,6 +216,78 @@ Respond in JSON only:
         return _default_loss_analysis()
 
 
+def claude_analyze_journal_losses(postmortem: Dict[str, Any]) -> Dict[str, Any]:
+    """Same JSON contract as ``claude_analyze_losses``, prompt scoped to all venues (trade journal)."""
+    try:
+        import anthropic
+    except ImportError:
+        logger.warning("anthropic not installed; journal loss analysis skipped")
+        return _default_loss_analysis()
+    api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        return _default_loss_analysis()
+    model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    client = anthropic.Anthropic(api_key=api_key)
+    raw_losses = postmortem.get("losses") or []
+    raw_json = json.dumps(raw_losses, indent=2, default=str)[:3500]
+    prompt = f"""You are analyzing LOSING trades across ALL venues (Kalshi, Polymarket, Manifold, sports, etc.)
+for the Ezras Shark system. Data comes from the unified trade journal (USD and mana notionals).
+
+LOSS SUMMARY:
+Total magnitude of losses (mixed units): {postmortem.get("total_mana_lost", 0)}
+Losing hunt types: {postmortem.get("losing_hunt_types", {})}
+Losing sides: {postmortem.get("losing_sides", {})}
+Avg edge on losing trades: {postmortem.get("avg_edge_on_losses", 0.0)}
+
+Raw loss rows:
+{raw_json}
+
+Analyze cross-venue patterns, sizing, hunt types, and categories.
+Respond in JSON only (same schema as mana loss review):
+{{
+  "root_cause": "one sentence",
+  "patterns": ["pattern1"],
+  "parameter_changes": {{
+    "hunt_type_to_disable": [],
+    "min_edge_adjustment": {{}},
+    "markets_to_avoid": [],
+    "markets_to_focus": []
+  }},
+  "recovery_strategy": "one sentence",
+  "confidence_in_analysis": 0.0
+}}"""
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r"\{[\s\S]*\}", text)
+            if not m:
+                logger.warning("Claude journal loss analysis not JSON: %s", text[:200])
+                return _default_loss_analysis()
+            result = json.loads(m.group())
+        if not isinstance(result, dict):
+            return _default_loss_analysis()
+        result.setdefault("parameter_changes", {})
+        if not isinstance(result["parameter_changes"], dict):
+            result["parameter_changes"] = {}
+        pc = result["parameter_changes"]
+        pc.setdefault("hunt_type_to_disable", [])
+        pc.setdefault("min_edge_adjustment", {})
+        pc.setdefault("markets_to_avoid", [])
+        pc.setdefault("markets_to_focus", [])
+        return result
+    except Exception as exc:
+        logger.warning("Claude journal loss analysis failed: %s", exc)
+        return _default_loss_analysis()
+
+
 def apply_claude_evaluator_gate(
     scored: "ScoredOpportunity",
     intent: "ExecutionIntent",

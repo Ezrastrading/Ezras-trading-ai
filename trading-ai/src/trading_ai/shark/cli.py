@@ -179,7 +179,16 @@ def cmd_sports(args: argparse.Namespace) -> int:
         amount = float(getattr(args, "amount", 0) or 0)
         pnl_arg = getattr(args, "pnl", None)
         pnl = float(pnl_arg) if pnl_arg is not None else None
-        log_sports_result(event_id=event, outcome=outcome, amount=amount, pnl=pnl)
+        platform = getattr(args, "platform", None) or "fanduel"
+        odds = float(getattr(args, "american_odds", -110.0))
+        log_sports_result(
+            event_id=event,
+            outcome=outcome,
+            amount=amount,
+            pnl=pnl,
+            platform=str(platform),
+            american_odds=odds,
+        )
         print(json.dumps({"ok": True, "event": event, "outcome": outcome, "amount": amount}))
         return 0
     # default: picks
@@ -292,6 +301,8 @@ def main_shark(argv: List[str] | None = None) -> int:
     sports_p.add_argument("--outcome", choices=["win", "loss"], help="win or loss")
     sports_p.add_argument("--amount", type=float, help="Amount wagered")
     sports_p.add_argument("--pnl", type=float, help="Actual P&L (optional)")
+    sports_p.add_argument("--platform", default="fanduel", help="fanduel | draftkings")
+    sports_p.add_argument("--american-odds", type=float, default=-110.0, help="American odds (default -110)")
 
     args = parser.parse_args(argv)
     return {

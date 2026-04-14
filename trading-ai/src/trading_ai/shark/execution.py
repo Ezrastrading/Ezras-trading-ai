@@ -278,6 +278,7 @@ def run_execution_chain(
         from trading_ai.shark import execution_live as el
         from trading_ai.shark.reporting import send_telegram_live
 
+        submit_start = time.time()
         try:
             order_res = el.submit_order(intent)
         except Exception as exc:
@@ -323,6 +324,20 @@ def run_execution_chain(
         if not conf.confirmed:
             return ChainResult(False, "unfilled", audit, intent)
 
+        exec_ms = int((time.time() - submit_start) * 1000)
+        from trading_ai.shark.trade_journal import log_trade_opened
+
+        tid = log_trade_opened(
+            intent,
+            order_res,
+            conf=conf,
+            scored=scored,
+            execution_time_ms=max(0, exec_ms),
+            dry_run=False,
+        )
+        if tid:
+            intent.meta["trade_id"] = tid
+
         if not getattr(intent, "is_mana", False) and mb_pre > 1e-9:
             record_margin_position_open(mb_pre)
             try:
@@ -343,6 +358,25 @@ def run_execution_chain(
         _append(audit, "11_monitor_resolution", position_id=pos.position_id, poll_seconds=60)
         _append(audit, "12_log_outcome", status="open_position_tracked")
     else:
+        from trading_ai.shark.models import ConfirmationResult
+        from trading_ai.shark.trade_journal import log_trade_opened
+
+        _stub = ConfirmationResult(
+            actual_fill_price=float(intent.expected_price or 0.5),
+            actual_fill_size=float(intent.shares or 0),
+            slippage_pct=0.0,
+            confirmed=True,
+        )
+        tid = log_trade_opened(
+            intent,
+            None,
+            conf=_stub,
+            scored=scored,
+            execution_time_ms=0,
+            dry_run=True,
+        )
+        if tid:
+            intent.meta["trade_id"] = tid
         _append(audit, "9_submit_order", status="dry_run_stub")
         append_shark_audit_record({"step": "submit", "market_id": intent.market_id})
         _append(audit, "10_confirm_fill", status="dry_run_stub")
@@ -397,6 +431,9 @@ def hook_post_trade_resolution(
     claude_true_probability: Optional[float] = None,
     claude_decision: Optional[str] = None,
     position_side: Optional[str] = None,
+    journal_trade_id: Optional[str] = None,
+    resolution_outcome: Optional[str] = None,
+    journal_pnl_usd: Optional[float] = None,
 ) -> None:
     from trading_ai.shark.models import HuntType
     from trading_ai.shark.state import LOSS_TRACKER
@@ -435,7 +472,19 @@ def hook_post_trade_resolution(
         from trading_ai.shark.state_store import apply_win_loss_to_capital
 
         apply_win_loss_to_capital(pnl_dollars)
-    _ = trade_id
+
+    jid = (journal_trade_id or "").strip() or None
+    if not jid and trade_id:
+        t = str(trade_id).strip()
+        if len(t) == 36 and t.count("-") == 4:
+            jid = t
+    if jid and resolution_outcome is not None:
+        from trading_ai.shark.trade_journal import exit_price_for_binary_side, log_trade_resolved
+
+        ps = (position_side or "yes").lower()
+        ex = exit_price_for_binary_side(ps, resolution_outcome)
+        jp = journal_pnl_usd if journal_pnl_usd is not None else (pnl_dollars if pnl_dollars is not None else 0.0)
+        log_trade_resolved(jid, ex, float(jp), "win" if win else "loss")
 
 
 def refresh_capital_snapshot_after_external_update() -> None:

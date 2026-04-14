@@ -169,6 +169,9 @@ def log_sports_result(
     outcome: str,         # "win" or "loss"
     amount: float,
     pnl: Optional[float] = None,
+    *,
+    platform: str = "fanduel",
+    american_odds: float = -110.0,
 ) -> None:
     """
     Record a manual sports bet result to the sports_manual avenue.
@@ -187,7 +190,17 @@ def log_sports_result(
 
     try:
         from trading_ai.shark.avenues import record_trade_result
+        from trading_ai.shark.trade_journal import log_sports_trade
+
         record_trade_result("sports_manual", pnl=pnl, win=win)
+        log_sports_trade(
+            platform=platform,
+            pick=str(event_id),
+            odds=float(american_odds),
+            stake=float(amount),
+            outcome=str(outcome),
+            pnl=float(pnl or 0.0),
+        )
         logger.info(
             "Sports result logged: %s %s $%.2f pnl=%.2f",
             event_id, outcome, amount, pnl

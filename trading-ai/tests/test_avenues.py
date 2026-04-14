@@ -137,7 +137,9 @@ def test_85_sports_picks_ny_compliant_no_execution(monkeypatch):
 
 # ── Test 86 ──────────────────────────────────────────────────────────────────
 
-def test_86_sports_result_logging_updates_avenue_pnl():
+def test_86_sports_result_logging_updates_avenue_pnl(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    (tmp_path / "shark" / "state").mkdir(parents=True, exist_ok=True)
     from trading_ai.shark.avenues import load_avenues
     from trading_ai.shark.sports_tracker import log_sports_result
 

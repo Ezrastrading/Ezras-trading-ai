@@ -50,6 +50,7 @@ def build_shark_scheduler(
     arb_sweep: Optional[Callable[[], None]] = None,
     kalshi_near_resolution: Optional[Callable[[], None]] = None,
     ceo_session: Optional[Callable[[str], None]] = None,
+    daily_excel_report: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -108,4 +109,11 @@ def build_shark_scheduler(
                 id=f"ceo_{label.lower()}",
                 replace_existing=True,
             )
+    if daily_excel_report is not None and CronTrigger is not None:
+        sched.add_job(
+            daily_excel_report,
+            CronTrigger(hour=23, minute=59, timezone="America/New_York"),
+            id="daily_excel_report",
+            replace_existing=True,
+        )
     return sched

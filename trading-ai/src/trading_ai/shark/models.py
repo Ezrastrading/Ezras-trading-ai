@@ -154,6 +154,7 @@ class OpenPosition:
     claude_confidence: Optional[float] = None
     claude_true_probability: Optional[float] = None
     claude_decision: Optional[str] = None
+    journal_trade_id: Optional[str] = None
 
 
 @dataclass

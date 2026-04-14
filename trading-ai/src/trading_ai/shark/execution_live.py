@@ -198,6 +198,7 @@ def monitor_position(
             "claude_confidence": position.claude_confidence,
             "claude_true_probability": position.claude_true_probability,
             "claude_decision": position.claude_decision,
+            "journal_trade_id": position.journal_trade_id,
         }
     )
     data["open_positions"] = ops
@@ -260,6 +261,9 @@ def handle_resolution(
         claude_true_probability=position.claude_true_probability,
         claude_decision=position.claude_decision,
         position_side=position.side,
+        journal_trade_id=position.journal_trade_id,
+        resolution_outcome=outcome,
+        journal_pnl_usd=pnl,
     )
 
     append_shark_audit_record(
@@ -315,6 +319,7 @@ def build_open_position_from_intent(
         claude_confidence=intent.meta.get("claude_confidence"),
         claude_true_probability=intent.meta.get("claude_true_probability"),
         claude_decision=intent.meta.get("claude_decision"),
+        journal_trade_id=str(intent.meta.get("trade_id") or "") or None,
     )
 
 

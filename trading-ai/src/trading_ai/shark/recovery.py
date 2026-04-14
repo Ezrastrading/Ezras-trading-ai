@@ -53,6 +53,7 @@ def _open_position_from_dict(p: Dict[str, Any]) -> Any:
         claude_confidence=p.get("claude_confidence"),
         claude_true_probability=p.get("claude_true_probability"),
         claude_decision=p.get("claude_decision"),
+        journal_trade_id=str(p.get("journal_trade_id") or "") or None,
     )
 
 
@@ -97,7 +98,7 @@ def reconcile_open_positions() -> Dict[str, int]:
                 pos,
                 out,
                 pnl,
-                trade_id=f"recovery-{pos.position_id}",
+                trade_id=pos.journal_trade_id or f"recovery-{pos.position_id}",
                 strategy_key=pos.strategy_key,
                 hunt_types=hunt_enums,
                 market_category=pos.market_category,

@@ -87,6 +87,14 @@ def main() -> None:
         log.warning("Mana loss learning startup failed (non-blocking): %s", exc)
 
     try:
+        from trading_ai.shark.trade_journal import maybe_run_journal_loss_learning_on_startup
+
+        jloss = maybe_run_journal_loss_learning_on_startup()
+        log.info("Journal loss learning startup: %s", jloss)
+    except Exception as exc:
+        log.warning("Journal loss learning startup failed (non-blocking): %s", exc)
+
+    try:
         from trading_ai.shark.health_server import start_health_server
 
         hp = int(os.environ.get("PORT") or 8080)
@@ -283,6 +291,7 @@ def main() -> None:
         except Exception as exc:
             log.warning("eod_force_scan failed: %s", exc)
 
+
     def ceo_brief(session_type: str) -> None:
         try:
             from trading_ai.shark import ceo_sessions
@@ -291,6 +300,26 @@ def main() -> None:
             log.info("CEO session %s completed", session_type)
         except Exception as exc:
             log.warning("CEO session wrapper failed: %s", exc)
+
+    def _daily_excel_report() -> None:
+        try:
+            from datetime import datetime
+
+            from zoneinfo import ZoneInfo
+
+            from trading_ai.shark.excel_reporter import generate_daily_excel
+            from trading_ai.shark.reporting import send_excel_report
+            from trading_ai.shark.trade_journal import get_summary_stats
+
+            et = ZoneInfo("America/New_York")
+            date_str = datetime.now(et).strftime("%Y-%m-%d")
+            path = generate_daily_excel(date_str)
+            stats = get_summary_stats(date_str)
+            send_excel_report(path, date_str, stats)
+            log.info("DAILY_EXCEL_REPORT: %s", path)
+        except Exception as exc:
+            log.warning("daily excel report failed: %s", exc)
+
 
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
@@ -312,6 +341,7 @@ def main() -> None:
         arb_sweep=arb_sweep,
         kalshi_near_resolution=kalshi_near_resolution,
         ceo_session=ceo_brief,
+        daily_excel_report=_daily_excel_report,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

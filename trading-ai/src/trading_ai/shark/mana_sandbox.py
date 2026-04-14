@@ -132,6 +132,11 @@ def execute_mana_trade(intent: Any, *, scored: Any = None) -> bool:
     if not conf.confirmed:
         return False
 
+    from trading_ai.shark.trade_journal import log_trade_opened
+
+    intent.is_mana = True
+    jtid = log_trade_opened(intent, order, conf=conf, scored=scored, execution_time_ms=0, dry_run=False)
+
     st["mana_balance"] = round(mana_cap - float(intent.notional_usd), 2)
     pos = {
         "position_id": str(uuid.uuid4()),
@@ -150,6 +155,10 @@ def execute_mana_trade(intent: Any, *, scored: Any = None) -> bool:
         v = intent.meta.get(k)
         if v is not None:
             pos[k] = v
+    if jtid:
+        pos["journal_trade_id"] = jtid
+    if scored is not None and getattr(scored.market, "question_text", None):
+        pos["question_text"] = str(scored.market.question_text)[:400]
     openp: List[Dict[str, Any]] = list(st.get("open_mana_positions") or [])
     openp.append(pos)
     st["open_mana_positions"] = openp
@@ -171,6 +180,7 @@ def update_mana_outcome(
     position_side: Optional[str] = None,
     claude_true_probability: Optional[float] = None,
     claude_decision: Optional[str] = None,
+    journal_trade_id: Optional[str] = None,
 ) -> None:
     """Record mana outcome, update Bayesian (shared with real trades). No capital.json."""
     from trading_ai.shark.execution import hook_post_trade_resolution
@@ -213,6 +223,9 @@ def update_mana_outcome(
         claude_true_probability=claude_true_probability,
         claude_decision=claude_decision,
         position_side=position_side,
+        journal_trade_id=journal_trade_id,
+        resolution_outcome=outcome,
+        journal_pnl_usd=float(pnl_mana),
     )
 
 
@@ -289,6 +302,7 @@ def tick_mana_resolutions() -> int:
             position_side=side,
             claude_true_probability=ctp_f,
             claude_decision=str(pos.get("claude_decision")) if pos.get("claude_decision") else None,
+            journal_trade_id=str(pos.get("journal_trade_id") or "") or None,
         )
         hnames = [str(x.value) if hasattr(x, "value") else str(x) for x in hts]
         primary_hunt = hnames[0] if hnames else "unknown"
