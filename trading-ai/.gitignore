@@ -11,5 +11,6 @@ data/
 *.db
 .DS_Store
 .pytest_cache/
+.ezras-test-runtime/
 .mypy_cache/
 .ruff_cache/
