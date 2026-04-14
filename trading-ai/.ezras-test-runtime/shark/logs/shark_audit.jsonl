@@ -1,0 +1,6 @@
+{"step": "intent", "intent": {"phase": "phase_1", "tier": "TIER_A", "token_id": null, "condition_id": null, "market_category": "kalshi", "margin_borrowed": 0.0, "margin_cap_pct": 0.2, "market_id": "KXMVESPORTSMULTIGAMEEXTENDED-S20267FCE5553595-EF4EBD2B68C"}}
+{"step": "submit", "market_id": "KXMVESPORTSMULTIGAMEEXTENDED-S20267FCE5553595-EF4EBD2B68C"}
+{"step": "fill", "market_id": "KXMVESPORTSMULTIGAMEEXTENDED-S20267FCE5553595-EF4EBD2B68C"}
+{"step": "intent", "intent": {"phase": "phase_1", "tier": "TIER_A", "token_id": null, "condition_id": null, "market_category": "default", "margin_borrowed": 0.0, "margin_cap_pct": 0.2, "market_id": "poly:0x5eed579ff6763914d78a966c83473ba2485ac8910d0a0914eef6d9fcb33085de"}}
+{"step": "submit", "market_id": "poly:0x5eed579ff6763914d78a966c83473ba2485ac8910d0a0914eef6d9fcb33085de"}
+{"step": "fill", "market_id": "poly:0x5eed579ff6763914d78a966c83473ba2485ac8910d0a0914eef6d9fcb33085de"}
