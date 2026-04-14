@@ -12,6 +12,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import requests
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -92,26 +94,47 @@ def fetch_polymarket_clob_market_json(condition_id: str) -> Optional[Dict[str, A
         return None
     base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
     url = f"{base}/markets/{urllib.parse.quote(cid, safe='')}"
+    # Public read; do not attach balance-allowance L2 headers (wrong sign path for this URL).
+    headers = {"User-Agent": "EzrasShark/1.0"}
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "EzrasShark/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read().decode("utf-8")
-            if not raw.strip():
-                return None
-            j = json.loads(raw)
-            return j if isinstance(j, dict) else None
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        return j if isinstance(j, dict) else None
     except Exception as exc:
         logger.debug("Polymarket CLOB market JSON fetch failed %s: %s", cid, exc)
         return None
 
 
 def token_ids_from_clob_market_payload(j: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve Yes/No token ids from CLOB ``tokens`` (outcome labels), with index fallback."""
     tokens = j.get("tokens") if isinstance(j.get("tokens"), list) else []
-    if len(tokens) < 2 or not all(isinstance(t, dict) for t in tokens[:2]):
-        return None, None
-    y = str(tokens[0].get("token_id") or "").strip() or None
-    n = str(tokens[1].get("token_id") or "").strip() or None
-    return y, n
+    yes_tid: Optional[str] = None
+    no_tid: Optional[str] = None
+    for t in tokens:
+        if not isinstance(t, dict):
+            continue
+        oc = str(t.get("outcome") or "").strip().lower()
+        tid = str(t.get("token_id") or t.get("tokenId") or "").strip()
+        if not tid:
+            continue
+        if oc == "yes":
+            yes_tid = tid
+        elif oc == "no":
+            no_tid = tid
+    if yes_tid and no_tid:
+        return yes_tid, no_tid
+    if len(tokens) >= 2 and all(isinstance(t, dict) for t in tokens[:2]):
+        y = str(tokens[0].get("token_id") or tokens[0].get("tokenId") or "").strip() or None
+        n = str(tokens[1].get("token_id") or tokens[1].get("tokenId") or "").strip() or None
+        return y, n
+    return None, None
+
+
+def _token_id_log_preview(tid: Optional[str]) -> Optional[str]:
+    if not tid:
+        return None
+    return tid[:8] if len(tid) >= 8 else tid
 
 
 def enrich_polymarket_snapshot_tokens(m: MarketSnapshot) -> None:
@@ -156,8 +179,15 @@ def ensure_polymarket_intent_token_ids(intent: Any, market: MarketSnapshot) -> b
         cid = str(u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
         j = fetch_polymarket_clob_market_json(cid)
         if not j:
+            logger.warning("Polymarket token fetch: no JSON for condition_id=%s", cid[:16] if cid else None)
             return False
         yt, nt = token_ids_from_clob_market_payload(j)
+        logger.info(
+            "Polymarket token fetch: yes=%s no=%s condition_id=%s",
+            _token_id_log_preview(yt),
+            _token_id_log_preview(nt),
+            cid[:16] if cid else None,
+        )
         if not yt or not nt:
             return False
         yl["token_id"], nl["token_id"] = str(yt), str(nt)
@@ -170,8 +200,15 @@ def ensure_polymarket_intent_token_ids(intent: Any, market: MarketSnapshot) -> b
     cid = str(meta.get("condition_id") or u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
     j = fetch_polymarket_clob_market_json(cid)
     if not j:
+        logger.warning("Polymarket token fetch: no JSON for condition_id=%s", cid[:16] if cid else None)
         return False
     yt, nt = token_ids_from_clob_market_payload(j)
+    logger.info(
+        "Polymarket token fetch: yes=%s no=%s condition_id=%s",
+        _token_id_log_preview(yt),
+        _token_id_log_preview(nt),
+        cid[:16] if cid else None,
+    )
     if not yt or not nt:
         return False
     meta["yes_token_id"] = str(yt)
@@ -737,7 +774,8 @@ class PolymarketFetcher(BaseOutletFetcher):
 
     def is_healthy(self) -> bool:
         try:
-            self.http_get_json(f"{self.CLOB_BASE.rstrip('/')}/markets?limit=1")
+            base = self.CLOB_BASE.rstrip("/")
+            self.http_get_json(f"{base}/markets?active=true&closed=false&archived=false&limit=1")
             return True
         except Exception:
             return False
@@ -773,7 +811,8 @@ class PolymarketFetcher(BaseOutletFetcher):
             while cursor != END_CURSOR:
                 if max_pages is not None and pages >= max_pages:
                     break
-                url = f"{base}/markets?next_cursor={urllib.parse.quote(cursor, safe='')}"
+                q = "active=true&closed=false&archived=false&limit=100"
+                url = f"{base}/markets?{q}&next_cursor={urllib.parse.quote(cursor, safe='')}"
                 raw = self.http_get_json(url)
                 batch = raw.get("data") if isinstance(raw, dict) else raw
                 if not isinstance(batch, list):
@@ -872,4 +911,10 @@ class PolymarketFetcher(BaseOutletFetcher):
                     best_ask_no=best_n,
                 )
             )
-        return out
+        active_markets = [m for m in out if m.end_date_seconds is None or m.end_date_seconds > now]
+        logger.info(
+            "Polymarket: %s total CLOB rows → %s active (end unset or future)",
+            len(out),
+            len(active_markets),
+        )
+        return active_markets

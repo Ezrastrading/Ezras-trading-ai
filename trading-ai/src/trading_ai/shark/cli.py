@@ -14,6 +14,7 @@ from trading_ai.shark.gap_hunter import gap_score
 from trading_ai.shark.models import GapObservation
 from trading_ai.shark.reporting import build_daily_decision_memo, format_daily_summary, format_gap_detection_alert
 from trading_ai.shark.state import BAYES, MANDATE
+from trading_ai.governance.system_doctrine import is_execution_paused
 from trading_ai.shark.state_store import gaps_path, load_capital, load_gaps, load_positions
 
 
@@ -36,7 +37,7 @@ def cmd_status(_: argparse.Namespace) -> int:
                 "scan_mode": "24/7",
                 "mandate_compounding_paused": MANDATE.compounding_paused,
                 "mandate_gaps_paused": MANDATE.gaps_paused,
-                "execution_paused": MANDATE.execution_paused,
+                "execution_paused": is_execution_paused(),
                 "gaps_under_observation": len(gaps_list),
                 "trades_today": 0,
                 "win_rate_rolling": None,
@@ -80,7 +81,12 @@ def cmd_audit(_: argparse.Namespace) -> int:
 
 
 def cmd_pause(_: argparse.Namespace) -> int:
+    from trading_ai.shark.state_store import load_execution_control, save_execution_control
+
     MANDATE.execution_paused = True
+    ec = load_execution_control()
+    ec["manual_pause"] = True
+    save_execution_control(ec)
     print(json.dumps({"ok": True, "execution_paused": True, "scanning_continues": True}))
     return 0
 
@@ -98,9 +104,14 @@ def cmd_pause_gaps(_: argparse.Namespace) -> int:
 
 
 def cmd_resume(_: argparse.Namespace) -> int:
+    from trading_ai.shark.state_store import load_execution_control, save_execution_control
+
     MANDATE.compounding_paused = False
     MANDATE.gaps_paused = False
     MANDATE.execution_paused = False
+    ec = load_execution_control()
+    ec["manual_pause"] = False
+    save_execution_control(ec)
     print(json.dumps({"ok": True, "resumed": True}))
     return 0
 
@@ -113,7 +124,7 @@ def cmd_health(_: argparse.Namespace) -> int:
     for f in default_fetchers():
         reg.register(f)
     reg.scan_all()
-    print(json.dumps({"outlet_health": reg.last_health, "execution_paused": MANDATE.execution_paused}, indent=2))
+    print(json.dumps({"outlet_health": reg.last_health, "execution_paused": is_execution_paused()}, indent=2))
     return 0
 
 

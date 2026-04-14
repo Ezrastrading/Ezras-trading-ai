@@ -38,14 +38,37 @@ class DoctrineResult:
     audit: Dict[str, Any] = field(default_factory=dict)
 
 
+def is_execution_paused() -> bool:
+    """
+    Execution pause only when persisted capital drawdown exceeds 40% or ``manual_pause`` is set.
+
+    Ignores in-memory ``MANDATE.execution_paused`` so stale flags cannot block at 0% drawdown.
+    """
+    try:
+        from trading_ai.shark.state_store import load_capital, load_execution_control
+    except Exception:
+        return False
+    cap = load_capital()
+    if cap.current_capital <= 0:
+        return False
+    peak = cap.peak_capital
+    if peak <= 0:
+        return False
+    drawdown = (peak - cap.current_capital) / peak
+    if drawdown > 0.40:
+        return True
+    state = load_execution_control()
+    return bool(state.get("manual_pause", False))
+
+
 def check_doctrine_gate(ctx: DoctrineContext) -> DoctrineResult:
     """
     Hard gate. No monthly targets, idle timers, or clocks may force a trade.
     Drawdown >25% is handled via sizing (execution chain), not this gate.
-    Drawdown >40% requires execution pause (manual resume).
+    Drawdown >40% pauses execution (see ``is_execution_paused``) or ``manual_pause`` in execution_control.json.
     """
     audit: Dict[str, Any] = {"source": ctx.source, "tags": dict(ctx.tags)}
-    if ctx.execution_paused:
+    if is_execution_paused():
         return DoctrineResult(False, "doctrine: execution_paused", audit)
     is_compounding = ctx.source in ("shark_compounding",) or "compounding" in ctx.source
     is_gap = ctx.source in ("shark_gap",) or bool(ctx.tags.get("gap_exploit"))

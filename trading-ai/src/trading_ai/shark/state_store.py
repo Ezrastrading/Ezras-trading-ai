@@ -76,6 +76,32 @@ def wallets_path() -> Path:
     return shark_state_path("wallets.json")
 
 
+def execution_control_path() -> Path:
+    """Operator manual execution pause (doctrine reads ``manual_pause``)."""
+    return shark_state_path("execution_control.json")
+
+
+def load_execution_control() -> Dict[str, Any]:
+    p = execution_control_path()
+    if not p.is_file():
+        return {"manual_pause": False}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            out = dict(raw)
+            out.setdefault("manual_pause", False)
+            return out
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"manual_pause": False}
+
+
+def save_execution_control(data: Dict[str, Any]) -> None:
+    out = dict(data)
+    out.setdefault("manual_pause", False)
+    execution_control_path().write_text(json.dumps(out, indent=2), encoding="utf-8")
+
+
 def load_wallets_registry() -> Dict[str, Any]:
     p = wallets_path()
     if not p.is_file():

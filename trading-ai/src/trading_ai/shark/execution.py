@@ -126,16 +126,16 @@ def run_execution_chain(
         from trading_ai.shark.outlets.polymarket import ensure_polymarket_intent_token_ids
 
         if not ensure_polymarket_intent_token_ids(intent, scored.market):
-            log.info(
-                "Precheck FAILED polymarket_missing_token_id: market=%s token_id=%s yes_token=%s no_token=%s pure_dual=%s",
+            log.warning(
+                "Polymarket skip — missing token_id after CLOB backfill: market=%s token_id=%s yes_token=%s no_token=%s pure_dual=%s",
                 scored.market.market_id,
                 (intent.meta or {}).get("token_id"),
                 (intent.meta or {}).get("yes_token_id"),
                 (intent.meta or {}).get("no_token_id"),
                 bool((intent.meta or {}).get("pure_arbitrage_dual")),
             )
-            _append(audit, "1_precheck", skipped=True, reason="polymarket_missing_token_id")
-            return ChainResult(False, "precheck", audit, intent)
+            _append(audit, "1_token_resolution", skipped=True, reason="polymarket_missing_token_id")
+            return ChainResult(False, "polymarket_no_tokens", audit, intent)
 
     log.info(
         "Precheck OK: token_id=%s yes_token=%s no_token=%s outlet=%s side=%s shares=%s market=%s",
@@ -155,7 +155,7 @@ def run_execution_chain(
         source=intent.source,
         mandate_compounding_paused=MANDATE.compounding_paused,
         mandate_gaps_paused=MANDATE.gaps_paused,
-        execution_paused=MANDATE.execution_paused,
+        execution_paused=doctrine.is_execution_paused(),
         edge_after_fees=edge,
         min_edge_for_phase=risk.effective_min_edge,
         anti_forced_trade=True,

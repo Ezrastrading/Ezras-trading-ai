@@ -40,8 +40,14 @@ from trading_ai.shark.reporting import alert_gap_detected, alert_trade_fired, cl
 from trading_ai.shark.risk_context import build_risk_context, effective_min_edge
 from trading_ai.shark.scorer import score_opportunity
 from trading_ai.shark.state import BAYES, HOT, LOSS_TRACKER, MANDATE
-from trading_ai.shark.state_store import apply_win_loss_to_capital, capital_path, load_capital, save_capital
-from trading_ai.shark.state_store import CapitalRecord
+from trading_ai.shark.state_store import (
+    CapitalRecord,
+    apply_win_loss_to_capital,
+    capital_path,
+    load_capital,
+    save_capital,
+    save_execution_control,
+)
 from trading_ai.shark.cli import sample_outputs_for_docs
 from trading_ai.shark.scanner import OutletRegistry, resolve_scan_interval_seconds
 
@@ -287,24 +293,26 @@ def test_13_phase_transition_updates_params():
 
 
 def test_14_doctrine_blocks_noncompliant():
-    MANDATE.execution_paused = True
-    m = MarketSnapshot(
-        market_id="g",
-        outlet="kalshi",
-        yes_price=0.45,
-        no_price=0.50,
-        volume_24h=2000.0,
-        time_to_resolution_seconds=4000.0,
-        resolution_criteria="test",
-        last_price_update_timestamp=0.0,
-    )
-    hs = run_hunts_on_market(m)
-    from trading_ai.shark.models import HuntSignal
+    save_execution_control({"manual_pause": True})
+    try:
+        m = MarketSnapshot(
+            market_id="g",
+            outlet="kalshi",
+            yes_price=0.45,
+            no_price=0.50,
+            volume_24h=2000.0,
+            time_to_resolution_seconds=4000.0,
+            resolution_criteria="test",
+            last_price_update_timestamp=0.0,
+        )
+        hs = run_hunts_on_market(m)
+        from trading_ai.shark.models import HuntSignal
 
-    sc = score_opportunity(m, [hs[0], HuntSignal(HuntType.STATISTICAL_WINDOW, 0.09, 0.7, {})], strategy_key="t")
-    res = run_execution_chain(sc, capital=80.0, outlet="kalshi")
-    assert not res.ok
-    MANDATE.execution_paused = False
+        sc = score_opportunity(m, [hs[0], HuntSignal(HuntType.STATISTICAL_WINDOW, 0.09, 0.7, {})], strategy_key="t")
+        res = run_execution_chain(sc, capital=80.0, outlet="kalshi")
+        assert not res.ok
+    finally:
+        save_execution_control({"manual_pause": False})
 
 
 def test_15_bayesian_update_shifts_weights():
@@ -448,6 +456,7 @@ def test_28_drawdown_40_pauses_execution(tmp_path, monkeypatch):
     MANDATE.execution_paused = False
     load_capital()
     assert MANDATE.execution_paused is True
+    assert doctrine.is_execution_paused() is True
 
 
 def test_29_idle_widen_max_15pct():
@@ -1713,28 +1722,7 @@ def test_120_polymarket_api_signing_produces_valid_ed25519_signature():
     pk.public_key().verify(sig_u, str(ts).encode("utf-8"))
 
 
-def test_121_is_crypto_short_market_true_for_btc_above_short_window():
-    import time
-
-    from trading_ai.shark.crypto_polymarket_hunts import _is_crypto_short_market
-
-    end = time.time() + 10 * 60
-    m = MarketSnapshot(
-        market_id="poly:t",
-        outlet="polymarket",
-        yes_price=0.4,
-        no_price=0.6,
-        volume_24h=5000.0,
-        time_to_resolution_seconds=600.0,
-        resolution_criteria="",
-        last_price_update_timestamp=time.time(),
-        question_text="Will Bitcoin be above $90,000 at 2:05pm?",
-        end_timestamp_unix=end,
-    )
-    assert _is_crypto_short_market(m) is True
-
-
-def test_121b_is_short_resolution_market_true_within_60_min():
+def test_121_is_short_resolution_market_true_when_end_date_within_60_min():
     import time
 
     from trading_ai.shark.crypto_polymarket_hunts import _is_short_resolution_market
@@ -1749,7 +1737,7 @@ def test_121b_is_short_resolution_market_true_within_60_min():
         time_to_resolution_seconds=99999.0,
         resolution_criteria="",
         last_price_update_timestamp=time.time(),
-        end_timestamp_unix=end,
+        end_date_seconds=end,
     )
     assert _is_short_resolution_market(m) is True
 
@@ -1796,6 +1784,7 @@ def test_124_hunt_near_resolution_fires_when_yes_098_and_10min_left():
         resolution_criteria="",
         last_price_update_timestamp=0.0,
         end_timestamp_unix=end,
+        end_date_seconds=end,
     )
     r = hunt_near_resolution(m)
     assert r is not None
@@ -1859,12 +1848,14 @@ def test_126_crypto_scalp_scan_interval_job_registered():
         crypto_scalp_scan=lambda: None,
         near_resolution_sweep=lambda: None,
         arb_sweep=lambda: None,
+        kalshi_near_resolution=lambda: None,
     )
     assert sched is not None
     ids = [j.id for j in sched.get_jobs()]
     assert "crypto_scalp_scan" in ids
     assert "near_resolution_sweep" in ids
     assert "arb_sweep" in ids
+    assert "kalshi_near_resolution" in ids
 
 
 def test_127_polymarket_uses_limit_slippage_not_market_order_api():
@@ -1998,3 +1989,70 @@ def test_131_claude_reasoning_in_telegram_format():
     )
     assert "Claude: Model agrees" in t
     assert "Confidence: 82%" in t
+
+
+def test_132_volume_spike_fires_when_volume_gt_5000_and_yes_near_045():
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_volume_spike
+
+    m = MarketSnapshot(
+        market_id="poly:vs",
+        outlet="polymarket",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_24h=7500.0,
+        time_to_resolution_seconds=3600.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+    )
+    r = hunt_volume_spike(m)
+    assert r is not None
+    assert r.hunt_type == HuntType.VOLUME_SPIKE
+    assert r.details.get("side") == "yes"
+
+
+def test_133_hunt_near_resolution_fires_at_093_threshold():
+    import time
+
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_near_resolution
+
+    end = time.time() + 15 * 60
+    m = MarketSnapshot(
+        market_id="poly:n93",
+        outlet="polymarket",
+        yes_price=0.935,
+        no_price=0.065,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=900.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+        end_timestamp_unix=end,
+        end_date_seconds=end,
+    )
+    r = hunt_near_resolution(m)
+    assert r is not None
+    assert r.hunt_type == HuntType.NEAR_RESOLUTION
+
+
+def test_134_three_sweep_jobs_near_resolution_arb_kalshi_registered():
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        near_resolution_sweep=lambda: None,
+        arb_sweep=lambda: None,
+        kalshi_near_resolution=lambda: None,
+    )
+    ids = [j.id for j in sched.get_jobs()]
+    assert "near_resolution_sweep" in ids
+    assert "arb_sweep" in ids
+    assert "kalshi_near_resolution" in ids
