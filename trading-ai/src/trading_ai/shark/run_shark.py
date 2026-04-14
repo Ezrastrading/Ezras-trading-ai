@@ -282,6 +282,28 @@ def main() -> None:
                 log.info("mana sandbox: resolved %s position(s)", n)
         except Exception as exc:
             log.warning("mana resolution monitor failed (non-blocking): %s", exc)
+        # Poll Kalshi (and all other outlet) open positions for resolution every 60s.
+        # reconcile_open_positions() calls handle_resolution() which fires the
+        # TRADE CLOSED Telegram notification.  Without this block the notification
+        # never fires in production because reconcile_open_positions() was previously
+        # only called once at boot (run_startup_recovery).
+        try:
+            from trading_ai.shark.recovery import reconcile_open_positions
+
+            stats = reconcile_open_positions()
+            if stats.get("resolved", 0):
+                log.info(
+                    "kalshi resolution poller: resolved=%s checked=%s (TRADE CLOSED notification fired)",
+                    stats["resolved"],
+                    stats["checked"],
+                )
+            elif stats.get("checked", 0):
+                log.debug(
+                    "kalshi resolution poller: checked=%s open position(s), none resolved yet",
+                    stats["checked"],
+                )
+        except Exception as exc:
+            log.warning("kalshi resolution poller failed (non-blocking): %s", exc)
 
     def daily_memo() -> None:
         try:

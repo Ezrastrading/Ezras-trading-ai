@@ -219,7 +219,26 @@ def run_scan_execution_cycle(
                 continue
             hunt_nonempty += 1
             batch_rows.append((score_opportunity(m, hunts), m))
-        batch_rows.sort(key=lambda t: -t[0].score)
+
+        def _batch_row_sort_key(t: tuple) -> tuple:
+            """Kalshi: same score → prefer expiry Tier A, then B, then C (see kalshi_expiry_tiers)."""
+            scored, m = t
+            pri = 0
+            if (getattr(m, "outlet", None) or "").lower() == "kalshi":
+                from trading_ai.shark.kalshi_expiry_tiers import (
+                    classify_kalshi_expiry_tier,
+                    tier_priority_rank,
+                )
+
+                et = classify_kalshi_expiry_tier(float(getattr(m, "time_to_resolution_seconds", 0) or 0))
+                pri = tier_priority_rank(et)
+            return (-float(scored.score), pri)
+
+        batch_rows.sort(key=_batch_row_sort_key)
+        if "kalshi" in tag.lower():
+            from trading_ai.shark.kalshi_expiry_tiers import filter_kalshi_hv_tier_c_when_ab_available
+
+            batch_rows = filter_kalshi_hv_tier_c_when_ab_available(batch_rows)
         for scored, m in batch_rows[: _top_per_batch()]:
             if scored.tier == OpportunityTier.BELOW_THRESHOLD:
                 continue

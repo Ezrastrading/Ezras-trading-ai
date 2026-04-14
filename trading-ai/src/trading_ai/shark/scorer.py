@@ -24,8 +24,17 @@ def liquidity_score_ratio(market: MarketSnapshot) -> float:
     return max(0.0, min(1.0, vol / req))
 
 
-def resolution_speed_score(ttr_seconds: float) -> float:
-    """Bucketed by time to resolution (Section 3)."""
+def resolution_speed_score(ttr_seconds: float, *, market: MarketSnapshot | None = None) -> float:
+    """
+    Bucketed by time to resolution (Section 3).
+
+    For **Kalshi**, the generic ~1h / 4h / 24h ladder is replaced by configurable
+    expiry tiers A/B/C (see ``kalshi_expiry_tiers.resolution_speed_score_kalshi_tiers``).
+    """
+    if market is not None and (market.outlet or "").lower() == "kalshi":
+        from trading_ai.shark.kalshi_expiry_tiers import resolution_speed_score_kalshi_tiers
+
+        return resolution_speed_score_kalshi_tiers(ttr_seconds)
     h = ttr_seconds / 3600.0
     if h < 1.0:
         return 1.0
@@ -45,7 +54,7 @@ def score_opportunity(
     edge_size = max(h.edge_after_fees for h in hunts) if hunts else 0.0
     confidence = sum(h.confidence for h in hunts) / max(1, len(hunts))
     liq = liquidity_score_ratio(market)
-    rs = resolution_speed_score(market.time_to_resolution_seconds)
+    rs = resolution_speed_score(market.time_to_resolution_seconds, market=market)
     spw = BAYES.strategy_performance_weight(strategy_key)
     score = (
         edge_size * 0.35

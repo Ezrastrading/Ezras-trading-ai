@@ -286,6 +286,13 @@ def execute_post_trade_closed(
 
     s = _settings(settings)
     text = format_trade_closed_message(trade)
+    logger.info(
+        "[post_trade_closed] BEFORE telegram send: trade_id=%s result=%s payout_dollars=%s market=%s",
+        tid,
+        trade.get("result"),
+        trade.get("payout_dollars"),
+        trade.get("market"),
+    )
     try:
         tg = send_telegram_with_idempotency(
             s,
@@ -295,6 +302,13 @@ def execute_post_trade_closed(
         )
     except Exception as exc:
         tg = {"sent": False, "skipped_duplicate": False, "ok": False, "error": str(exc)}
+    logger.info(
+        "[post_trade_closed] AFTER telegram send: trade_id=%s sent=%s skipped_duplicate=%s error=%s",
+        tid,
+        tg.get("sent"),
+        tg.get("skipped_duplicate"),
+        tg.get("error"),
+    )
 
     dup = bool(tg.get("skipped_duplicate"))
     vault = _vault_touch(trade, "closed", skip=dup)

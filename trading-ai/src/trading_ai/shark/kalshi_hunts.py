@@ -47,6 +47,9 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
     High-confidence near-resolution / live sports: YES or NO side at 90%+.
     Tiers: 97%+ → 75% stake fraction, 93–97% → 50%, 90–93% → 30% (of capital subject to executor caps).
     Metaculus agreement (both venues 90%+) scales stake fraction by 1.25× capped at 0.80.
+
+    Kalshi: expiry windows A/B/C from env (``KALSHI_TIER_*``); markets outside those windows
+    do not emit HV. Tier A + weakest price band (T3) is skipped so capital can flow to B/C.
     """
     if (m.outlet or "").lower() not in ("kalshi", "manifold"):
         return None
@@ -56,40 +59,61 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
         return None
     fy = float(yes)
     fn = float(no)
+    is_kalshi = (m.outlet or "").lower() == "kalshi"
+    ttr = float(m.time_to_resolution_seconds or 0.0)
+    kalshi_expiry_tier: Optional[str] = None
+    if is_kalshi:
+        from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
+
+        kalshi_expiry_tier = classify_kalshi_expiry_tier(ttr)
+        if kalshi_expiry_tier is None:
+            return None
 
     for thr, frac, tier in _HV_TIERS:
         if fy >= thr:
+            if is_kalshi and kalshi_expiry_tier == "A" and tier == "T3":
+                return None
             boost = 1.25 if _hv_metaculus_agrees_yes(m, fy) else 1.0
             stake = min(0.80, frac * boost)
             edge = max(1.0 - fy, 1e-6)
+            details = {
+                "side": "yes",
+                "stake_fraction": stake,
+                "tier": tier,
+                "reasoning": f"{tier} YES={fy:.2f} stake={stake:.0%} edge={edge:.3f}",
+                "metaculus_agreement_boost": boost > 1.0,
+            }
+            if is_kalshi and kalshi_expiry_tier:
+                details["kalshi_expiry_tier"] = kalshi_expiry_tier
+                details["kalshi_minutes_to_resolution"] = ttr / 60.0
             return HuntSignal(
                 HuntType.NEAR_RESOLUTION_HV,
                 edge_after_fees=edge,
                 confidence=fy,
-                details={
-                    "side": "yes",
-                    "stake_fraction": stake,
-                    "tier": tier,
-                    "reasoning": f"{tier} YES={fy:.2f} stake={stake:.0%} edge={edge:.3f}",
-                    "metaculus_agreement_boost": boost > 1.0,
-                },
+                details=details,
             )
     for thr, frac, tier in _HV_TIERS:
         if fn >= thr:
+            if is_kalshi and kalshi_expiry_tier == "A" and tier == "T3":
+                return None
             boost = 1.25 if _hv_metaculus_agrees_no(m, fn) else 1.0
             stake = min(0.80, frac * boost)
             edge = max(1.0 - fn, 1e-6)
+            details = {
+                "side": "no",
+                "stake_fraction": stake,
+                "tier": tier,
+                "reasoning": f"{tier} NO={fn:.2f} stake={stake:.0%} edge={edge:.3f}",
+                "metaculus_agreement_boost": boost > 1.0,
+            }
+            if is_kalshi and kalshi_expiry_tier:
+                details["kalshi_expiry_tier"] = kalshi_expiry_tier
+                details["kalshi_minutes_to_resolution"] = ttr / 60.0
             return HuntSignal(
                 HuntType.NEAR_RESOLUTION_HV,
                 edge_after_fees=edge,
                 confidence=fn,
-                details={
-                    "side": "no",
-                    "stake_fraction": stake,
-                    "tier": tier,
-                    "reasoning": f"{tier} NO={fn:.2f} stake={stake:.0%} edge={edge:.3f}",
-                    "metaculus_agreement_boost": boost > 1.0,
-                },
+                details=details,
             )
     return None
 

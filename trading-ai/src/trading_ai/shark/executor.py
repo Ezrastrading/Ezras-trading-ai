@@ -346,7 +346,15 @@ def build_execution_intent(
     if _floor_main is not None:
         min_e = max(min_e, _floor_main)
     if any(h.hunt_type == HuntType.NEAR_RESOLUTION_HV for h in scored.hunts) and phase == CapitalPhase.PHASE_1:
-        min_e = min(min_e, 0.005)
+        o_low = (outlet or "").strip().lower()
+        if o_low == "kalshi":
+            from trading_ai.shark.kalshi_expiry_tiers import kalshi_doctrine_base_min_edge
+
+            tb = kalshi_doctrine_base_min_edge(float(m.time_to_resolution_seconds or 0.0))
+            relax = tb if tb is not None else 0.005
+            min_e = min(min_e, relax)
+        else:
+            min_e = min(min_e, 0.005)
     if scored.edge_size < min_e:
         _log.info(
             "Intent built: False market=%s reason=edge %.4f < min %.4f",

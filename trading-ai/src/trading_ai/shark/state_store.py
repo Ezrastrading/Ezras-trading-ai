@@ -160,14 +160,6 @@ def load_capital() -> CapitalRecord:
                 rec.peak_capital = rec.current_capital
                 save_capital(rec)
         _maybe_halt_drawdown(rec)
-        actual = os.getenv("KALSHI_ACTUAL_BALANCE")
-        if actual:
-            try:
-                rec.current_capital = float(actual)
-                rec.peak_capital = max(rec.peak_capital, rec.current_capital)
-                save_capital(rec)
-            except ValueError:
-                pass
         return rec
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return CapitalRecord(last_updated=_iso())

@@ -11,6 +11,10 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
+from trading_ai.shark.kalshi_limits import (
+    kalshi_open_positions_deployed_usd,
+    should_apply_kalshi_actual_balance_override,
+)
 
 load_shark_dotenv()
 
@@ -100,13 +104,26 @@ def sync_all_platforms() -> Dict:
         env_k = float((os.environ.get("KALSHI_ACTUAL_BALANCE") or "0").strip() or 0)
     except ValueError:
         env_k = 0.0
+
     if kalshi_fetched is not None and kalshi_fetched > 1e-6:
-        kalshi_final = kalshi_fetched
-    elif env_k > 1e-6:
+        kalshi_final = float(kalshi_fetched)
+    elif (
+        env_k > 1e-6
+        and should_apply_kalshi_actual_balance_override(kalshi_fetched)
+    ):
         kalshi_final = env_k
-        logger.info("Kalshi balance: using KALSHI_ACTUAL_BALANCE=$%.2f (API was %s)", env_k, kalshi_fetched)
+        logger.info(
+            "Kalshi balance: API available=$0.00 with open Kalshi positions → using KALSHI_ACTUAL_BALANCE=$%.2f",
+            env_k,
+        )
     elif kalshi_fetched is not None:
         kalshi_final = float(kalshi_fetched)
+        if env_k > 1e-6 and not should_apply_kalshi_actual_balance_override(kalshi_fetched):
+            logger.debug(
+                "Kalshi: ignoring KALSHI_ACTUAL_BALANCE=$%.2f (trusting API available=$%.2f)",
+                env_k,
+                kalshi_fetched,
+            )
     else:
         kalshi_final = float(existing.get("kalshi_balance_usd", 0.0))
     if manifold_fetched is not None:
@@ -133,6 +150,21 @@ def sync_all_platforms() -> Dict:
         save_capital(rec)
     except Exception as exc:
         logger.warning("capital.json mirror after balance sync failed: %s", exc)
+
+    deployed_k = kalshi_open_positions_deployed_usd()
+    if kalshi_fetched is not None:
+        logger.info(
+            "Kalshi liquidity: api_available_cash=$%.2f positions_deployed_usd=$%.2f treasury_kalshi_book=$%.2f",
+            kalshi_fetched,
+            deployed_k,
+            kalshi_final,
+        )
+    else:
+        logger.info(
+            "Kalshi liquidity: api_available_cash=n/a positions_deployed_usd=$%.2f treasury_kalshi_book=$%.2f (API fetch failed; last known)",
+            deployed_k,
+            kalshi_final,
+        )
 
     result = {
         "synced_at": _iso(),

@@ -85,9 +85,24 @@ def run_execution_chain(
         now_unix=now,
     )
 
-    blend_exec_min_edge = risk.effective_min_edge
+    # Kalshi NEAR_RESOLUTION_HV: tiered anti_forced_trade floor (vs phase default ~0.02 in capital_phase).
+    chain_min_edge_floor = risk.effective_min_edge
+    if (outlet or "").strip().lower() == "kalshi" and any(
+        h.hunt_type == HuntType.NEAR_RESOLUTION_HV for h in scored.hunts
+    ):
+        from trading_ai.shark.kalshi_expiry_tiers import kalshi_hv_effective_min_edge_for_doctrine
+
+        te = kalshi_hv_effective_min_edge_for_doctrine(
+            float(scored.market.time_to_resolution_seconds or 0.0),
+            idle_capital_over_6h=risk.idle_capital_over_6h,
+            drawdown_over_25pct=risk.drawdown_over_25pct,
+        )
+        if te is not None:
+            chain_min_edge_floor = te
+
+    blend_exec_min_edge = chain_min_edge_floor
     if scored.edge_size > 1e-12:
-        blend_exec_min_edge = min(risk.effective_min_edge, scored.edge_size)
+        blend_exec_min_edge = min(chain_min_edge_floor, scored.edge_size)
 
     intent = build_execution_intent(
         scored,
@@ -105,13 +120,14 @@ def run_execution_chain(
         u0 = scored.market.underlying_data_if_available or {}
         log.info(
             "Precheck FAILED intent=None: market=%s outlet=%s tier=%s edge_size=%.6f "
-            "blend_min_edge_used=%.6f risk_effective_min_edge=%.6f phase_base_min_edge=%.6f hunts=%s "
+            "blend_min_edge_used=%.6f chain_min_edge_floor=%.6f risk_effective_min_edge=%.6f phase_base_min_edge=%.6f hunts=%s "
             "yes_token_id=%s no_token_id=%s condition_id=%s",
             scored.market.market_id,
             outlet,
             scored.tier.value,
             scored.edge_size,
             blend_exec_min_edge,
+            chain_min_edge_floor,
             risk.effective_min_edge,
             pp.min_edge,
             [h.hunt_type.value for h in scored.hunts],
@@ -175,7 +191,7 @@ def run_execution_chain(
         mandate_gaps_paused=MANDATE.gaps_paused,
         execution_paused=doctrine.is_execution_paused(),
         edge_after_fees=edge,
-        min_edge_for_phase=risk.effective_min_edge,
+        min_edge_for_phase=chain_min_edge_floor,
         anti_forced_trade=True,
         cluster_paused=False,
         tags={"gap_exploit": intent.gap_exploit, **(doctrine_context_extra or {})},

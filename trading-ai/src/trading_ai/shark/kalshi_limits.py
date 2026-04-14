@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 
 def kalshi_max_open_positions_from_env() -> int:
     """Railway-safe: unset or non-positive env must not cap at 0 (would block all trades)."""
-    raw = (os.environ.get("KALSHI_MAX_OPEN_POSITIONS") or "12").strip() or "12"
+    raw = (os.environ.get("KALSHI_MAX_OPEN_POSITIONS") or "50").strip() or "50"
     try:
         n = int(float(raw))
     except (TypeError, ValueError):
-        return 12
+        return 50
     if n <= 0:
-        return 12
+        return 50
     return max(1, min(n, 500))
 
 
@@ -51,16 +52,41 @@ def count_kalshi_open_positions() -> int:
     )
 
 
+def kalshi_open_positions_deployed_usd() -> float:
+    """Sum ``notional_usd`` for open Kalshi positions (capital tied up in contracts)."""
+    from trading_ai.shark.state_store import load_positions
+
+    data = load_positions()
+    return sum(
+        float(p.get("notional_usd", 0) or 0)
+        for p in (data.get("open_positions") or [])
+        if str(p.get("outlet") or "").lower() == "kalshi"
+    )
+
+
+def should_apply_kalshi_actual_balance_override(kalshi_api_usd: Optional[float]) -> bool:
+    """
+    ``KALSHI_ACTUAL_BALANCE`` is only applied when the portfolio API reports ~$0 available cash
+    but we still have open Kalshi positions (some API responses omit usable semantics until flat).
+    If the API returns any positive balance, always trust it.
+    """
+    if kalshi_api_usd is None:
+        return False
+    if abs(float(kalshi_api_usd)) > 1e-9:
+        return False
+    return count_kalshi_open_positions() > 0
+
+
 def kalshi_hv_max_open_positions() -> int:
-    """HV near-resolution: max simultaneous Kalshi opens (default 8, capped by general env)."""
-    raw = (os.environ.get("KALSHI_HV_MAX_OPEN_POSITIONS") or "8").strip() or "8"
+    """HV near-resolution: max simultaneous Kalshi opens (default 20, capped by general env)."""
+    raw = (os.environ.get("KALSHI_HV_MAX_OPEN_POSITIONS") or "20").strip() or "20"
     try:
         hv = int(float(raw))
     except (TypeError, ValueError):
-        hv = 8
+        hv = 20
     if hv <= 0:
-        hv = 8
-    hv = max(1, min(50, hv))
+        hv = 20
+    hv = max(1, min(500, hv))
     return min(hv, kalshi_max_open_positions_from_env())
 
 
