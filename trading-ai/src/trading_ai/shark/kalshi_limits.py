@@ -6,11 +6,15 @@ import os
 
 
 def kalshi_max_open_positions_from_env() -> int:
+    """Railway-safe: unset or non-positive env must not cap at 0 (would block all trades)."""
     raw = (os.environ.get("KALSHI_MAX_OPEN_POSITIONS") or "5").strip() or "5"
     try:
-        return max(1, int(float(raw)))
+        n = int(float(raw))
     except (TypeError, ValueError):
         return 5
+    if n <= 0:
+        return 5
+    return max(1, min(n, 500))
 
 
 def kalshi_min_position_usd() -> float:
@@ -51,9 +55,12 @@ def kalshi_hv_max_open_positions() -> int:
     """HV near-resolution: max simultaneous Kalshi opens (default 3, capped by general env)."""
     raw = (os.environ.get("KALSHI_HV_MAX_OPEN_POSITIONS") or "3").strip() or "3"
     try:
-        hv = max(1, min(10, int(float(raw))))
+        hv = int(float(raw))
     except (TypeError, ValueError):
         hv = 3
+    if hv <= 0:
+        hv = 3
+    hv = max(1, min(10, hv))
     return min(hv, kalshi_max_open_positions_from_env())
 
 

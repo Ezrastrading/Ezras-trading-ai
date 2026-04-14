@@ -21,7 +21,7 @@ from trading_ai.shark.models import ExecutionIntent, HuntType, ScoredOpportunity
 from trading_ai.shark.risk_context import build_risk_context
 from trading_ai.shark.reporting import alert_trade_fired
 from trading_ai.shark.state import BAYES, MANDATE
-from trading_ai.shark.state_store import load_capital, save_bayesian_snapshot, save_capital
+from trading_ai.shark.state_store import load_capital, load_positions, save_bayesian_snapshot, save_capital
 
 
 @dataclass
@@ -212,9 +212,36 @@ def run_execution_chain(
     _append(audit, "5_position_size", fraction=intent.stake_fraction_of_capital)
 
     caps = default_caps_for_capital(capital)
+    pos_data = load_positions()
+    o_low = (outlet or "").strip().lower()
+    open_rows = [p for p in (pos_data.get("open_positions") or []) if str(p.get("outlet") or "").lower() == o_low]
+    n_open_outlet = len(open_rows)
+    deployed_outlet = sum(float(p.get("notional_usd", 0) or 0) for p in open_rows)
+    max_deployed = capital * 0.80
+    max_positions = 0
+    if o_low == "kalshi":
+        if HuntType.NEAR_RESOLUTION_HV in intent.hunt_types:
+            max_positions = kalshi_limits.kalshi_hv_max_open_positions()
+        else:
+            max_positions = kalshi_limits.kalshi_max_open_positions_from_env()
+    log.info(
+        "Gate 5 check: open_positions=%s max_positions=%s deployed=%.2f max_deployed=%.2f capital=%.2f "
+        "stake_fraction=%.4f max_stake_fraction=%.4f",
+        n_open_outlet,
+        max_positions,
+        deployed_outlet,
+        max_deployed,
+        capital,
+        intent.stake_fraction_of_capital,
+        caps.max_fraction_of_capital,
+    )
     if intent.stake_fraction_of_capital > caps.max_fraction_of_capital + 1e-9:
         _append(audit, "5_position_size", fail=True, cap=caps.max_fraction_of_capital)
-        log.info("Gate 5 position_cap: FAIL")
+        log.info(
+            "Gate 5 position_cap: FAIL stake_fraction=%.4f > cap=%.4f",
+            intent.stake_fraction_of_capital,
+            caps.max_fraction_of_capital,
+        )
         return ChainResult(False, "position_cap", audit, intent)
     log.info("Gate 5 position_size: PASS")
 

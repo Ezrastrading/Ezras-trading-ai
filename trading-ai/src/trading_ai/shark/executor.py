@@ -421,6 +421,16 @@ def build_execution_intent(
             lo, hi = kalshi_limits.kalshi_notional_bounds_usd()
             notional = min(hi, max(lo, notional))
             stake = min(notional / max(capital, 1e-9), 0.80)
+        # Gate 5 uses phase max_single_position_fraction — HV must not exceed it (0.80 cap alone blocked all HV).
+        caps_hv = default_caps_for_capital(capital)
+        max_stake_frac = min(caps_hv.max_fraction_of_capital, pp.max_single_position_fraction)
+        stake = min(stake, max_stake_frac)
+        notional = max(MIN_POSITION_USD, min(capital * stake, room, capital * 0.80))
+        if o_low == "kalshi":
+            lo, hi = kalshi_limits.kalshi_notional_bounds_usd()
+            notional = min(hi, max(lo, notional))
+        stake = notional / max(capital, 1e-9)
+        stake = min(stake, max_stake_frac)
         side_hv = str(d0.get("side", "yes")).lower()
         if side_hv not in ("yes", "no"):
             side_hv = "yes"
