@@ -126,18 +126,25 @@ def submit_polymarket_order(intent: ExecutionIntent) -> OrderResult:
             "signature": sig,
         }
     }
-    from trading_ai.shark.outlets.polymarket import get_polymarket_headers
+    from trading_ai.shark.outlets.polymarket import CLOB_SIGN_PATH_ORDER, build_polymarket_l2_headers
 
+    body_str = json.dumps(body, separators=(",", ":"))
     hdrs: Dict[str, str] = {"User-Agent": "EzrasShark/1.0"}
-    if (os.environ.get("POLY_API_SECRET") or "").strip():
-        hdrs.update(get_polymarket_headers())
+    if (os.environ.get("POLY_API_SECRET") or "").strip() and (os.environ.get("POLY_WALLET_KEY") or "").strip():
+        hdrs.update(
+            build_polymarket_l2_headers(
+                "POST",
+                CLOB_SIGN_PATH_ORDER,
+                serialized_body=body_str,
+            )
+        )
     else:
         hdrs["Content-Type"] = "application/json"
         if api_key:
             hdrs["POLY_API_KEY"] = api_key
     req = urllib.request.Request(
         CLOB_ORDER_URL,
-        data=json.dumps(body).encode("utf-8"),
+        data=body_str.encode("utf-8"),
         method="POST",
         headers=hdrs,
     )

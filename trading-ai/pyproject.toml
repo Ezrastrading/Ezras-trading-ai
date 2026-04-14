@@ -13,6 +13,8 @@ dependencies = [
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   "apscheduler>=3.10",
+  "py-clob-client>=0.18.0",
+  "eth-account>=0.10.0",
 ]
 
 [project.optional-dependencies]

@@ -1,8 +1,10 @@
-"""Polymarket CLOB — https://clob.polymarket.com (Ed25519 API auth + EIP-712 wallet orders)."""
+"""Polymarket CLOB — https://clob.polymarket.com (L2 HMAC auth per py-clob-client + EIP-712 wallet orders)."""
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -10,7 +12,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 from trading_ai.shark.models import MarketSnapshot
@@ -23,9 +26,85 @@ load_shark_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Official CLOB signing paths (must match py-clob-client) — HMAC uses path without query string.
+CLOB_SIGN_PATH_BALANCE = "/balance-allowance"
+CLOB_SIGN_PATH_ORDER = "/order"
+
+# Last working auth method label (set after successful probe).
+_POLY_AUTH_WORKING_METHOD: Optional[str] = None
+
+
+def _pad_b64(secret: str) -> str:
+    s = secret.strip()
+    p = (4 - len(s) % 4) % 4
+    return s + ("=" * p if p else "")
+
+
+def _decode_secret_bytes_for_hmac(api_secret: str) -> bytes:
+    """Polymarket API secrets are base64; py-clob uses urlsafe decode — try both."""
+    raw = _pad_b64(api_secret)
+    try:
+        return base64.urlsafe_b64decode(raw)
+    except Exception:
+        return base64.b64decode(raw)
+
+
+def build_hmac_signature(
+    api_secret: str,
+    timestamp: int,
+    method: str,
+    request_path: str,
+    body: Optional[str] = None,
+) -> str:
+    """L2 HMAC — same construction as py_clob_client.signing.hmac.build_hmac_signature."""
+    secret_bytes = _decode_secret_bytes_for_hmac(api_secret)
+    message = str(timestamp) + str(method) + str(request_path)
+    if body is not None:
+        message += str(body).replace("'", '"')
+    digest = hmac.new(secret_bytes, message.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8")
+
+
+def _wallet_address_hex(wallet_key: str) -> str:
+    from eth_account import Account
+
+    pk = wallet_key.strip()
+    if pk.startswith("0x"):
+        pk = pk[2:]
+    return Account.from_key("0x" + pk).address
+
+
+def build_polymarket_l2_headers(
+    method: str,
+    request_path: str,
+    *,
+    serialized_body: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Official L2 headers (POLY_ADDRESS, POLY_SIGNATURE, …) — matches py-clob-client create_level_2_headers.
+    request_path must be the path used for signing (e.g. /balance-allowance or /order), not the full URL.
+    """
+    load_shark_dotenv()
+    wallet_key = (os.getenv("POLY_WALLET_KEY") or "").strip()
+    api_key = (os.getenv("POLY_API_KEY") or "").strip()
+    api_secret = (os.getenv("POLY_API_SECRET") or "").strip()
+    passphrase = (os.getenv("POLY_API_PASSPHRASE") or "").strip()
+    if not (wallet_key and api_key and api_secret):
+        raise ValueError("POLY_WALLET_KEY, POLY_API_KEY, and POLY_API_SECRET are required for L2 auth")
+    ts = int(datetime.now().timestamp())
+    sig = build_hmac_signature(api_secret, ts, method, request_path, serialized_body)
+    return {
+        "POLY_ADDRESS": _wallet_address_hex(wallet_key),
+        "POLY_SIGNATURE": sig,
+        "POLY_TIMESTAMP": str(ts),
+        "POLY_API_KEY": api_key,
+        "POLY_PASSPHRASE": passphrase,
+        "Content-Type": "application/json",
+    }
+
 
 def sign_polymarket_request(timestamp_ms: int, api_secret: str) -> str:
-    """Ed25519 sign of the timestamp string (ms) using API secret (base64 or hex 32-byte seed)."""
+    """Ed25519 sign of the timestamp string (ms) — legacy / diagnostic method 1."""
     if not (api_secret or "").strip():
         return ""
     try:
@@ -56,65 +135,38 @@ def sign_polymarket_request(timestamp_ms: int, api_secret: str) -> str:
     return base64.b64encode(sig).decode("ascii")
 
 
-def test_polymarket_credentials() -> Dict[str, Any]:
-    """
-    GET /balance-allowance with full L2 signed headers (diagnostic for 401 / key–secret mismatch).
-    """
-    import urllib.error
-    import urllib.request
-
-    load_shark_dotenv()
-    key_id = (os.getenv("POLY_API_KEY") or "").strip()
-    secret_set = bool((os.getenv("POLY_API_SECRET") or "").strip())
-    wk = (os.getenv("POLY_WALLET_KEY") or "").strip()
-    wa = (os.getenv("POLY_WALLET_ADDRESS") or "").strip()
-    wallet_set = bool(wk or wa)
-
-    fixed_clob = "https://clob.polymarket.com"
-    ba_params: Dict[str, str] = {"asset_type": "COLLATERAL"}
-    sig_t = (os.environ.get("POLY_SIGNATURE_TYPE") or "").strip()
-    if sig_t.isdigit():
-        ba_params["signature_type"] = sig_t
-    q = urllib.parse.urlencode(ba_params)
-    url = f"{fixed_clob}/balance-allowance?{q}"
-
-    headers = dict(get_polymarket_headers())
-    headers["User-Agent"] = "EzrasSetup/1.0"
-
-    status_code = -1
-    error: Optional[str] = None
-    balance: Optional[float] = None
-
+def sign_polymarket_request_method2(timestamp_ms: int, api_secret: str, api_key: str) -> str:
+    """Ed25519 sign of f\"{timestamp_ms}{api_key}\" — diagnostic method 2."""
+    if not (api_secret or "").strip():
+        return ""
     try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status_code = int(resp.getcode())
-            raw = resp.read().decode("utf-8")
-            if raw.strip():
-                body = json.loads(raw)
-                balance = _extract_balance_from_json(body)
-    except urllib.error.HTTPError as e:
-        status_code = int(e.code)
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError:
+        return ""
+    raw = api_secret.strip()
+    secret = raw
+    padding = 4 - len(secret) % 4
+    if padding != 4:
+        secret = secret + "=" * padding
+    try:
+        key_bytes = base64.b64decode(secret)
+    except Exception:
         try:
-            err_body = e.read().decode("utf-8", errors="replace")
-            error = (err_body or str(e))[:500]
+            key_bytes = base64.urlsafe_b64decode(secret)
         except Exception:
-            error = str(e)
-    except Exception as e:
-        status_code = -1
-        error = str(e)
-
-    return {
-        "status_code": status_code,
-        "error": error,
-        "balance": balance,
-        "key_id_used": key_id,
-        "secret_set": secret_set,
-        "wallet_set": wallet_set,
-    }
+            try:
+                key_bytes = bytes.fromhex(raw.replace("0x", ""))
+            except Exception:
+                return ""
+    if len(key_bytes) < 32:
+        return ""
+    private_key = Ed25519PrivateKey.from_private_bytes(key_bytes[:32])
+    msg = f"{timestamp_ms}{api_key}".encode("utf-8")
+    sig = private_key.sign(msg)
+    return base64.b64encode(sig).decode("ascii")
 
 
-def get_polymarket_headers() -> Dict[str, str]:
+def _headers_legacy_xpm() -> Dict[str, str]:
     ts = int(time.time() * 1000)
     secret = os.getenv("POLY_API_SECRET", "") or ""
     sig = sign_polymarket_request(ts, secret)
@@ -124,6 +176,215 @@ def get_polymarket_headers() -> Dict[str, str]:
         "X-PM-Signature": sig,
         "Content-Type": "application/json",
     }
+
+
+def _headers_method2_xpm() -> Dict[str, str]:
+    ts = int(time.time() * 1000)
+    secret = os.getenv("POLY_API_SECRET", "") or ""
+    api_key = os.getenv("POLY_API_KEY", "") or ""
+    sig = sign_polymarket_request_method2(ts, secret, api_key)
+    return {
+        "X-PM-Access-Key": api_key,
+        "X-PM-Timestamp": str(ts),
+        "X-PM-Signature": sig,
+        "Content-Type": "application/json",
+    }
+
+
+def _balance_allowance_url(host: str) -> str:
+    ba_params: Dict[str, str] = {"asset_type": "COLLATERAL"}
+    sig = (os.environ.get("POLY_SIGNATURE_TYPE") or "").strip()
+    if sig.isdigit():
+        ba_params["signature_type"] = sig
+    q = urllib.parse.urlencode(ba_params)
+    return f"{host.rstrip('/')}{CLOB_SIGN_PATH_BALANCE}?{q}"
+
+
+def _http_get_balance_probe(url: str, headers: Dict[str, str]) -> Tuple[int, Optional[float], Optional[str]]:
+    try:
+        hdrs = dict(headers)
+        hdrs.setdefault("User-Agent", "EzrasPolymarket/1.0")
+        req = urllib.request.Request(url, headers=hdrs, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            code = int(resp.getcode())
+            raw = resp.read().decode("utf-8")
+            bal: Optional[float] = None
+            if raw.strip():
+                body = json.loads(raw)
+                bal = _extract_balance_from_json(body)
+            return code, bal, None
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            return int(e.code), None, (err_body or str(e))[:500]
+        except Exception:
+            return int(e.code), None, str(e)
+    except Exception as e:
+        return -1, None, str(e)
+
+
+def _try_method_1_balance() -> Tuple[int, Optional[float], Optional[str]]:
+    host = "https://clob.polymarket.com"
+    url = _balance_allowance_url(host)
+    return _http_get_balance_probe(url, _headers_legacy_xpm())
+
+
+def _try_method_2_balance() -> Tuple[int, Optional[float], Optional[str]]:
+    host = "https://clob.polymarket.com"
+    url = _balance_allowance_url(host)
+    return _http_get_balance_probe(url, _headers_method2_xpm())
+
+
+def _try_method_5_hmac_balance() -> Tuple[int, Optional[float], Optional[str]]:
+    """Official L2 HMAC (py-clob-client compatible)."""
+    host = "https://clob.polymarket.com"
+    url = _balance_allowance_url(host)
+    h = build_polymarket_l2_headers("GET", CLOB_SIGN_PATH_BALANCE, serialized_body=None)
+    h["User-Agent"] = "EzrasPolymarket/1.0"
+    return _http_get_balance_probe(url, h)
+
+
+def _collateral_balance_params() -> Any:
+    from py_clob_client.clob_types import BalanceAllowanceParams
+
+    try:
+        from py_clob_client.clob_types import AssetType
+
+        return BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+    except Exception:
+        return BalanceAllowanceParams(asset_type="COLLATERAL")  # type: ignore[arg-type]
+
+
+def _try_method_3_sdk_balance() -> Tuple[int, Optional[float], Optional[str]]:
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+    except ImportError:
+        return -1, None, "py-clob-client not installed"
+
+    load_shark_dotenv()
+    key = (os.getenv("POLY_WALLET_KEY") or "").strip()
+    ak = (os.getenv("POLY_API_KEY") or "").strip()
+    sec = (os.getenv("POLY_API_SECRET") or "").strip()
+    if not (key and ak and sec):
+        return -1, None, "missing wallet or API credentials"
+    host = (os.getenv("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
+    chain_id = int(os.getenv("POLY_CHAIN_ID", "137"))
+    creds = ApiCreds(
+        api_key=ak,
+        api_secret=sec,
+        api_passphrase=(os.getenv("POLY_API_PASSPHRASE") or "").strip(),
+    )
+    client = ClobClient(host, chain_id=chain_id, key=key, creds=creds)
+    try:
+        raw = client.get_balance_allowance(_collateral_balance_params())
+        bal = _extract_balance_from_json(raw)
+        return 200, bal, None
+    except Exception as e:
+        return -1, None, str(e)[:500]
+
+
+def _try_method_4_sdk_derive_balance() -> Tuple[int, Optional[float], Optional[str]]:
+    try:
+        from py_clob_client.client import ClobClient
+    except ImportError:
+        return -1, None, "py-clob-client not installed"
+
+    load_shark_dotenv()
+    key = (os.getenv("POLY_WALLET_KEY") or "").strip()
+    if not key:
+        return -1, None, "missing POLY_WALLET_KEY"
+    host = (os.getenv("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
+    chain_id = int(os.getenv("POLY_CHAIN_ID", "137"))
+    client = ClobClient(host, chain_id=chain_id, key=key)
+    try:
+        creds = client.create_or_derive_api_creds()
+        if creds is None:
+            return -1, None, "create_or_derive_api_creds returned None"
+        client.set_api_creds(creds)
+        raw = client.get_balance_allowance(_collateral_balance_params())
+        bal = _extract_balance_from_json(raw)
+        return 200, bal, None
+    except Exception as e:
+        return -1, None, str(e)[:500]
+
+
+def probe_polymarket_balance_methods() -> Tuple[Optional[float], Optional[str], List[Dict[str, Any]]]:
+    """
+    Try auth methods in order until HTTP 200 from balance-allowance (or SDK success).
+    Returns (balance, winning_method, methods_tried).
+    """
+    global _POLY_AUTH_WORKING_METHOD
+    tried: List[Dict[str, Any]] = []
+
+    def _run(name: str, fn: Any) -> Optional[Tuple[Optional[float], str]]:
+        try:
+            code, bal, err = fn()
+            tried.append({"method": name, "status_code": code, "error": err, "balance": bal})
+            if code == 200:
+                logger.info("Polymarket auth: method %s working (HTTP/status ok)", name)
+                _POLY_AUTH_WORKING_METHOD = name
+                return (bal, name)
+        except Exception as e:
+            tried.append({"method": name, "error": str(e)[:500]})
+        return None
+
+    for label, fn in (
+        ("1_standard_ed25519_xpm", _try_method_1_balance),
+        ("2_ed25519_timestamp_plus_keyid", _try_method_2_balance),
+        ("3_py_clob_api_creds", _try_method_3_sdk_balance),
+        ("4_py_clob_derive_api_creds", _try_method_4_sdk_derive_balance),
+        ("5_official_hmac_l2", _try_method_5_hmac_balance),
+    ):
+        out = _run(label, fn)
+        if out is not None:
+            return out[0], out[1], tried
+
+    _POLY_AUTH_WORKING_METHOD = None
+    return None, None, tried
+
+
+def test_polymarket_credentials() -> Dict[str, Any]:
+    """
+    Run balance probe (methods 1–4, then official HMAC). Surfaces status, balance, and which method worked.
+    """
+    load_shark_dotenv()
+    key_id = (os.getenv("POLY_API_KEY") or "").strip()
+    secret_set = bool((os.getenv("POLY_API_SECRET") or "").strip())
+    wk = (os.getenv("POLY_WALLET_KEY") or "").strip()
+    wa = (os.getenv("POLY_WALLET_ADDRESS") or "").strip()
+    wallet_set = bool(wk or wa)
+
+    balance, auth_method, methods_tried = probe_polymarket_balance_methods()
+    if auth_method:
+        for row in methods_tried:
+            if row.get("method") == auth_method and row.get("balance") is not None and balance is None:
+                balance = row.get("balance")
+        status_code = 200
+        err = None
+    else:
+        last = methods_tried[-1] if methods_tried else {}
+        status_code = int(last.get("status_code", -1)) if isinstance(last, dict) else -1
+        err = (last.get("error") if isinstance(last, dict) else None) or "all auth methods failed"
+
+    return {
+        "status_code": status_code,
+        "error": err,
+        "balance": balance,
+        "key_id_used": key_id,
+        "secret_set": secret_set,
+        "wallet_set": wallet_set,
+        "auth_method": auth_method,
+        "methods_tried": methods_tried,
+    }
+
+
+def get_polymarket_headers() -> Dict[str, str]:
+    """
+    Back-compat: L2 headers for GET /balance-allowance (sign path without query).
+    Prefer build_polymarket_l2_headers(method, path, body) for POST /order.
+    """
+    return build_polymarket_l2_headers("GET", CLOB_SIGN_PATH_BALANCE, serialized_body=None)
 
 
 def _http_get_balance_json(url: str, headers: Optional[Dict[str, str]]) -> Optional[Any]:
@@ -215,13 +476,22 @@ def _extract_balance_from_json(obj: Any) -> Optional[float]:
 
 def fetch_polymarket_balance() -> Optional[float]:
     """
-    Try CLOB balance URLs (official /balance-allowance, then legacy paths), with L2 auth when set,
-    then the same URLs without auth, then data-api portfolio (wallet-only, no auth).
+    Resolve balance using the same probe order as test_polymarket_credentials, then legacy fallbacks.
     """
+    load_shark_dotenv()
+    bal, method, _ = probe_polymarket_balance_methods()
+    if bal is not None:
+        logger.info("Polymarket balance: $%.2f (auth method %s)", bal, method)
+        return bal
+
     base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
     fixed_clob = "https://clob.polymarket.com"
     wallet = (os.environ.get("POLY_WALLET_ADDRESS") or "").strip()
-    has_pm_auth = bool((os.getenv("POLY_API_KEY") or "").strip() and (os.getenv("POLY_API_SECRET") or "").strip())
+    has_pm_auth = bool(
+        (os.getenv("POLY_API_KEY") or "").strip()
+        and (os.getenv("POLY_API_SECRET") or "").strip()
+        and (os.getenv("POLY_WALLET_KEY") or "").strip()
+    )
 
     ba_params: Dict[str, str] = {"asset_type": "COLLATERAL"}
     sig = (os.environ.get("POLY_SIGNATURE_TYPE") or "").strip()
@@ -242,42 +512,47 @@ def fetch_polymarket_balance() -> Optional[float]:
         ]
     )
 
-    auth_headers = dict(get_polymarket_headers()) if has_pm_auth else None
+    auth_headers: Optional[Dict[str, str]] = None
+    if has_pm_auth:
+        try:
+            auth_headers = build_polymarket_l2_headers("GET", CLOB_SIGN_PATH_BALANCE, serialized_body=None)
+        except Exception:
+            auth_headers = None
 
     for url in clob_urls:
-        if has_pm_auth:
+        if auth_headers:
             body = _http_get_balance_json(url, auth_headers)
             if body is not None:
-                bal = _extract_balance_from_json(body)
-                if bal is not None:
-                    logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, url)
-                    return bal
+                b = _extract_balance_from_json(body)
+                if b is not None:
+                    logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", b, url)
+                    return b
         body = _http_get_balance_json(url, None)
         if body is not None:
-            bal = _extract_balance_from_json(body)
-            if bal is not None:
-                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, url)
-                return bal
+            b = _extract_balance_from_json(body)
+            if b is not None:
+                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", b, url)
+                return b
 
     if wallet:
         q = urllib.parse.urlencode({"user": wallet})
         data_url = f"https://data-api.polymarket.com/portfolio?{q}"
         body = _http_get_balance_json(data_url, None)
         if body is not None:
-            bal = _extract_balance_from_json(body)
-            if bal is not None:
-                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", bal, data_url)
-                return bal
+            b = _extract_balance_from_json(body)
+            if b is not None:
+                logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", b, data_url)
+                return b
 
     if not has_pm_auth and not wallet:
-        logger.debug("Polymarket balance: set POLY_API_KEY+POLY_API_SECRET and/or POLY_WALLET_ADDRESS")
+        logger.debug("Polymarket balance: set POLY_API_KEY+POLY_API_SECRET+POLY_WALLET_KEY and/or POLY_WALLET_ADDRESS")
     else:
         logger.warning("Polymarket balance: no endpoint returned a parseable USD balance")
     return None
 
 
 def submit_polymarket_order(intent: "ExecutionIntent") -> "OrderResult":
-    """POST signed CLOB order (EIP-712 wallet + Ed25519 API headers)."""
+    """POST signed CLOB order (EIP-712 wallet + L2 API headers)."""
     from trading_ai.shark.polymarket_live import submit_polymarket_order as _submit
 
     return _submit(intent)
@@ -291,7 +566,7 @@ def require_polymarket_credentials_for_live() -> tuple[str, str]:
     if not w:
         logger.warning("POLY_WALLET_KEY unset — Polymarket order placement needs wallet key")
     if not k:
-        logger.warning("POLY_API_KEY empty — use X-PM headers when secret is set")
+        logger.warning("POLY_API_KEY empty — use L2 headers when secret is set")
     return w, k
 
 
@@ -300,10 +575,7 @@ class PolymarketFetcher(BaseOutletFetcher):
     CLOB_BASE = os.environ.get("POLY_CLOB_BASE", "https://clob.polymarket.com")
 
     def _scan_headers(self) -> Dict[str, str]:
-        if (os.environ.get("POLY_API_KEY") or "").strip() and (os.environ.get("POLY_API_SECRET") or "").strip():
-            h = dict(get_polymarket_headers())
-            h["User-Agent"] = "EzrasShark/1.0"
-            return h
+        # Public /markets — no L2 auth required for listing.
         return {"User-Agent": "EzrasShark/1.0"}
 
     def http_get_json(self, url: str, timeout: float = 20.0) -> Any:
