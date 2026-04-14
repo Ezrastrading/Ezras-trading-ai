@@ -85,7 +85,6 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             ticker=ticker,
             side=intent.side,
             count=max(1, int(intent.shares)),
-            order_type="market",
         )
     if o == "manifold":
         if not manifold_real_money_execution_enabled():

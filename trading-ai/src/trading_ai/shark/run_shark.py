@@ -50,6 +50,7 @@ def _setup_logging() -> None:
 def main() -> None:
     _setup_logging()
     log = logging.getLogger("shark.run")
+    log.info("Kalshi order mode: %s", os.environ.get("KALSHI_HV_ORDER_MODE", "not set"))
     try:
         import resource
 

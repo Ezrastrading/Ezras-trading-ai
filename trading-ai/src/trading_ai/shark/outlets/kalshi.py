@@ -614,22 +614,22 @@ class KalshiClient:
         side: str,
         count: int,
         action: str = "buy",
-        order_type: str = "market",
     ) -> OrderResult:
         """
-        Kalshi execution is **market-only** (no limit / no resting orders).
+        Kalshi execution is **market-only**: POST body is ``type: market`` (no limit / no resting).
 
-        After submit, polls up to 5s; if ``fill_count`` is still zero, cancels the order.
+        After POST, polls GET ``/portfolio/orders/{id}`` for up to 5s; zero fill → cancel.
         """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
 
             require_kalshi_api_key()
-        _ = (order_type or "market").strip().lower()  # API always uses market; kept for call-site clarity
+
         act = (action or "buy").strip().lower()
         if act not in ("buy", "sell"):
             act = "buy"
         cnt = max(1, int(count))
+
         body: Dict[str, Any] = {
             "ticker": ticker,
             "action": act,
@@ -637,7 +637,6 @@ class KalshiClient:
             "type": "market",
             "count": cnt,
         }
-        logger.info("Kalshi order: market fill %s %s", ticker, cnt)
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
         if not oid:
@@ -661,13 +660,13 @@ class KalshiClient:
             if not isinstance(root, dict):
                 root = {}
             fs = 0.0
-            for key in ("filled_count", "fill_count"):
+            for key in ("filled_count", "fill_count", "fill_count_fp"):
                 v = root.get(key)
                 if v is None and payload.get(key) is not None:
                     v = payload.get(key)
                 if v is not None:
                     try:
-                        fs = float(v)
+                        fs = float(str(v).strip())
                         break
                     except (TypeError, ValueError):
                         pass
@@ -679,19 +678,11 @@ class KalshiClient:
                 or 0
             )
             fp = fp_cents / 100.0
-            st = str(
-                root.get("status") or payload.get("status") or "submitted",
-            ).lower()
+            st = str(root.get("status") or payload.get("status") or "submitted").lower()
             return fs, fp, st
 
         fs, fp, status = _fill_metrics(j)
-        terminal = {
-            "filled",
-            "executed",
-            "closed",
-            "canceled",
-            "cancelled",
-        }
+        terminal = frozenset({"filled", "executed", "closed", "canceled", "cancelled"})
 
         while fs <= 0 and status not in terminal and time.time() < deadline:
             time.sleep(0.2)
@@ -704,7 +695,7 @@ class KalshiClient:
             fs, fp, status = _fill_metrics(j)
 
         if fs > 0:
-            logger.info("Order filled: %s %s@%s", ticker, fs, fp)
+            logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
             return OrderResult(
                 order_id=oid,
                 filled_price=fp,
@@ -722,10 +713,10 @@ class KalshiClient:
                 logger.warning("Kalshi cancel after no fill failed %s: %s", oid, exc)
             try:
                 j = self.get_order(oid)
+                fs, fp, status = _fill_metrics(j)
             except Exception:
                 pass
-            fs, fp, status = _fill_metrics(j)
-            logger.warning("Order cancelled: %s — no fill in 5s", ticker)
+            logger.warning("Order cancelled — no fill in 5s: [%s]", ticker)
 
         if fs <= 0:
             return OrderResult(
@@ -740,7 +731,7 @@ class KalshiClient:
                 reason="no fill within 5s",
             )
 
-        logger.info("Order filled: %s %s@%s", ticker, fs, fp)
+        logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
         return OrderResult(
             order_id=oid,
             filled_price=fp,

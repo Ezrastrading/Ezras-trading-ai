@@ -52,7 +52,7 @@ def run_kalshi_stale_resting_order_sweep() -> None:
         "yes",
     ):
         return
-    raw = (os.environ.get("KALSHI_STALE_ORDER_MINUTES") or "0.17").strip() or "0.17"
+    raw = (os.environ.get("KALSHI_STALE_ORDER_MINUTES") or "0.5").strip() or "0.5"
     try:
         stale_sec = max(1.0, float(raw) * 60.0)
     except ValueError:

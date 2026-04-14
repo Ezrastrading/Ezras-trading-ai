@@ -662,7 +662,7 @@ def test_32_kalshi_order_placement_returns_valid_order_result_structure(monkeypa
 
     monkeypatch.setattr(KalshiClient, "_request", fake_request)
     c = KalshiClient(api_key="test-key")
-    r = c.place_order(ticker="KX-T", side="yes", count=10, order_type="market")
+    r = c.place_order(ticker="KX-T", side="yes", count=10)
     assert r.order_id == "ord-k-1"
     assert r.outlet == "kalshi"
     assert r.status

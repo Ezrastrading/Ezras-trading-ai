@@ -190,7 +190,6 @@ def run_kalshi_blitz() -> int:
                 ticker=ticker,
                 side=side,
                 count=cnt,
-                order_type="market",
             )
         except Exception as exc:
             logger.warning("Blitz order failed %s: %s", ticker, exc)

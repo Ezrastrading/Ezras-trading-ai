@@ -27,6 +27,6 @@ def test_place_order_market_omits_yes_price(monkeypatch):
 
     monkeypatch.setattr(KalshiClient, "_request", fake_request)
     c = KalshiClient(api_key="test-bearer-token-not-pem")
-    c.place_order(ticker="KX-T", side="yes", count=2, order_type="market")
+    c.place_order(ticker="KX-T", side="yes", count=2)
     assert bodies[-1]["type"] == "market"
     assert "yes_price" not in bodies[-1]

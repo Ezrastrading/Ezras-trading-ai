@@ -115,7 +115,6 @@ def run_kalshi_profit_exit_scan() -> None:
                 side=side,
                 count=cnt,
                 action="sell",
-                order_type="market",
             )
         except Exception as exc:
             logger.warning("kalshi profit exit sell failed %s: %s", tid, exc)

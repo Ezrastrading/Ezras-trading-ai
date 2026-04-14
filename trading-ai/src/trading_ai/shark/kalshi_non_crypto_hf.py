@@ -177,7 +177,6 @@ def run_kalshi_non_crypto_hf() -> None:
                 ticker=ticker,
                 side=side,
                 count=cnt,
-                order_type="market",
             )
         except Exception as exc:
             logger.warning("kalshi_nc_hf order failed %s: %s", ticker, exc)
