@@ -147,6 +147,41 @@ def _kalshi_row_has_explicit_quotes(m: Dict[str, Any]) -> bool:
     return False
 
 
+def _best_ask_cents_from_levels(levels: Any) -> Optional[float]:
+    """Lowest ask price on a side (best price to buy immediately from resting sellers)."""
+    if not isinstance(levels, list) or not levels:
+        return None
+    best: Optional[float] = None
+    for lv in levels:
+        if isinstance(lv, (list, tuple)) and len(lv) >= 1:
+            c = float(lv[0])
+        elif isinstance(lv, dict):
+            c = float(lv.get("price", lv.get("price_cents", 0)) or 0)
+        else:
+            continue
+        if c <= 0:
+            continue
+        if best is None or c < best:
+            best = c
+    return best
+
+
+def parse_orderbook_yes_no_best_ask_cents(ob_root: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """Best ask on YES and NO sides in cents (1–99), for aggressive limit / market context."""
+    ob = ob_root.get("orderbook") if isinstance(ob_root.get("orderbook"), dict) else ob_root
+    if not isinstance(ob, dict):
+        return None, None
+    ya = _best_ask_cents_from_levels(ob.get("yes"))
+    na = _best_ask_cents_from_levels(ob.get("no"))
+    out_y = int(round(ya)) if ya is not None else None
+    out_n = int(round(na)) if na is not None else None
+    if out_y is not None:
+        out_y = max(1, min(99, out_y))
+    if out_n is not None:
+        out_n = max(1, min(99, out_n))
+    return out_y, out_n
+
+
 def _parse_orderbook_yes_no_probs(ob_root: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
     """Best bid from orderbook ``yes`` / ``no`` sides; prices as probabilities in (0, 1)."""
     ob = ob_root.get("orderbook") if isinstance(ob_root.get("orderbook"), dict) else ob_root
@@ -195,6 +230,20 @@ def fetch_kalshi_market_price(
         data = c._request("GET", f"/markets/{urllib.parse.quote(ticker.strip(), safe='')}/orderbook")
         return _parse_orderbook_yes_no_probs(data)
     except Exception:
+        return None, None
+
+
+def fetch_kalshi_orderbook_best_ask_cents(
+    ticker: str,
+    client: Optional["KalshiClient"] = None,
+) -> Tuple[Optional[int], Optional[int]]:
+    """Best ask YES/NO in cents from ``GET …/orderbook`` (for crossing spread on buys)."""
+    c = client or KalshiClient()
+    try:
+        data = c._request("GET", f"/markets/{urllib.parse.quote(ticker.strip(), safe='')}/orderbook")
+        return parse_orderbook_yes_no_best_ask_cents(data)
+    except Exception as exc:
+        logger.debug("Kalshi orderbook ask fetch failed %s: %s", ticker, exc)
         return None, None
 
 
@@ -509,16 +558,21 @@ class KalshiClient:
         )
 
         _log_kalshi_active_market_counts(candidates, now)
+        _log_kalshi_hv_expiry_tier_pool(candidates, now, "candidates_after_filters_pre_sort")
 
         def _sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
+            # Prefer soonest resolution first so top_n is not dominated by far-dated high-imbalance
+            # markets (which would crowd out Tier A/B 5–30m crypto and live ranges).
             y, _, _, _ = _kalshi_yes_no_from_market_row(row)
             close = _parse_close_timestamp_unix(row)
             imbalance = -abs(y - 0.5)
             close_key = close if close is not None else far_future
-            return (imbalance, close_key)
+            return (close_key, imbalance)
 
         candidates.sort(key=_sort_key)
-        return candidates[:tn]
+        trimmed = candidates[:tn]
+        _log_kalshi_hv_expiry_tier_pool(trimmed, now, "active_pool_after_top_n")
+        return trimmed
 
     def fetch_orderbook_depth(self, ticker: str) -> Tuple[float, float]:
         j = self._request("GET", f"/markets/{urllib.parse.quote(ticker, safe='')}/orderbook")
@@ -547,20 +601,35 @@ class KalshiClient:
         ticker: str,
         side: str,
         count: int,
-        yes_price_cents: int,
+        yes_price_cents: Optional[int] = None,
+        order_type: str = "limit",
+        time_in_force: Optional[str] = None,
     ) -> OrderResult:
+        """
+        ``order_type``: ``limit`` (default) requires ``yes_price_cents``; ``market`` crosses at best available.
+
+        ``time_in_force``: optional Kalshi values e.g. ``immediate_or_cancel``, ``good_till_canceled``.
+        """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
 
             require_kalshi_api_key()
-        body = {
+        ot = (order_type or "limit").strip().lower()
+        if ot not in ("limit", "market"):
+            ot = "limit"
+        body: Dict[str, Any] = {
             "ticker": ticker,
             "action": "buy",
             "side": side,
-            "type": "limit",
+            "type": ot,
             "count": count,
-            "yes_price": yes_price_cents,
         }
+        if ot == "limit":
+            if yes_price_cents is None:
+                raise ValueError("yes_price_cents required for Kalshi limit orders")
+            body["yes_price"] = max(1, min(99, int(yes_price_cents)))
+        if time_in_force:
+            body["time_in_force"] = time_in_force
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
         status = str(j.get("status") or j.get("order", {}).get("status") or "submitted")
@@ -840,6 +909,41 @@ def _kalshi_series_key(m: Dict[str, Any]) -> str:
     if "-" in tick:
         return tick.split("-", 1)[0].upper()
     return tick.upper() or "UNKNOWN"
+
+
+def _count_kalshi_rows_by_hv_expiry_tier(rows: List[Dict[str, Any]], now: float) -> Dict[str, int]:
+    """Histogram for Kalshi HV A/B/C windows (minutes), using same TTR as snapshots — see kalshi_expiry_tiers."""
+    from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
+
+    counts = {"A": 0, "B": 0, "C": 0, "outside": 0}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ttr = _parse_close_time_seconds(row, now)
+        tier = classify_kalshi_expiry_tier(ttr)
+        if tier is None:
+            counts["outside"] += 1
+        else:
+            counts[tier] += 1
+    return counts
+
+
+def _log_kalshi_hv_expiry_tier_pool(rows: List[Dict[str, Any]], now: float, label: str) -> None:
+    """INFO: how many markets fall in each HV expiry tier (env KALSHI_TIER_*) for this pool."""
+    if not rows:
+        logger.info("Kalshi HV expiry tier counts (%s): n=0", label)
+        return
+    c = _count_kalshi_rows_by_hv_expiry_tier(rows, now)
+    n = len(rows)
+    logger.info(
+        "Kalshi HV expiry tier counts (%s, n=%s): Tier_A=%s Tier_B=%s Tier_C=%s outside_windows=%s",
+        label,
+        n,
+        c["A"],
+        c["B"],
+        c["C"],
+        c["outside"],
+    )
 
 
 def _log_kalshi_active_market_counts(markets: List[Dict[str, Any]], now: float) -> None:

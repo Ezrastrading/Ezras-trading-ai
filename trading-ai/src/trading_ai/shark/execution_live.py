@@ -75,18 +75,78 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             reason="US geoblock — scan only",
         )
     if o == "kalshi":
-        from trading_ai.shark.outlets.kalshi import KalshiClient
+        from trading_ai.shark.outlets.kalshi import KalshiClient, fetch_kalshi_orderbook_best_ask_cents
 
         client = KalshiClient()
         ticker = intent.market_id
         if ":" in ticker:
             ticker = ticker.split(":")[-1]
-        yes_cents = int(round(intent.expected_price * 100)) if intent.side == "yes" else int(round((1.0 - intent.expected_price) * 100))
+        base_yes_cents = (
+            int(round(intent.expected_price * 100))
+            if intent.side == "yes"
+            else int(round((1.0 - intent.expected_price) * 100))
+        )
+        base_yes_cents = max(1, min(99, base_yes_cents))
+        meta = intent.meta or {}
+        is_hv = bool(meta.get("near_resolution_hv"))
+
+        if not is_hv:
+            return client.place_order(
+                ticker=ticker,
+                side=intent.side,
+                count=max(1, int(intent.shares)),
+                yes_price_cents=base_yes_cents,
+            )
+
+        hv_mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "aggressive_limit").strip().lower()
+        try:
+            bump = int((os.environ.get("KALSHI_HV_LIMIT_BUMP_CENTS") or "2").strip() or "2")
+        except ValueError:
+            bump = 2
+        bump = max(0, min(5, bump))
+
+        if hv_mode == "market":
+            logger.info(
+                "Kalshi HV submit: mode=market ticker=%s side=%s count=%s (snapshot limit would be yes_price=%s¢)",
+                ticker,
+                intent.side,
+                max(1, int(intent.shares)),
+                base_yes_cents,
+            )
+            return client.place_order(
+                ticker=ticker,
+                side=intent.side,
+                count=max(1, int(intent.shares)),
+                order_type="market",
+            )
+
+        ask_yes, ask_no = fetch_kalshi_orderbook_best_ask_cents(ticker, client=client)
+        limit_yes: int = base_yes_cents
+        if intent.side == "yes" and ask_yes is not None:
+            limit_yes = min(99, max(1, ask_yes + bump))
+        elif intent.side == "no" and ask_no is not None:
+            aggressive_no = min(99, max(1, ask_no + bump))
+            limit_yes = min(99, max(1, 100 - aggressive_no))
+        else:
+            limit_yes = min(99, max(1, base_yes_cents + bump))
+
+        tif = (os.environ.get("KALSHI_HV_TIME_IN_FORCE") or "").strip() or None
+        logger.info(
+            "Kalshi HV submit: aggressive_limit ticker=%s side=%s ask_yes=%s ask_no=%s base_yes_price=%s¢ limit_yes_price=%s¢ bump=%s",
+            ticker,
+            intent.side,
+            ask_yes,
+            ask_no,
+            base_yes_cents,
+            limit_yes,
+            bump,
+        )
         return client.place_order(
             ticker=ticker,
             side=intent.side,
             count=max(1, int(intent.shares)),
-            yes_price_cents=max(1, min(99, yes_cents)),
+            yes_price_cents=limit_yes,
+            time_in_force=tif,
         )
     if o == "manifold":
         if not manifold_real_money_execution_enabled():
