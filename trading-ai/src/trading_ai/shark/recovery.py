@@ -49,6 +49,10 @@ def _open_position_from_dict(p: Dict[str, Any]) -> Any:
         condition_id=p.get("condition_id"),
         token_id=p.get("token_id"),
         margin_borrowed_usd=float(p.get("margin_borrowed_usd", 0.0)),
+        claude_reasoning=p.get("claude_reasoning"),
+        claude_confidence=p.get("claude_confidence"),
+        claude_true_probability=p.get("claude_true_probability"),
+        claude_decision=p.get("claude_decision"),
     )
 
 

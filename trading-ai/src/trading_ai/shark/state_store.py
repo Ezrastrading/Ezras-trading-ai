@@ -205,6 +205,7 @@ def save_bayesian_snapshot() -> None:
         "outlet_weights": dict(BAYES.outlet_weights),
         "hour_edge_quality": {str(k): v for k, v in BAYES.hour_edge_quality.items()},
         "trade_count": BAYES.trade_count,
+        "claude_direction_accuracy": BAYES.claude_direction_accuracy,
         "updated_at": _iso(),
     }
     bayesian_path().write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -226,6 +227,8 @@ def load_bayesian_into_memory() -> None:
             for k, v in raw["hour_edge_quality"].items():
                 BAYES.hour_edge_quality[int(k)] = float(v)
         BAYES.trade_count = int(raw.get("trade_count", 0))
+        if "claude_direction_accuracy" in raw:
+            BAYES.claude_direction_accuracy = float(raw["claude_direction_accuracy"])
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         pass
 

@@ -134,6 +134,10 @@ def execute_mana_trade(intent: Any, *, scored: Any = None) -> bool:
         "strategy_key": "shark_default",
         "opened_at": time.time(),
     }
+    for k in ("claude_reasoning", "claude_confidence", "claude_true_probability", "claude_decision"):
+        v = intent.meta.get(k)
+        if v is not None:
+            pos[k] = v
     openp: List[Dict[str, Any]] = list(st.get("open_mana_positions") or [])
     openp.append(pos)
     st["open_mana_positions"] = openp
@@ -152,6 +156,9 @@ def update_mana_outcome(
     strategy: str = "shark_default",
     hunt_types: Optional[List[Any]] = None,
     win: bool,
+    position_side: Optional[str] = None,
+    claude_true_probability: Optional[float] = None,
+    claude_decision: Optional[str] = None,
 ) -> None:
     """Record mana outcome, update Bayesian (shared with real trades). No capital.json."""
     from trading_ai.shark.execution import hook_post_trade_resolution
@@ -191,6 +198,9 @@ def update_mana_outcome(
         pnl_dollars=float(pnl_mana),
         update_capital=False,
         is_mana=True,
+        claude_true_probability=claude_true_probability,
+        claude_decision=claude_decision,
+        position_side=position_side,
     )
 
 
@@ -255,6 +265,8 @@ def tick_mana_resolutions() -> int:
                 hts.append(HuntType.STRUCTURAL_ARBITRAGE)
         if not hts:
             hts = [HuntType.STRUCTURAL_ARBITRAGE]
+        ctp = pos.get("claude_true_probability")
+        ctp_f = float(ctp) if ctp is not None else None
         update_mana_outcome(
             mid,
             res,
@@ -262,6 +274,9 @@ def tick_mana_resolutions() -> int:
             strategy=str(pos.get("strategy_key", "shark_default")),
             hunt_types=hts,
             win=win,
+            position_side=side,
+            claude_true_probability=ctp_f,
+            claude_decision=str(pos.get("claude_decision")) if pos.get("claude_decision") else None,
         )
         n += 1
 

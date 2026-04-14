@@ -62,6 +62,7 @@ class BayesianWeights:
     outlet_weights: Dict[str, float] = field(default_factory=dict)
     hour_edge_quality: Dict[int, float] = field(default_factory=dict)
     trade_count: int = 0
+    claude_direction_accuracy: float = 0.5
 
     def update_from_trade(
         self,
@@ -82,6 +83,16 @@ class BayesianWeights:
         if hour_utc is not None:
             prev = self.hour_edge_quality.get(hour_utc, 0.5)
             self.hour_edge_quality[hour_utc] = (1 - h) * prev + h * outcome
+
+    def update_claude_direction_feedback(self, *, outcome_yes: bool, claude_decision: str) -> None:
+        """Half-weight update: did Claude's YES/NO call match resolved outcome?"""
+        if claude_decision not in ("YES", "NO"):
+            return
+        pred_yes = claude_decision == "YES"
+        correct = pred_yes == outcome_yes
+        h = 0.1
+        hit = 1.0 if correct else 0.0
+        self.claude_direction_accuracy = (1 - h) * self.claude_direction_accuracy + h * hit
 
     def strategy_performance_weight(self, strategy: str) -> float:
         raw = self.strategy_weights.get(strategy, 0.5)

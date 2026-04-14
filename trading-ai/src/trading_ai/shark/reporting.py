@@ -150,8 +150,10 @@ def format_trade_fired(
     edge_pct: float,
     market_desc: str,
     resolves_in: str,
+    claude_reasoning: Optional[str] = None,
+    claude_confidence: Optional[float] = None,
 ) -> str:
-    return (
+    body = (
         "⚡ TRADE FIRED\n"
         f"Hunt: {hunt} | Tier: {tier}\n"
         f"Outlet: {outlet}\n"
@@ -159,6 +161,11 @@ def format_trade_fired(
         f"Market: {market_desc}\n"
         f"Resolves: {resolves_in}"
     )
+    if claude_reasoning:
+        cc = float(claude_confidence) if claude_confidence is not None else None
+        conf_line = f"\nConfidence: {cc*100:.0f}%" if cc is not None else ""
+        body += f"\nClaude: {claude_reasoning}{conf_line}"
+    return body
 
 
 def format_win_resolved(*, pnl: float, ret_pct: float, capital: float, day_pnl: float) -> str:
@@ -207,6 +214,8 @@ def alert_trade_fired(
     outlet: str = "",
     market_desc: str = "",
     resolves_in: str = "",
+    claude_reasoning: Optional[str] = None,
+    claude_confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
     text = format_trade_fired(
         hunt=",".join(hunt_types),
@@ -216,6 +225,8 @@ def alert_trade_fired(
         edge_pct=edge,
         market_desc=market_desc or "market",
         resolves_in=resolves_in or "TBD",
+        claude_reasoning=claude_reasoning,
+        claude_confidence=claude_confidence,
     )
     _remember("trade_fired", {"text": text})
     return send_telegram_text(settings, text, dedupe_key=f"shark:fire:{hash(text)%10**9}", event_label="shark_trade_fired")

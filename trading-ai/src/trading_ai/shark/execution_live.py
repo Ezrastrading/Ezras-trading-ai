@@ -171,6 +171,10 @@ def monitor_position(
             "condition_id": position.condition_id,
             "token_id": position.token_id,
             "margin_borrowed_usd": position.margin_borrowed_usd,
+            "claude_reasoning": position.claude_reasoning,
+            "claude_confidence": position.claude_confidence,
+            "claude_true_probability": position.claude_true_probability,
+            "claude_decision": position.claude_decision,
         }
     )
     data["open_positions"] = ops
@@ -227,6 +231,9 @@ def handle_resolution(
         pnl_dollars=None,
         update_capital=False,
         margin_borrowed_usd=position.margin_borrowed_usd,
+        claude_true_probability=position.claude_true_probability,
+        claude_decision=position.claude_decision,
+        position_side=position.side,
     )
 
     append_shark_audit_record(
@@ -278,6 +285,10 @@ def build_open_position_from_intent(
         condition_id=intent.meta.get("condition_id"),
         token_id=intent.meta.get("token_id"),
         margin_borrowed_usd=float(intent.meta.get("margin_borrowed", 0.0)),
+        claude_reasoning=intent.meta.get("claude_reasoning"),
+        claude_confidence=intent.meta.get("claude_confidence"),
+        claude_true_probability=intent.meta.get("claude_true_probability"),
+        claude_decision=intent.meta.get("claude_decision"),
     )
 
 

@@ -153,6 +153,16 @@ def run_execution_chain(
         return ChainResult(False, "position_cap", audit, intent)
     log.info("Gate 5 position_size: PASS")
 
+    # Gate 5b — Claude AI (optional; ANTHROPIC_API_KEY + score > 0.25)
+    from trading_ai.shark.claude_eval import apply_claude_evaluator_gate
+
+    proceed, claude_halt = apply_claude_evaluator_gate(scored, intent, capital=capital)
+    if not proceed:
+        _append(audit, "5b_claude", decision="SKIP", reason=claude_halt)
+        log.info("Gate 5b Claude: FAIL reason=%s", claude_halt)
+        return ChainResult(False, claude_halt, audit, intent)
+    _append(audit, "5b_claude", ok=True)
+
     # Step 6 — Fee-adjusted profitability
     if edge > 0 and fee_to_edge_ratio > 0.80:
         _append(audit, "6_fees_kill_edge", ratio=fee_to_edge_ratio)
@@ -183,6 +193,8 @@ def run_execution_chain(
                 outlet=intent.outlet,
                 market_desc=str(intent.market_id),
                 resolves_in="TBD",
+                claude_reasoning=intent.meta.get("claude_reasoning"),
+                claude_confidence=intent.meta.get("claude_confidence"),
             )
         except Exception:
             logging.getLogger(__name__).debug("alert_trade_fired failed", exc_info=True)
@@ -326,6 +338,9 @@ def hook_post_trade_resolution(
     update_capital: bool = True,
     is_mana: bool = False,
     margin_borrowed_usd: float = 0.0,
+    claude_true_probability: Optional[float] = None,
+    claude_decision: Optional[str] = None,
+    position_side: Optional[str] = None,
 ) -> None:
     from trading_ai.shark.models import HuntType
     from trading_ai.shark.state import LOSS_TRACKER
@@ -339,6 +354,19 @@ def hook_post_trade_resolution(
     trigger_bayesian_after_resolution(
         strategy=strategy, hunt_types=hts, outlet=outlet, win=win, hour_utc=hour_utc
     )
+    if claude_decision in ("YES", "NO") and position_side in ("yes", "no"):
+        outcome_yes = (position_side == "yes" and win) or (position_side == "no" and not win)
+        logging.getLogger(__name__).info(
+            "Claude learning: predicted=%s outcome_yes=%s prob=%s",
+            claude_decision,
+            outcome_yes,
+            claude_true_probability,
+        )
+        BAYES.update_claude_direction_feedback(
+            outcome_yes=outcome_yes,
+            claude_decision=claude_decision,
+        )
+        save_bayesian_snapshot()
     if not is_mana:
         LOSS_TRACKER.record_outcome(
             strategy=strategy,
