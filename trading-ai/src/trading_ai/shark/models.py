@@ -14,6 +14,7 @@ class HuntType(str, Enum):
     STATISTICAL_WINDOW = "statistical_window"
     LIQUIDITY_IMBALANCE_FADE = "liquidity_imbalance_fade"
     NEAR_ZERO_ACCUMULATION = "near_zero_accumulation"
+    OPTIONS_BINARY = "options_binary"
 
 
 class OpportunityTier(str, Enum):

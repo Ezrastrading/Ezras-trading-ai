@@ -46,7 +46,7 @@ def hunt_dead_market_convergence(m: MarketSnapshot) -> Optional[HuntSignal]:
     if not _volume_ok(m.volume_24h):
         return None
     edge = abs(p_true - price)  # simplified edge after fees assumed folded into threshold
-    if edge < 0.04:
+    if edge < 0.02:
         return None
     conf = min(1.0, edge / 0.15)
     return HuntSignal(
@@ -66,7 +66,7 @@ def hunt_structural_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
     if not (_volume_ok(m.volume_24h / 2) and _volume_ok(m.volume_24h / 2)):
         return None
     edge = 1.0 - s  # before fees; assume fees embedded in 0.97 threshold
-    if edge < 0.02:
+    if edge < 0.01:
         return None
     return HuntSignal(
         HuntType.STRUCTURAL_ARBITRAGE,
@@ -86,12 +86,12 @@ def hunt_cross_platform_mispricing(markets: Sequence[MarketSnapshot]) -> Dict[st
         return out
     prices_yes = [m.yes_price for m in markets]
     diff = max(prices_yes) - min(prices_yes)
-    if diff <= 0.06:
+    if diff <= 0.04:
         return out
     if any(not _volume_ok(m.volume_24h) for m in markets):
         return out
     edge = diff * 0.5  # conservative after fees
-    if edge < 0.03:
+    if edge < 0.02:
         return out
     sig = HuntSignal(
         HuntType.CROSS_PLATFORM_MISPRICING,
@@ -119,7 +119,7 @@ def hunt_statistical_window(m: MarketSnapshot) -> Optional[HuntSignal]:
     if m.scheduled_event_in_seconds is not None and m.scheduled_event_in_seconds < 30 * 60:
         return None
     edge = dev * 0.6
-    if edge < 0.05:
+    if edge < 0.03:
         return None
     return HuntSignal(
         HuntType.STATISTICAL_WINDOW,
@@ -158,7 +158,7 @@ def hunt_near_zero_accumulation(
     if base <= 0.20:
         return None
     ev = base - m.yes_price
-    if ev < 0.05:
+    if ev < 0.03:
         return None
     tracked = bool(u.get("tracked_wallet_match", False))
     conf = 0.72 if tracked else 0.58
@@ -175,6 +175,25 @@ def hunt_near_zero_accumulation(
     )
 
 
+def hunt_options_binary(m: MarketSnapshot) -> Optional[HuntSignal]:
+    """Hunt 7 — tagged options-style binary markets (``options_binary`` in meta or category)."""
+    u = m.underlying_data_if_available or {}
+    if m.market_category != "options_binary" and not u.get("options_binary"):
+        return None
+    edge = float(u.get("options_edge", 0.0) or 0.0)
+    if edge < 0.05:
+        return None
+    if not _volume_ok(m.volume_24h):
+        return None
+    side = str(u.get("side", "yes"))
+    return HuntSignal(
+        HuntType.OPTIONS_BINARY,
+        edge_after_fees=edge,
+        confidence=0.55,
+        details={"side": side, "kind": "options_binary"},
+    )
+
+
 def hunt_liquidity_imbalance_fade(m: MarketSnapshot, now: Optional[float] = None) -> Optional[HuntSignal]:
     now = now or time.time()
     dy, dn = m.order_book_bid_depth_yes, m.order_book_bid_depth_no
@@ -187,8 +206,8 @@ def hunt_liquidity_imbalance_fade(m: MarketSnapshot, now: Optional[float] = None
         return None
     if m.time_to_resolution_seconds <= 3600:
         return None
-    edge = 0.04 + 0.015 * min(2.0, math.log(ratio) / math.log(3.0))
-    if edge < 0.04:
+    edge = 0.02 + 0.015 * min(2.0, math.log(ratio) / math.log(3.0))
+    if edge < 0.02:
         return None
     return HuntSignal(
         HuntType.LIQUIDITY_IMBALANCE_FADE,
@@ -205,9 +224,9 @@ def run_hunts_on_market(
     now: Optional[float] = None,
     macro_feed: Optional[Dict[str, Any]] = None,
 ) -> List[HuntSignal]:
-    """Run all six hunt types; cross-platform uses cross_context map event_key -> markets."""
+    """Run hunt types 1–7; cross-platform uses cross_context map event_key -> markets."""
     sigs: List[HuntSignal] = []
-    for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window):
+    for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
         r = fn(m)
         if r:
             sigs.append(r)

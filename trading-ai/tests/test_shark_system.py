@@ -280,7 +280,7 @@ def test_13_phase_transition_updates_params():
     p1 = phase_params(detect_phase(50.0))
     p5 = phase_params(detect_phase(30000.0))
     # Phase 1 bootstrap uses a temporarily lower min_edge (<$100); phases 2+ tighten.
-    assert p1.min_edge == 0.04
+    assert p1.min_edge == 0.02
     assert p5.min_edge == 0.05
     assert p1.max_single_position_fraction > p5.max_single_position_fraction
 

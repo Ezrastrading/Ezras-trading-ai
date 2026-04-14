@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Sequence, Tuple
 
+from trading_ai.shark.capital_effective import effective_capital_for_outlet
 from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
 from trading_ai.shark.gap_hunter import confirm_pattern, gap_score, scan_for_gaps_stub
 from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_market
@@ -56,9 +57,10 @@ def run_scan_execution_cycle(
     rec = load_capital()
     capital = float(rec.current_capital)
     attempts = 0
-
+    hunt_results: list = []
     for m in markets:
         hunts = run_hunts_on_market(m, cross_context=cross, now=now)
+        hunt_results.append(hunts)
         if not hunts:
             continue
         scored = score_opportunity(m, hunts)
@@ -110,10 +112,11 @@ def run_scan_execution_cycle(
             )
             continue
 
+        cap_for = effective_capital_for_outlet(outlet, capital)
         try:
             res = run_execution_chain(
                 scored,
-                capital=capital,
+                capital=cap_for,
                 outlet=outlet,
                 strategy_key="shark_default",
             )
@@ -128,6 +131,10 @@ def run_scan_execution_cycle(
         except Exception:
             logger.exception("%s: run_execution_chain failed for %s", tag, m.market_id)
 
+    logger.info(
+        "Hunt results: %s markets with qualifying hunts",
+        len([h for h in hunt_results if h]),
+    )
     _touch_last_scan_unix(time.time())
     _post_scan_balance_sync()
     return len(markets), attempts

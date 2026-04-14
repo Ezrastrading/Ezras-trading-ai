@@ -3,6 +3,8 @@
 Scan callbacks (``standard_scan``, ``hot_scan``, ``gap_*``) are defined in
 ``run_shark.py`` and invoke ``scan_execute.run_scan_execution_cycle`` so hunts
 score into ``run_execution_chain`` each cycle.
+
+Optional ``eod_force_trade`` runs daily at 23:00 America/New_York (``eod_force.py``).
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ def build_shark_scheduler(
     gap_active: Callable[[], bool],
     balance_sync: Optional[Callable[[], None]] = None,
     heartbeat: Optional[Callable[[], None]] = None,
+    eod_force_trade: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -71,4 +74,11 @@ def build_shark_scheduler(
         sched.add_job(balance_sync, IntervalTrigger(minutes=5), id="balance_sync", replace_existing=True)
     if heartbeat is not None:
         sched.add_job(heartbeat, IntervalTrigger(hours=6), id="heartbeat", replace_existing=True)
+    if eod_force_trade is not None and CronTrigger is not None:
+        sched.add_job(
+            eod_force_trade,
+            CronTrigger(hour=23, minute=0, timezone="America/New_York"),
+            id="eod_force_trade",
+            replace_existing=True,
+        )
     return sched

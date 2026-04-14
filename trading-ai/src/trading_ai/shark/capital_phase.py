@@ -68,7 +68,7 @@ def detect_phase(capital: float) -> CapitalPhase:
 def phase_params(phase: CapitalPhase) -> PhaseParams:
     if phase == CapitalPhase.PHASE_1:
         return PhaseParams(
-            min_edge=0.04,
+            min_edge=0.02,
             max_single_position_fraction=0.16,
             kelly_fraction=0.5,
             tier_a_phase_multiplier=1.3,

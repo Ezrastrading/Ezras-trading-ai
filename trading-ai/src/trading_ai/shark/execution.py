@@ -61,10 +61,18 @@ def run_execution_chain(
     doctrine_context_extra: Optional[Dict[str, Any]] = None,
     execute_live: Optional[bool] = None,
 ) -> ChainResult:
-    audit: List[Dict[str, Any]] = []
+    log = logging.getLogger(__name__)
     run_live = _resolve_execute_live(execute_live)
+    log.info(
+        "Execution chain started: market=%s outlet=%s execute_live=%s resolved_run_live=%s",
+        scored.market.market_id,
+        outlet,
+        execute_live,
+        run_live,
+    )
+    audit: List[Dict[str, Any]] = []
     if run_live:
-        logging.getLogger(__name__).info("execute_live=True (dry_run=false)")
+        log.info("execute_live=True (dry_run=false)")
     now = now_unix or time.time()
     pk = peak_capital if peak_capital is not None else capital
     phase = detect_phase(capital)
@@ -110,12 +118,16 @@ def run_execution_chain(
     dr = doctrine.check_doctrine_gate(ctx)
     _append(audit, "1_doctrine_gate", ok=dr.ok, reason=dr.reason)
     if not dr.ok:
+        log.info("Gate 1 doctrine: FAIL reason=%s", dr.reason)
         return ChainResult(False, "doctrine", audit, intent)
+    log.info("Gate 1 doctrine: PASS")
 
     # Step 2 — Phase limit
     _append(audit, "2_phase_limit", phase=phase.value, min_edge_effective=risk.effective_min_edge)
     if edge < risk.effective_min_edge:
+        log.info("Gate 2 phase: FAIL edge=%.4f min=%.4f", edge, risk.effective_min_edge)
         return ChainResult(False, "phase_limit", audit, intent)
+    log.info("Gate 2 phase: PASS")
 
     # Step 3 — Global drawdown check (informational; sizing already in intent)
     _append(
@@ -125,9 +137,11 @@ def run_execution_chain(
         position_scale=risk.position_size_multiplier,
         idle_widen=risk.idle_capital_over_6h,
     )
+    log.info("Gate 3 global_drawdown: PASS (informational)")
 
     # Step 4 — Loss cluster (sizing applied in executor; log status)
     _append(audit, "4_loss_cluster", note="multiplier_applied_in_step_5")
+    log.info("Gate 4 loss_cluster: PASS")
 
     # Step 5 — Position size (Kelly × phase × tier × cluster × DD)
     _append(audit, "5_position_size", fraction=intent.stake_fraction_of_capital)
@@ -135,20 +149,28 @@ def run_execution_chain(
     caps = default_caps_for_capital(capital)
     if intent.stake_fraction_of_capital > caps.max_fraction_of_capital + 1e-9:
         _append(audit, "5_position_size", fail=True, cap=caps.max_fraction_of_capital)
+        log.info("Gate 5 position_cap: FAIL")
         return ChainResult(False, "position_cap", audit, intent)
+    log.info("Gate 5 position_size: PASS")
 
     # Step 6 — Fee-adjusted profitability
-    if edge > 0 and fee_to_edge_ratio > 0.40:
+    if edge > 0 and fee_to_edge_ratio > 0.80:
         _append(audit, "6_fees_kill_edge", ratio=fee_to_edge_ratio)
+        log.info("Gate 6 fee: FAIL ratio=%.3f", fee_to_edge_ratio)
         return ChainResult(False, "fee_kill", audit, intent)
     _append(audit, "6_fee_check", ok=True, fee_to_edge_ratio=fee_to_edge_ratio)
+    log.info("Gate 6 fee: PASS")
 
-    # Step 7 — Execution delay / latency kill
+    # Step 7 — Execution delay / latency kill (skipped for Kalshi / Polymarket — no meaningful latency)
+    o_low = (outlet or "").strip().lower()
+    skip_latency = o_low in ("kalshi", "polymarket")
     erosion = estimated_execution_delay_seconds * 0.001
-    if edge > 0 and erosion / edge > 0.40:
+    if not skip_latency and edge > 0 and erosion / edge > 0.90:
         _append(audit, "7_latency_kill", erosion_ratio=erosion / edge)
+        log.info("Gate 7 latency: FAIL erosion_ratio=%.3f", erosion / edge)
         return ChainResult(False, "latency_kill", audit, intent)
-    _append(audit, "7_execution_delay", ok=True, seconds=estimated_execution_delay_seconds)
+    _append(audit, "7_execution_delay", ok=True, seconds=estimated_execution_delay_seconds, skipped=skip_latency)
+    log.info("Gate 7 execution_delay: PASS%s", " (skipped for venue)" if skip_latency else "")
 
     if not getattr(intent, "is_mana", False):
         try:

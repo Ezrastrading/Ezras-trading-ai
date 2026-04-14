@@ -215,6 +215,16 @@ def main() -> None:
         except Exception as exc:
             log.warning("heartbeat failed: %s", exc)
 
+    def eod_force_scan() -> None:
+        try:
+            from trading_ai.shark.eod_force import run_end_of_day_force_trade
+            from trading_ai.shark.outlets import default_fetchers
+
+            n = run_end_of_day_force_trade(tuple(default_fetchers()))
+            log.info("EOD_FORCE_TRADE: completed n=%s", n)
+        except Exception as exc:
+            log.warning("eod_force_scan failed: %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -229,6 +239,7 @@ def main() -> None:
         gap_active=lambda: gap_state["active"],
         balance_sync=_balance_sync,
         heartbeat=_heartbeat,
+        eod_force_trade=eod_force_scan,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

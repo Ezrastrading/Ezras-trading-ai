@@ -96,7 +96,19 @@ def sync_all_platforms() -> Dict:
         logger.warning("Polymarket balance sync skipped: %s", exc)
         poly_fetched = None
 
-    kalshi_final = kalshi_fetched if kalshi_fetched is not None else float(existing.get("kalshi_balance_usd", 0.0))
+    try:
+        env_k = float((os.environ.get("KALSHI_ACTUAL_BALANCE") or "0").strip() or 0)
+    except ValueError:
+        env_k = 0.0
+    if kalshi_fetched is not None and kalshi_fetched > 1e-6:
+        kalshi_final = kalshi_fetched
+    elif env_k > 1e-6:
+        kalshi_final = env_k
+        logger.info("Kalshi balance: using KALSHI_ACTUAL_BALANCE=$%.2f (API was %s)", env_k, kalshi_fetched)
+    elif kalshi_fetched is not None:
+        kalshi_final = float(kalshi_fetched)
+    else:
+        kalshi_final = float(existing.get("kalshi_balance_usd", 0.0))
     if manifold_fetched is not None:
         manifold_mana_final = manifold_fetched
     else:

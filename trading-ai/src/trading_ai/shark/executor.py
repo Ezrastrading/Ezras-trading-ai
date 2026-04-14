@@ -19,6 +19,7 @@ from trading_ai.shark.state import LOSS_TRACKER
 
 _log = logging.getLogger(__name__)
 
+MIN_POSITION_USD = 1.0
 HUNT6_MAX_AGGREGATE_FRACTION = 0.08
 HUNT6_KELLY_BASE = 0.25
 
@@ -46,6 +47,8 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
             return "yes", 0.0
     h0 = hunts[0]
     d = h0.details or {}
+    if h0.hunt_type == HuntType.OPTIONS_BINARY:
+        return str(d.get("side", "yes")), 0.0
     if h0.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE:
         side = str(d.get("side", "yes"))
         return side, 0.0
@@ -94,12 +97,19 @@ def build_execution_intent(
     current_drawdown_pct: float = 0.0,
 ) -> Optional[ExecutionIntent]:
     if scored.tier == OpportunityTier.BELOW_THRESHOLD:
+        _log.info("Intent built: False market=%s reason=below_tier", scored.market.market_id)
         return None
     m = scored.market
     phase = detect_phase(capital)
     pp = phase_params(phase)
     min_e = min_edge_effective if min_edge_effective is not None else pp.min_edge
     if scored.edge_size < min_e:
+        _log.info(
+            "Intent built: False market=%s reason=edge %.4f < min %.4f",
+            m.market_id,
+            scored.edge_size,
+            min_e,
+        )
         return None
     p_win = estimate_win_probability(m, scored)
     px = _price_for_kelly(m, scored)
@@ -137,6 +147,9 @@ def build_execution_intent(
         side = "yes"
     exp_price = m.yes_price if side == "yes" else m.no_price
     notional = max(0.0, capital * stake)
+    if 0.0 < notional < MIN_POSITION_USD:
+        notional = MIN_POSITION_USD
+        stake = min(notional / max(capital, 1e-9), pp.max_single_position_fraction)
     shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
     margin_borrowed = 0.0
     if not is_mana:
@@ -171,6 +184,12 @@ def build_execution_intent(
     }
     if wallet_copy_trade:
         meta["trade_type"] = "wallet_copy"
+    _log.info(
+        "Intent built: True market=%s notional_usd=%.2f outlet=%s",
+        m.market_id,
+        notional,
+        outlet,
+    )
     return ExecutionIntent(
         market_id=m.market_id,
         outlet=outlet,

@@ -116,9 +116,11 @@ def submit_polymarket_order(intent: ExecutionIntent) -> OrderResult:
     try:
         resp = client.create_and_post_order(order_args)
     except Exception as exc:
+        logger.error("Poly order FAILED: %s", exc)
         logger.exception("Polymarket create_and_post_order failed")
         raise RuntimeError(f"Polymarket order failed: {exc}") from exc
 
+    logger.info("Poly order placed: %s", resp)
     if isinstance(resp, dict):
         oid = str(resp.get("orderID") or resp.get("order_id") or resp.get("id") or "")
         status = str(resp.get("status") or "submitted")
