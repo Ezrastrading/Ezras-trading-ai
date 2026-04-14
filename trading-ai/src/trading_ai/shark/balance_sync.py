@@ -105,25 +105,22 @@ def sync_all_platforms() -> Dict:
     except ValueError:
         env_k = 0.0
 
+    # KALSHI_ACTUAL_BALANCE: operator-set fallback for when the Kalshi portfolio API
+    # returns $0.00 available even though real cash exists (known API quirk on some
+    # account states).  Apply whenever the API reports ≤$0 AND the env var is set.
+    # We do NOT require open positions — that restriction caused a regression where
+    # a cold-start with no tracked positions blocked all trading.
     if kalshi_fetched is not None and kalshi_fetched > 1e-6:
         kalshi_final = float(kalshi_fetched)
-    elif (
-        env_k > 1e-6
-        and should_apply_kalshi_actual_balance_override(kalshi_fetched)
-    ):
+    elif env_k > 1e-6 and (kalshi_fetched is None or kalshi_fetched <= 1e-6):
         kalshi_final = env_k
         logger.info(
-            "Kalshi balance: API available=$0.00 with open Kalshi positions → using KALSHI_ACTUAL_BALANCE=$%.2f",
+            "Kalshi balance: API available=$%.2f → using KALSHI_ACTUAL_BALANCE=$%.2f",
+            kalshi_fetched if kalshi_fetched is not None else 0.0,
             env_k,
         )
     elif kalshi_fetched is not None:
         kalshi_final = float(kalshi_fetched)
-        if env_k > 1e-6 and not should_apply_kalshi_actual_balance_override(kalshi_fetched):
-            logger.debug(
-                "Kalshi: ignoring KALSHI_ACTUAL_BALANCE=$%.2f (trusting API available=$%.2f)",
-                env_k,
-                kalshi_fetched,
-            )
     else:
         kalshi_final = float(existing.get("kalshi_balance_usd", 0.0))
     if manifold_fetched is not None:
