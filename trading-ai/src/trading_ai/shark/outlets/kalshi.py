@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -41,6 +41,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 load_shark_dotenv()
+
+# Log one sample row per process once real prices + volume parse (operator sanity check).
+_KALSHI_PARSED_SAMPLE_LOGGED = False
 
 try:
     from zoneinfo import ZoneInfo
@@ -125,7 +128,20 @@ def _get_ssl_context() -> ssl.SSLContext:
 
 def _kalshi_row_has_explicit_quotes(m: Dict[str, Any]) -> bool:
     """True if list-row payload already has at least one non-null quote field."""
-    for k in ("yes_bid", "yes_ask", "yes_price", "last_price", "no_bid", "no_ask", "no_price"):
+    for k in (
+        "yes_bid_dollars",
+        "yes_ask_dollars",
+        "no_bid_dollars",
+        "no_ask_dollars",
+        "last_price_dollars",
+        "yes_bid",
+        "yes_ask",
+        "yes_price",
+        "last_price",
+        "no_bid",
+        "no_ask",
+        "no_price",
+    ):
         if m.get(k) is not None:
             return True
     return False
@@ -454,6 +470,9 @@ class KalshiClient:
             if not _kalshi_market_tradeable_core(m, now):
                 rejected_tradeable += 1
                 continue
+            if not _kalshi_market_close_within_seven_days(m, now):
+                rejected_time += 1
+                continue
             if _kalshi_market_volume(m) < 1.0:
                 rejected_volume += 1
                 continue
@@ -599,15 +618,33 @@ def _first_probability_from_fields(m: Dict[str, Any], fields: Tuple[str, ...]) -
     return None, None
 
 
+_YES_PRICE_FIELDS: Tuple[str, ...] = (
+    "yes_bid_dollars",
+    "yes_ask_dollars",
+    "yes_bid",
+    "yes_price",
+    "last_price_dollars",
+    "result_yes_price",
+    "last_price",
+    "yes_ask",
+)
+_NO_PRICE_FIELDS: Tuple[str, ...] = (
+    "no_bid_dollars",
+    "no_ask_dollars",
+    "no_bid",
+    "no_price",
+    "result_no_price",
+    "no_ask",
+)
+
+
 def _kalshi_yes_no_from_market_row(m: Dict[str, Any]) -> Tuple[float, float, Optional[str], Optional[str]]:
     """
     Best-effort YES/NO probabilities from Kalshi market JSON.
-    Tries several field names (cents or unit interval); infers missing side from complement.
+    Prefers *_dollars (0–1 strings), then legacy cent fields via :func:`_kalshi_field_to_probability`.
     """
-    yes_fields = ("yes_bid", "yes_price", "result_yes_price", "last_price", "yes_ask")
-    no_fields = ("no_bid", "no_price", "result_no_price", "no_ask")
-    yes_p, y_src = _first_probability_from_fields(m, yes_fields)
-    no_p, n_src = _first_probability_from_fields(m, no_fields)
+    yes_p, y_src = _first_probability_from_fields(m, _YES_PRICE_FIELDS)
+    no_p, n_src = _first_probability_from_fields(m, _NO_PRICE_FIELDS)
     if yes_p is None and no_p is None:
         return 0.5, 0.5, None, None
     if yes_p is None and no_p is not None:
@@ -771,7 +808,7 @@ class KalshiLiveSportsFetcher(BaseOutletFetcher):
 
 
 def _kalshi_market_volume(m: Dict[str, Any]) -> float:
-    """Best activity signal: max of lifetime volume, 24h volume, and open interest (futures-friendly)."""
+    """Best activity signal: max of *_fp / lifetime / 24h volume and open interest (futures-friendly)."""
     def _f(key: str) -> float:
         val = m.get(key)
         try:
@@ -779,7 +816,13 @@ def _kalshi_market_volume(m: Dict[str, Any]) -> float:
         except (TypeError, ValueError):
             return 0.0
 
-    return max(_f("volume"), _f("volume_24h"), _f("open_interest"))
+    return max(
+        _f("volume_24h_fp"),
+        _f("volume_fp"),
+        _f("volume_24h"),
+        _f("volume"),
+        _f("open_interest"),
+    )
 
 
 def _kalshi_series_key(m: Dict[str, Any]) -> str:
@@ -866,9 +909,32 @@ def _kalshi_market_tradeable_core(m: Dict[str, Any], now: float) -> bool:
     return True
 
 
+def _kalshi_close_time_string_has_today(m: Dict[str, Any], now: float) -> bool:
+    """True if any raw close string contains today's UTC ``YYYY-MM-DD`` (handles odd payloads)."""
+    today = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d")
+    for key in ("close_time", "expiration_time", "expected_expiration_time"):
+        ct = m.get(key)
+        if isinstance(ct, str) and today in ct:
+            return True
+    return False
+
+
+def _kalshi_market_close_within_seven_days(m: Dict[str, Any], now: float) -> bool:
+    """Drop far-dated markets (e.g. 2028 futures); keep ≤7d closes or rows whose close string mentions today."""
+    close_ts = _parse_close_timestamp_unix(m)
+    if close_ts is None:
+        return True
+    days_away = (close_ts - now) / 86400.0
+    if days_away <= 7.0:
+        return True
+    return _kalshi_close_time_string_has_today(m, now)
+
+
 def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
-    """Core tradeable checks plus minimal liquidity (lifetime volume, 24h, or open interest)."""
+    """Core tradeable checks, near-term close (7d / today string), then minimal liquidity."""
     if not _kalshi_market_tradeable_core(m, now):
+        return False
+    if not _kalshi_market_close_within_seven_days(m, now):
         return False
     if _kalshi_market_volume(m) < 1.0:
         return False
@@ -889,9 +955,21 @@ def map_kalshi_market_to_snapshot(
         except Exception:
             row = m
     yes_p, no_p, y_src, n_src = _kalshi_yes_no_from_market_row(row)
-    vol = float(row.get("volume_24h") or row.get("volume") or 0)
+    vol = _kalshi_market_volume(row)
     title = str(row.get("title") or row.get("subtitle") or "")
     end_ts = _parse_close_timestamp_unix(row)
+    global _KALSHI_PARSED_SAMPLE_LOGGED
+    if not _KALSHI_PARSED_SAMPLE_LOGGED and y_src and n_src and vol >= 1.0:
+        close_disp = row.get("close_time") or row.get("expiration_time") or row.get("expected_expiration_time") or ""
+        logger.info(
+            "Kalshi parsed: ticker=%s yes=%.3f no=%.3f vol=%.0f close=%s",
+            ticker,
+            yes_p,
+            no_p,
+            vol,
+            close_disp,
+        )
+        _KALSHI_PARSED_SAMPLE_LOGGED = True
     if y_src:
         logger.debug(
             "Kalshi price source: %s=%.4f no_src=%s=%.4f market=%s",
