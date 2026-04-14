@@ -85,21 +85,68 @@ def run_execution_chain(
         now_unix=now,
     )
 
+    blend_exec_min_edge = risk.effective_min_edge
+    if scored.edge_size > 1e-12:
+        blend_exec_min_edge = min(risk.effective_min_edge, scored.edge_size)
+
     intent = build_execution_intent(
         scored,
         capital=capital,
         outlet=outlet,
         gap_exploitation_mode=gap_exploitation_mode,
         current_gap_exposure_fraction=current_gap_exposure_fraction,
-        min_edge_effective=risk.effective_min_edge,
+        min_edge_effective=blend_exec_min_edge,
         risk_position_multiplier=risk.position_size_multiplier,
         market_category=scored.market.market_category,
         strategy_key=strategy_key,
         current_drawdown_pct=risk.drawdown_from_peak,
     )
     if intent is None:
+        u0 = scored.market.underlying_data_if_available or {}
+        log.info(
+            "Precheck FAILED intent=None: market=%s outlet=%s tier=%s edge_size=%.6f "
+            "blend_min_edge_used=%.6f risk_effective_min_edge=%.6f phase_base_min_edge=%.6f hunts=%s "
+            "yes_token_id=%s no_token_id=%s condition_id=%s",
+            scored.market.market_id,
+            outlet,
+            scored.tier.value,
+            scored.edge_size,
+            blend_exec_min_edge,
+            risk.effective_min_edge,
+            pp.min_edge,
+            [h.hunt_type.value for h in scored.hunts],
+            u0.get("yes_token_id"),
+            u0.get("no_token_id"),
+            u0.get("condition_id"),
+        )
         _append(audit, "1_precheck", skipped=True, reason="no_intent_tier_or_edge")
         return ChainResult(False, "precheck", audit, None)
+
+    if (outlet or "").strip().lower() == "polymarket":
+        from trading_ai.shark.outlets.polymarket import ensure_polymarket_intent_token_ids
+
+        if not ensure_polymarket_intent_token_ids(intent, scored.market):
+            log.info(
+                "Precheck FAILED polymarket_missing_token_id: market=%s token_id=%s yes_token=%s no_token=%s pure_dual=%s",
+                scored.market.market_id,
+                (intent.meta or {}).get("token_id"),
+                (intent.meta or {}).get("yes_token_id"),
+                (intent.meta or {}).get("no_token_id"),
+                bool((intent.meta or {}).get("pure_arbitrage_dual")),
+            )
+            _append(audit, "1_precheck", skipped=True, reason="polymarket_missing_token_id")
+            return ChainResult(False, "precheck", audit, intent)
+
+    log.info(
+        "Precheck OK: token_id=%s yes_token=%s no_token=%s outlet=%s side=%s shares=%s market=%s",
+        (intent.meta or {}).get("token_id"),
+        (intent.meta or {}).get("yes_token_id"),
+        (intent.meta or {}).get("no_token_id"),
+        intent.outlet,
+        intent.side,
+        intent.shares,
+        intent.market_id,
+    )
 
     edge = intent.edge_after_fees
 
@@ -122,10 +169,10 @@ def run_execution_chain(
         return ChainResult(False, "doctrine", audit, intent)
     log.info("Gate 1 doctrine: PASS")
 
-    # Step 2 — Phase limit
-    _append(audit, "2_phase_limit", phase=phase.value, min_edge_effective=risk.effective_min_edge)
-    if edge < risk.effective_min_edge:
-        log.info("Gate 2 phase: FAIL edge=%.4f min=%.4f", edge, risk.effective_min_edge)
+    # Step 2 — Phase limit (use same blend as intent build so scan-qualified edges are not double-blocked)
+    _append(audit, "2_phase_limit", phase=phase.value, min_edge_effective=blend_exec_min_edge)
+    if edge < blend_exec_min_edge:
+        log.info("Gate 2 phase: FAIL edge=%.4f min=%.4f", edge, blend_exec_min_edge)
         return ChainResult(False, "phase_limit", audit, intent)
     log.info("Gate 2 phase: PASS")
 

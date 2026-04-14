@@ -34,6 +34,153 @@ CLOB_SIGN_PATH_ORDER = "/order"
 _POLY_AUTH_WORKING_METHOD: Optional[str] = None
 
 
+def _token_best_ask_price(tok: Dict[str, Any]) -> Optional[float]:
+    """Prefer executable ask; fall back to mid ``price`` if no ask field."""
+    for key in ("best_ask", "bestAsk", "ask", "sell", "price", "outcomePrice"):
+        v = tok.get(key)
+        if v is None:
+            continue
+        try:
+            p = float(v)
+            if 0.0 < p < 1.0:
+                return p
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _token_liquidity_field(tok: Dict[str, Any]) -> Optional[float]:
+    for key in ("liquidity", "liquidity_num", "liquidityClob"):
+        v = tok.get(key)
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _poly_end_timestamp_seconds(row: Dict[str, Any], now: float) -> Tuple[Optional[float], float]:
+    """Parse resolution instant from CLOB /markets row; return (unix_end_ts, seconds_to_resolution)."""
+    end_ts: Optional[float] = None
+    for key in ("end_time_iso", "end_date_iso", "endDateIso"):
+        v = row.get(key)
+        if isinstance(v, str) and v.strip():
+            try:
+                end_ts = float(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp())
+                break
+            except ValueError:
+                continue
+    if end_ts is None:
+        ed = row.get("end_date")
+        if isinstance(ed, (int, float)):
+            ts_f = float(ed)
+            if ts_f > 1e12:
+                ts_f /= 1000.0
+            end_ts = ts_f
+    ttr = 86400.0
+    if end_ts is not None:
+        ttr = max(60.0, end_ts - now)
+    return end_ts, ttr
+
+
+def fetch_polymarket_clob_market_json(condition_id: str) -> Optional[Dict[str, Any]]:
+    """GET ``/markets/{condition_id}`` — public; used to backfill token_ids."""
+    cid = (condition_id or "").replace("poly:", "").strip()
+    if not cid:
+        return None
+    base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
+    url = f"{base}/markets/{urllib.parse.quote(cid, safe='')}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "EzrasShark/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            if not raw.strip():
+                return None
+            j = json.loads(raw)
+            return j if isinstance(j, dict) else None
+    except Exception as exc:
+        logger.debug("Polymarket CLOB market JSON fetch failed %s: %s", cid, exc)
+        return None
+
+
+def token_ids_from_clob_market_payload(j: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    tokens = j.get("tokens") if isinstance(j.get("tokens"), list) else []
+    if len(tokens) < 2 or not all(isinstance(t, dict) for t in tokens[:2]):
+        return None, None
+    y = str(tokens[0].get("token_id") or "").strip() or None
+    n = str(tokens[1].get("token_id") or "").strip() or None
+    return y, n
+
+
+def enrich_polymarket_snapshot_tokens(m: MarketSnapshot) -> None:
+    """If ``yes_token_id`` / ``no_token_id`` missing, merge from CLOB market detail (mutates underlying dict)."""
+    if (m.outlet or "").lower() != "polymarket":
+        return
+    u = dict(m.underlying_data_if_available or {})
+    yt = (u.get("yes_token_id") or u.get("token_id") or "").strip()
+    nt = (u.get("no_token_id") or "").strip()
+    if yt and nt:
+        m.underlying_data_if_available = u
+        return
+    cid = str(u.get("condition_id") or "").strip() or str(m.market_id).replace("poly:", "").replace("demo-", "")
+    if not cid:
+        return
+    j = fetch_polymarket_clob_market_json(cid)
+    if not j:
+        return
+    y2, n2 = token_ids_from_clob_market_payload(j)
+    if y2:
+        u["yes_token_id"] = y2
+    if n2:
+        u["no_token_id"] = n2
+    u["token_id"] = u.get("token_id") or y2 or n2 or u.get("token_id")
+    m.underlying_data_if_available = u
+
+
+def ensure_polymarket_intent_token_ids(intent: Any, market: MarketSnapshot) -> bool:
+    """
+    Ensure Polymarket ``meta`` has token_id(s) for submit. Uses snapshot first, then CLOB GET.
+    Returns False if required ids are still missing.
+    """
+    if (intent.outlet or "").lower() != "polymarket":
+        return True
+    meta = intent.meta
+    if meta.get("pure_arbitrage_dual"):
+        yl = dict(meta.get("yes_leg") or {})
+        nl = dict(meta.get("no_leg") or {})
+        if (yl.get("token_id") or "").strip() and (nl.get("token_id") or "").strip():
+            return True
+        u = market.underlying_data_if_available or {}
+        cid = str(u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
+        j = fetch_polymarket_clob_market_json(cid)
+        if not j:
+            return False
+        yt, nt = token_ids_from_clob_market_payload(j)
+        if not yt or not nt:
+            return False
+        yl["token_id"], nl["token_id"] = str(yt), str(nt)
+        meta["yes_leg"], meta["no_leg"] = yl, nl
+        return True
+    tid = (meta.get("token_id") or meta.get("yes_token_id") or "").strip()
+    if tid:
+        return True
+    u = market.underlying_data_if_available or {}
+    cid = str(meta.get("condition_id") or u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
+    j = fetch_polymarket_clob_market_json(cid)
+    if not j:
+        return False
+    yt, nt = token_ids_from_clob_market_payload(j)
+    if not yt or not nt:
+        return False
+    meta["yes_token_id"] = str(yt)
+    meta["no_token_id"] = str(nt)
+    side = (intent.side or "yes").lower()
+    meta["token_id"] = str(nt if side == "no" else yt)
+    return True
+
+
 def _pad_b64(secret: str) -> str:
     s = secret.strip()
     p = (4 - len(s) % 4) % 4
@@ -650,46 +797,56 @@ class PolymarketFetcher(BaseOutletFetcher):
             yes, no = 0.5, 0.5
             if len(tokens) >= 2 and all(isinstance(t, dict) for t in tokens[:2]):
                 try:
-                    yes = float(tokens[0].get("price") if tokens[0].get("price") is not None else 0.5)
-                    no = float(tokens[1].get("price") if tokens[1].get("price") is not None else (1.0 - yes))
+                    y_ask = _token_best_ask_price(tokens[0])
+                    n_ask = _token_best_ask_price(tokens[1])
+                    y_mid = (
+                        float(tokens[0].get("price"))
+                        if tokens[0].get("price") is not None
+                        else None
+                    )
+                    n_mid = (
+                        float(tokens[1].get("price"))
+                        if tokens[1].get("price") is not None
+                        else None
+                    )
+                    yes = y_ask if y_ask is not None else (y_mid if y_mid is not None else 0.5)
+                    no = n_ask if n_ask is not None else (n_mid if n_mid is not None else max(1e-6, 1.0 - yes))
                 except (TypeError, ValueError):
                     continue
                 yes_tid = str(tokens[0].get("token_id") or "")
                 no_tid = str(tokens[1].get("token_id") or "")
             elif len(tokens) == 1 and isinstance(tokens[0], dict):
                 try:
-                    yes = float(tokens[0].get("price") or 0.5)
-                    no = 1.0 - yes
+                    y_ask = _token_best_ask_price(tokens[0])
+                    yes = y_ask if y_ask is not None else float(tokens[0].get("price") or 0.5)
+                    no = max(1e-6, 1.0 - yes)
                 except (TypeError, ValueError):
                     continue
                 yes_tid = str(tokens[0].get("token_id") or "")
             else:
                 try:
-                    yes = float(row.get("yes_price") or row.get("price") or 0.5)
-                    no = float(row.get("no_price") or (1.0 - yes))
+                    op = row.get("outcomePrices") or row.get("outcome_prices")
+                    if isinstance(op, list) and len(op) >= 2:
+                        yes = float(op[0])
+                        no = float(op[1])
+                    else:
+                        yes = float(row.get("best_ask") or row.get("yes_price") or row.get("price") or 0.5)
+                        no = float(
+                            row.get("best_ask_no")
+                            or row.get("no_price")
+                            or max(1e-6, 1.0 - yes)
+                        )
                 except (TypeError, ValueError):
                     continue
-            end_iso = row.get("end_date_iso") or row.get("endDateIso")
-            ttr = 86400.0
-            end_ts: Optional[float] = None
-            if isinstance(end_iso, str):
-                try:
-                    dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
-                    end_ts = float(dt.timestamp())
-                    ttr = max(60.0, end_ts - now)
-                except ValueError:
-                    pass
+            yes = max(1e-6, min(1.0 - 1e-6, float(yes)))
+            no = max(1e-6, min(1.0 - 1e-6, float(no)))
+            end_ts, ttr = _poly_end_timestamp_seconds(row, now)
             qtext = str(row.get("question") or row.get("title") or "")
             best_y: Optional[float] = None
             best_n: Optional[float] = None
             if len(tokens) >= 2 and all(isinstance(t, dict) for t in tokens[:2]):
-                try:
-                    ly = tokens[0].get("liquidity") or tokens[0].get("liquidity_num") or tokens[0].get("liquidityClob")
-                    ln = tokens[1].get("liquidity") or tokens[1].get("liquidity_num") or tokens[1].get("liquidityClob")
-                    if ly is not None and ln is not None:
-                        best_y, best_n = float(ly), float(ln)
-                except (TypeError, ValueError):
-                    pass
+                best_y = _token_liquidity_field(tokens[0])
+                best_n = _token_liquidity_field(tokens[1])
             u: Dict[str, Any] = {
                 "condition_id": cid,
                 "yes_token_id": yes_tid,
@@ -710,6 +867,7 @@ class PolymarketFetcher(BaseOutletFetcher):
                     canonical_event_key=str(row.get("question_id") or cid),
                     question_text=qtext or None,
                     end_timestamp_unix=end_ts,
+                    end_date_seconds=end_ts,
                     best_ask_yes=best_y,
                     best_ask_no=best_n,
                 )

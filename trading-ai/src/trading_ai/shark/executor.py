@@ -294,6 +294,10 @@ def build_execution_intent(
         _log.info("Intent built: False market=%s reason=below_tier", scored.market.market_id)
         return None
     m = scored.market
+    if (outlet or "").strip().lower() == "polymarket":
+        from trading_ai.shark.outlets.polymarket import enrich_polymarket_snapshot_tokens
+
+        enrich_polymarket_snapshot_tokens(m)
     phase = detect_phase(capital)
     pp = phase_params(phase)
     min_e = min_edge_effective if min_edge_effective is not None else pp.min_edge
