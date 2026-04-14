@@ -1348,20 +1348,20 @@ def test_polymarket_submit_order_geoblock_when_env_true(monkeypatch):
     assert "geoblock" in (r.reason or "").lower() or "scan" in (r.reason or "").lower()
 
 
-def test_hunt_kalshi_near_close_fires_within_four_hours():
+def test_hunt_kalshi_near_close_fires_within_24h_at_70pct_yes():
     import time
 
     from trading_ai.shark.kalshi_hunts import hunt_kalshi_near_close
     from trading_ai.shark.models import MarketSnapshot
 
-    end = time.time() + 2 * 3600
+    end = time.time() + 12 * 3600
     m = MarketSnapshot(
         market_id="KX-NC",
         outlet="kalshi",
-        yes_price=0.87,
-        no_price=0.13,
+        yes_price=0.72,
+        no_price=0.28,
         volume_24h=5000.0,
-        time_to_resolution_seconds=7200.0,
+        time_to_resolution_seconds=12 * 3600.0,
         resolution_criteria="Fed",
         last_price_update_timestamp=time.time(),
         end_date_seconds=end,
@@ -1369,6 +1369,50 @@ def test_hunt_kalshi_near_close_fires_within_four_hours():
     sig = hunt_kalshi_near_close(m)
     assert sig is not None
     assert sig.hunt_type.value == "kalshi_near_close"
+    assert sig.details.get("side") == "yes"
+
+
+def test_hunt_kalshi_near_close_fires_weak_yes_bet_no():
+    import time
+
+    from trading_ai.shark.kalshi_hunts import hunt_kalshi_near_close
+    from trading_ai.shark.models import MarketSnapshot
+
+    end = time.time() + 6 * 3600
+    m = MarketSnapshot(
+        market_id="KX-NC2",
+        outlet="kalshi",
+        yes_price=0.25,
+        no_price=0.75,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=6 * 3600.0,
+        resolution_criteria="Test",
+        last_price_update_timestamp=time.time(),
+        end_date_seconds=end,
+    )
+    sig = hunt_kalshi_near_close(m)
+    assert sig is not None
+    assert sig.details.get("side") == "no"
+
+
+def test_map_kalshi_prefers_explicit_yes_price_field():
+    from trading_ai.shark.outlets.kalshi import map_kalshi_market_to_snapshot
+
+    now = 1_700_000_000.0
+    m = {
+        "ticker": "KX-P",
+        "yes_ask": 50,
+        "no_ask": 50,
+        "yes_price": 62,
+        "no_price": 38,
+        "volume_24h": 100.0,
+        "title": "Alt fields",
+        "close_time": now + 3600.0,
+    }
+    sn = map_kalshi_market_to_snapshot(m, now)
+    # yes_bid absent; yes_price is tried before yes_ask in field order
+    assert abs(sn.yes_price - 0.62) < 1e-9
+    assert abs(sn.no_price - 0.38) < 1e-9
 
 
 def test_hunt_kalshi_momentum_fires_on_five_percent_move():

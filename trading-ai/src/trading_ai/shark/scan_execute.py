@@ -122,6 +122,18 @@ def run_scan_execution_cycle(
     attach_poly_reference_prices(markets)
     price_hist = load_kalshi_price_history()
 
+    if "kalshi" in tag.lower():
+        kalshi_sample = [m for m in markets if (getattr(m, "outlet", None) or "").lower() == "kalshi"][:10]
+        for m in kalshi_sample:
+            q = str(getattr(m, "question_text", None) or getattr(m, "resolution_criteria", "") or "")[:80]
+            logger.info(
+                "Kalshi market sample: id=%s yes=%s no=%s q=%s",
+                str(getattr(m, "market_id", ""))[:48],
+                getattr(m, "yes_price", None),
+                getattr(m, "no_price", None),
+                q,
+            )
+
     n_m = len(markets)
     yes_none = sum(1 for m in markets if getattr(m, "yes_price", None) is None)
     yes_float = sum(1 for m in markets if getattr(m, "yes_price", None) is not None)

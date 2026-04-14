@@ -20,34 +20,38 @@ def hunt_kalshi_near_close(m: MarketSnapshot) -> Optional[HuntSignal]:
     if end is None:
         return None
     hours_left = (float(end) - time.time()) / 3600.0
-    if hours_left > 4.0 or hours_left < 0:
+    # Within 24h of resolution (was 4h); skip expired or far-dated.
+    if hours_left > 24.0 or hours_left < 0:
         return None
     yes = m.yes_price
     no = m.no_price
     if yes is None or no is None:
         return None
-    if float(yes) >= 0.85:
-        edge = max(float(yes) - 0.80, 1e-6)
+    fy = float(yes)
+    fn = float(no)
+    # YES clearly favored (>=70%) or weak (<=30% → bet NO).
+    if fy >= 0.70:
+        edge = max(fy - 0.60, 1e-6)
         return HuntSignal(
             HuntType.KALSHI_NEAR_CLOSE,
             edge_after_fees=edge,
-            confidence=0.80,
+            confidence=0.75,
             details={
                 "side": "yes",
                 "hours_left": hours_left,
-                "reasoning": f"Kalshi closing in {hours_left:.1f}h YES={yes:.2f}",
+                "reasoning": f"Kalshi closing in {hours_left:.1f}h YES={fy:.2f}",
             },
         )
-    if float(no) >= 0.85:
-        edge = max(float(no) - 0.80, 1e-6)
+    if fy <= 0.30:
+        edge = max(fn - 0.60, 1e-6)
         return HuntSignal(
             HuntType.KALSHI_NEAR_CLOSE,
             edge_after_fees=edge,
-            confidence=0.80,
+            confidence=0.75,
             details={
                 "side": "no",
                 "hours_left": hours_left,
-                "reasoning": f"Kalshi closing in {hours_left:.1f}h NO={no:.2f}",
+                "reasoning": f"Kalshi closing in {hours_left:.1f}h YES={fy:.2f} NO={fn:.2f}",
             },
         )
     return None

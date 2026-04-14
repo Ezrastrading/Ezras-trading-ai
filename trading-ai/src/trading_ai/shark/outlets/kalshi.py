@@ -266,8 +266,11 @@ class KalshiClient:
 
     def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
         """
-        High-frequency pool: open markets resolving within ~7d, YES/NO mid-range, min volume,
-        sorted by nearest ``close_time`` first (up to ``top_n``).
+        High-frequency pool: open markets resolving within ~7d, min volume.
+
+        After collecting up to 200 rows, sort so **price imbalance** (furthest from 0.5) is
+        prioritized, then **soonest close**; balanced ~50/50 markets come last so hunts see
+        real edges first.
         """
         now = time.time()
         horizon = now + 7 * 86400
@@ -291,12 +294,20 @@ class KalshiClient:
             vol = float(m.get("volume_24h") or m.get("volume") or 0)
             if vol < 100.0:
                 continue
-            ya = float(m.get("yes_ask") or m.get("yes_bid") or 0) / 100.0
-            na = float(m.get("no_ask") or m.get("no_bid") or 0) / 100.0
+            ya, na, _, _ = _kalshi_yes_no_from_market_row(m)
             if ya <= 0 or na <= 0:
                 continue
             candidates.append(m)
-        candidates.sort(key=lambda x: _parse_close_timestamp_unix(x) or horizon)
+
+        def _sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
+            y, _, _, _ = _kalshi_yes_no_from_market_row(row)
+            close = _parse_close_timestamp_unix(row)
+            # Strongest directional signal first: more negative = further from 0.5 wins.
+            imbalance = -abs(y - 0.5)
+            close_key = close if close is not None else horizon + 86400.0
+            return (imbalance, close_key)
+
+        candidates.sort(key=_sort_key)
         return candidates[:top_n]
 
     def fetch_orderbook_depth(self, ticker: str) -> Tuple[float, float]:
@@ -377,6 +388,52 @@ def build_kalshi_request_headers(method: str, full_url: str) -> Dict[str, str]:
     return h
 
 
+def _kalshi_field_to_probability(val: Any) -> Optional[float]:
+    """Kalshi quotes are usually 1–99 (cents); some payloads use 0–1. Return probability in (0,1) or None."""
+    if val is None:
+        return None
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    if v < 1.0:
+        return min(0.99, max(0.01, v))
+    if v <= 100.0:
+        return min(0.99, max(0.01, v / 100.0))
+    return None
+
+
+def _first_probability_from_fields(m: Dict[str, Any], fields: Tuple[str, ...]) -> Tuple[Optional[float], Optional[str]]:
+    for field in fields:
+        val = m.get(field)
+        p = _kalshi_field_to_probability(val)
+        if p is not None:
+            return p, field
+    return None, None
+
+
+def _kalshi_yes_no_from_market_row(m: Dict[str, Any]) -> Tuple[float, float, Optional[str], Optional[str]]:
+    """
+    Best-effort YES/NO probabilities from Kalshi market JSON.
+    Tries several field names (cents or unit interval); infers missing side from complement.
+    """
+    yes_fields = ("yes_bid", "yes_price", "result_yes_price", "last_price", "yes_ask")
+    no_fields = ("no_bid", "no_price", "result_no_price", "no_ask")
+    yes_p, y_src = _first_probability_from_fields(m, yes_fields)
+    no_p, n_src = _first_probability_from_fields(m, no_fields)
+    if yes_p is None and no_p is None:
+        return 0.5, 0.5, None, None
+    if yes_p is None and no_p is not None:
+        yes_p = 1.0 - no_p
+        y_src = f"inferred_from_{n_src}"
+    elif no_p is None and yes_p is not None:
+        no_p = 1.0 - yes_p
+        n_src = f"inferred_from_{y_src}"
+    return yes_p, no_p, y_src, n_src
+
+
 def _parse_close_timestamp_unix(m: Dict[str, Any]) -> Optional[float]:
     """Absolute resolution time in unix seconds, if parseable from Kalshi market JSON."""
     ct = m.get("close_time") or m.get("expiration_time") or m.get("expected_expiration_time")
@@ -423,21 +480,33 @@ def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
 
 def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapshot:
     ticker = str(m.get("ticker") or m.get("market_id") or "")
-    yes_ask = float(m.get("yes_ask") or m.get("yes_bid") or 50)
-    no_ask = float(m.get("no_ask") or m.get("no_bid") or 50)
+    yes_p, no_p, y_src, n_src = _kalshi_yes_no_from_market_row(m)
     vol = float(m.get("volume_24h") or m.get("volume") or 0)
     title = str(m.get("title") or m.get("subtitle") or "")
     end_ts = _parse_close_timestamp_unix(m)
+    if y_src:
+        logger.debug(
+            "Kalshi price source: %s=%.4f no_src=%s=%.4f market=%s",
+            y_src,
+            yes_p,
+            n_src or "-",
+            no_p,
+            ticker,
+        )
     return MarketSnapshot(
         market_id=ticker,
         outlet="kalshi",
-        yes_price=yes_ask / 100.0,
-        no_price=no_ask / 100.0,
+        yes_price=yes_p,
+        no_price=no_p,
         volume_24h=vol,
         time_to_resolution_seconds=_parse_close_time_seconds(m, now),
         resolution_criteria=title,
         last_price_update_timestamp=now,
-        underlying_data_if_available={"kalshi_raw": m},
+        underlying_data_if_available={
+            "kalshi_raw": m,
+            "kalshi_yes_price_field": y_src,
+            "kalshi_no_price_field": n_src,
+        },
         market_category="kalshi",
         question_text=title or None,
         end_timestamp_unix=end_ts,
