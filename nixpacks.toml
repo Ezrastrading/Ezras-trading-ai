@@ -5,4 +5,4 @@ nixPkgs = ["python311"]
 cmds = ["python3.11 -m pip install -r trading-ai/requirements.txt"]
 
 [start]
-cmd = "cd trading-ai && PYTHONPATH=src python3.11 -m trading_ai.shark.run_shark"
+cmd = "python3.11 -m trading_ai.shark.run_shark"
