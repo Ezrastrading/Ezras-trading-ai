@@ -1,4 +1,4 @@
-"""Kalshi crypto blitz: rolling window before crypto closes — hourly, 15-minute BTC, and range markets."""
+"""Kalshi crypto blitz: rolling window before crypto closes — 15m BTC/ETH cadence and related series."""
 
 from __future__ import annotations
 
@@ -12,18 +12,20 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Kalshi crypto roots — include 15-minute BTC (KXBTC15, …); longest series roots first where relevant.
+# Kalshi crypto roots — 15m BTC/ETH and related; longest series roots first where relevant.
 _DEFAULT_BLITZ_SERIES: Tuple[str, ...] = (
     "KXBTC15",
     "KXBTCUSD",
     "KXBTCD",
+    "KXBTCZ",
+    "KXBTC",
+    "KXETH15",
     "KXETHD",
+    "KXETH",
     "BTC15",
     "BTCUSD",
+    "ETHUSD",
     "BTCZ",
-    "KXBTC",
-    "KXBTCZ",
-    "KXETH",
     "BTC",
     "ETH",
 )
@@ -37,12 +39,12 @@ def _blitz_series_list() -> List[str]:
 
 
 def _close_window_seconds() -> float:
-    """Default 360s (6 min) rolling window — aligns with :00 / :15 / :30 / :45 closes when job runs every 2 min."""
-    raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "360").strip() or "360"
+    """Default 300s (5 min) — targets :00 / :15 / :30 / :45 15m closes when job runs every 2 min."""
+    raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "300").strip() or "300"
     try:
         return max(60.0, float(raw))
     except ValueError:
-        return 360.0
+        return 300.0
 
 
 def _parse_env_float(name: str, default: float) -> float:
@@ -117,7 +119,6 @@ def run_kalshi_blitz() -> int:
     )
     from trading_ai.shark.models import HuntType, OpenPosition
     from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
-    from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
         _kalshi_market_tradeable_core,
@@ -129,8 +130,8 @@ def run_kalshi_blitz() -> int:
     from trading_ai.shark.state_store import load_capital
 
     min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.90)
-    max_trades = max(1, _parse_env_int("KALSHI_BLITZ_MAX_TRADES", 30))
-    budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_BLITZ_BUDGET_PCT", 0.50)))
+    max_trades = max(1, _parse_env_int("KALSHI_BLITZ_MAX_TRADES", 50))
+    budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_BLITZ_BUDGET_PCT", 0.60)))
     # Per-trade size clamps: $1–$4 by default (small, many trades)
     blitz_trade_min = max(0.50, _parse_env_float("KALSHI_BLITZ_MIN_TRADE_USD", 1.00))
     blitz_trade_max = max(blitz_trade_min, _parse_env_float("KALSHI_BLITZ_MAX_TRADE_USD", 4.00))
@@ -143,7 +144,7 @@ def run_kalshi_blitz() -> int:
 
     book = load_capital()
     # effective_capital_for_outlet already applies the 20% cash reserve.
-    # Blitz uses KALSHI_BLITZ_BUDGET_PCT (default 50%) of that deployable slice.
+    # Blitz uses KALSHI_BLITZ_BUDGET_PCT (default 60%) of that deployable slice.
     deployable = effective_capital_for_outlet("kalshi", float(book.current_capital))
     blitz_budget = deployable * budget_pct
     if blitz_budget < blitz_trade_min:
@@ -181,8 +182,7 @@ def run_kalshi_blitz() -> int:
             if tid:
                 merged[tid] = row
 
-    # Extra crypto rows from open feed: TTR 1–10 min (15m cadence), not already in series merge.
-    open_feed_tickers: Set[str] = set()
+    # Extra crypto rows from open feed (any ticker matching crypto prefixes), not already in series merge.
     for m in open_rows:
         if not isinstance(m, dict):
             continue
@@ -195,10 +195,9 @@ def run_kalshi_blitz() -> int:
         if end is None:
             continue
         ttr = end - now
-        if not (60.0 <= ttr <= 600.0):
+        if not (60.0 <= ttr <= window_sec):
             continue
         merged[tid] = m
-        open_feed_tickers.add(tid)
 
     n_total = len(merged)
     n_crypto = 0
@@ -206,24 +205,22 @@ def run_kalshi_blitz() -> int:
     n_above_prob = 0
 
     candidates: List[Tuple[Dict[str, Any], float, float, str]] = []
-    max_ttr = kalshi_max_ttr_seconds()
     for m in merged.values():
         if not _kalshi_market_tradeable_core(m, now):
             continue
         if _kalshi_market_volume(m) < 1.0:
             continue
-        n_crypto += 1
         tid = str(m.get("ticker") or "").strip()
+        if not kalshi_ticker_is_crypto(tid):
+            continue
+        n_crypto += 1
         end = _parse_close_timestamp_unix(m)
         if end is None:
             continue
         ttr = end - now
-        if tid in open_feed_tickers:
-            if not (60.0 <= ttr <= 600.0):
-                continue
-        else:
-            if ttr <= 0 or ttr > max_ttr or ttr > window_sec:
-                continue
+        # All crypto: same band — open-feed discovery (any prefix) + series merge.
+        if not (60.0 <= ttr <= window_sec):
+            continue
         n_in_window += 1
         try:
             row = client.enrich_market_with_detail_and_orderbook(dict(m))

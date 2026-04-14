@@ -173,7 +173,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
     if kalshi_blitz is not None:
-        # Every 2 minutes — covers 15-minute BTC/crypto closes (:00/:15/:30/:45) with a rolling 6m window.
+        # Every 2 min (~30 runs/h) — aligns with 15m BTC/ETH windows (:00/:15/:30/:45); e.g. :13/:28/:43/:58 catches next close.
         sched.add_job(
             kalshi_blitz,
             IntervalTrigger(seconds=120),
