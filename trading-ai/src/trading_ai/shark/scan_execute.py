@@ -41,6 +41,29 @@ def _norm_title(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower())[:120].strip()
 
 
+def attach_metaculus_reference_prices(markets: Sequence[object]) -> None:
+    """Match Kalshi ↔ Metaculus by normalized title (community median as YES reference)."""
+    by_title: Dict[str, list] = {}
+    for m in markets:
+        if (getattr(m, "outlet", None) or "") != "metaculus":
+            continue
+        k = _norm_title(str(getattr(m, "question_text", None) or getattr(m, "resolution_criteria", "") or ""))
+        if not k:
+            continue
+        by_title.setdefault(k, []).append(m)
+    for m in markets:
+        if (getattr(m, "outlet", None) or "").lower() != "kalshi":
+            continue
+        k = _norm_title(str(getattr(m, "question_text", None) or getattr(m, "resolution_criteria", "") or ""))
+        u = dict(getattr(m, "underlying_data_if_available", None) or {})
+        for mc in by_title.get(k, []):
+            my = getattr(mc, "yes_price", None)
+            if my is not None:
+                u["metaculus_yes_reference"] = float(my)
+                break
+        m.underlying_data_if_available = u
+
+
 def attach_poly_reference_prices(markets: Sequence[object]) -> None:
     """Match Kalshi ↔ Polymarket by normalized title so ``KALSHI_CONVERGENCE`` can compare YES prices."""
     by_title: Dict[str, list] = {}
@@ -120,6 +143,7 @@ def run_scan_execution_cycle(
         return 0, 0
 
     attach_poly_reference_prices(markets)
+    attach_metaculus_reference_prices(markets)
     price_hist = load_kalshi_price_history()
 
     if "kalshi" in tag.lower():
@@ -280,6 +304,8 @@ def run_scan_execution_cycle(
                 )
                 continue
 
+            if outlet.lower() == "metaculus":
+                continue
             if outlet.lower() != "kalshi":
                 logger.info(
                     "%s: live execution skipped (Kalshi only) outlet=%s market=%s",

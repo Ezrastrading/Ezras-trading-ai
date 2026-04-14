@@ -54,6 +54,7 @@ def build_shark_scheduler(
     kalshi_hf_scan: Optional[Callable[[], None]] = None,
     kalshi_convergence_scan: Optional[Callable[[], None]] = None,
     kalshi_full_scan: Optional[Callable[[], None]] = None,
+    avenue_pulse: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -133,4 +134,6 @@ def build_shark_scheduler(
             id="daily_excel_report",
             replace_existing=True,
         )
+    if avenue_pulse is not None:
+        sched.add_job(avenue_pulse, IntervalTrigger(hours=2), id="avenue_pulse", replace_existing=True)
     return sched

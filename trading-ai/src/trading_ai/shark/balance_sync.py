@@ -151,4 +151,10 @@ def sync_all_platforms() -> Dict:
         manifold_mana_final,
         result["net_worth_usd"],
     )
+    try:
+        from trading_ai.shark.master_wallet import sync_master_wallet_from_runtime
+
+        sync_master_wallet_from_runtime(result)
+    except Exception as exc:
+        logger.debug("master_wallet sync skipped: %s", exc)
     return result

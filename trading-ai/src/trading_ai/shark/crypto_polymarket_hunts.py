@@ -334,6 +334,8 @@ def run_filtered_polymarket_hunts(
 ) -> List[HuntSignal]:
     """Run only selected :class:`HuntType` runners (fast scans). Polymarket + Kalshi + Manifold (hunts no-op when inapplicable)."""
     from trading_ai.shark.kalshi_hunts import (
+        hunt_kalshi_metaculus_agreement,
+        hunt_kalshi_metaculus_divergence,
         hunt_kalshi_momentum,
         hunt_kalshi_near_close,
         hunt_kalshi_polymarket_divergence,
@@ -350,6 +352,8 @@ def run_filtered_polymarket_hunts(
         HuntType.VOLUME_SPIKE: hunt_volume_spike,
         HuntType.KALSHI_NEAR_CLOSE: hunt_kalshi_near_close,
         HuntType.KALSHI_CONVERGENCE: hunt_kalshi_polymarket_divergence,
+        HuntType.KALSHI_METACULUS_DIVERGE: hunt_kalshi_metaculus_divergence,
+        HuntType.KALSHI_METACULUS_AGREE: hunt_kalshi_metaculus_agreement,
     }
     poly_only = {HuntType.CRYPTO_SCALP, HuntType.ORDER_BOOK_IMBALANCE}
     sigs: List[HuntSignal] = []
@@ -370,7 +374,12 @@ def run_filtered_polymarket_hunts(
         fn = mapping.get(ht)
         if not fn:
             continue
-        if ht in (HuntType.KALSHI_NEAR_CLOSE, HuntType.KALSHI_CONVERGENCE) and o != "kalshi":
+        if ht in (
+            HuntType.KALSHI_NEAR_CLOSE,
+            HuntType.KALSHI_CONVERGENCE,
+            HuntType.KALSHI_METACULUS_DIVERGE,
+            HuntType.KALSHI_METACULUS_AGREE,
+        ) and o != "kalshi":
             continue
         try:
             r = fn(m)

@@ -18,12 +18,12 @@ import json
 import logging
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
+from trading_ai.shark.models import MarketSnapshot
 
 load_shark_dotenv()
 
@@ -187,3 +187,28 @@ class TastytradeClient:
         except Exception as exc:
             logger.warning("Tastytrade order error: %s", exc)
             return {"ok": False, "error": str(exc)}
+
+    def get_underlying_last_price(self, symbol: str) -> Optional[float]:
+        """Best-effort last trade for an equity (session must be authenticated)."""
+        if not self._session_token:
+            return None
+        sym = symbol.strip().upper()
+        try:
+            url = f"{_BASE}/market-data/equities/{sym}/last"
+            req = urllib.request.Request(url, headers=self._auth_headers(), method="GET")
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                body = json.loads(resp.read())
+            last = body.get("data", {}).get("last")
+            return float(last) if last is not None else None
+        except Exception as exc:
+            logger.debug("Tastytrade last price %s: %s", sym, exc)
+            return None
+
+
+class TastytradeFetcher:
+    """Registered outlet for scheduler/scanner symmetry — options are not binary CLOB markets."""
+
+    outlet_name = "tastytrade"
+
+    def fetch_binary_markets(self) -> List[MarketSnapshot]:
+        return []

@@ -57,6 +57,61 @@ def hunt_kalshi_near_close(m: MarketSnapshot) -> Optional[HuntSignal]:
     return None
 
 
+def hunt_kalshi_metaculus_divergence(m: MarketSnapshot) -> Optional[HuntSignal]:
+    if (m.outlet or "").lower() != "kalshi":
+        return None
+    u = m.underlying_data_if_available or {}
+    meta = u.get("metaculus_yes_reference")
+    if meta is None:
+        return None
+    ky = m.yes_price
+    if ky is None:
+        return None
+    my = float(meta)
+    divergence = abs(float(ky) - my)
+    if divergence < 0.06:
+        return None
+    side = "yes" if float(ky) < my else "no"
+    return HuntSignal(
+        HuntType.KALSHI_METACULUS_DIVERGE,
+        edge_after_fees=divergence,
+        confidence=0.68,
+        details={
+            "side": side,
+            "metaculus_yes": my,
+            "kalshi_yes": float(ky),
+            "reasoning": f"Kalshi YES={float(ky):.2f} vs Metaculus={my:.2f} gap={divergence:.2f}",
+        },
+    )
+
+
+def hunt_kalshi_metaculus_agreement(m: MarketSnapshot) -> Optional[HuntSignal]:
+    if (m.outlet or "").lower() != "kalshi":
+        return None
+    u = m.underlying_data_if_available or {}
+    meta = u.get("metaculus_yes_reference")
+    if meta is None:
+        return None
+    ky = float(m.yes_price)
+    my = float(meta)
+    if abs(ky - my) > 0.04:
+        return None
+    if not (ky >= 0.55 or ky <= 0.45):
+        return None
+    edge = 0.025 + abs(ky - 0.5) * 0.05
+    return HuntSignal(
+        HuntType.KALSHI_METACULUS_AGREE,
+        edge_after_fees=edge,
+        confidence=0.72,
+        details={
+            "side": "yes" if ky >= 0.5 else "no",
+            "metaculus_yes": my,
+            "kalshi_yes": ky,
+            "reasoning": f"Kalshi and Metaculus aligned (~{ky:.2f})",
+        },
+    )
+
+
 def hunt_kalshi_polymarket_divergence(m: MarketSnapshot) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
         return None

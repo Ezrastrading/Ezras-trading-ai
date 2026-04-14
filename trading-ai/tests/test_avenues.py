@@ -16,11 +16,21 @@ def _runtime(tmp_path, monkeypatch):
 
 # ── Test 81 ──────────────────────────────────────────────────────────────────
 
-def test_81_avenue_registry_has_five_avenues():
+def test_81_avenue_registry_has_nine_avenues():
     from trading_ai.shark.avenues import load_avenues
 
     avenues = load_avenues()
-    assert set(avenues.keys()) == {"kalshi", "manifold", "polymarket", "tastytrade", "webull", "sports_manual"}
+    assert set(avenues.keys()) == {
+        "kalshi",
+        "manifold",
+        "polymarket",
+        "metaculus",
+        "coinbase",
+        "robinhood",
+        "tastytrade",
+        "webull",
+        "sports_manual",
+    }
     for name, av in avenues.items():
         assert av.starting_capital == 25.0, f"{name} starting_capital should be 25.00"
         assert av.current_capital == 25.0, f"{name} current_capital should equal starting on init"
@@ -55,10 +65,20 @@ def test_83_dashboard_aggregates_total_capital():
 
     dash = get_master_dashboard()
 
-    # 6 avenues × $25 = $150 total deployed
-    assert dash["total_capital_deployed"] == pytest.approx(150.0, abs=0.01)
-    assert dash["total_current_value"] == pytest.approx(150.0, abs=0.01)
-    assert set(dash["avenues"].keys()) == {"kalshi", "manifold", "polymarket", "tastytrade", "webull", "sports_manual"}
+    # 9 avenues × $25 = $225 total deployed
+    assert dash["total_capital_deployed"] == pytest.approx(225.0, abs=0.01)
+    assert dash["total_current_value"] == pytest.approx(225.0, abs=0.01)
+    assert set(dash["avenues"].keys()) == {
+        "kalshi",
+        "manifold",
+        "polymarket",
+        "metaculus",
+        "coinbase",
+        "robinhood",
+        "tastytrade",
+        "webull",
+        "sports_manual",
+    }
     assert "treasury" in dash
     assert "month_4_projection" in dash
     assert "year_end_projection" in dash

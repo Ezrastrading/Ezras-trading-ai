@@ -257,7 +257,11 @@ def main() -> None:
         n, att = run_scan_execution_cycle(
             tuple(scan_fetchers_all()),
             tag="kalshi_convergence",
-            hunt_types_filter={HuntType.KALSHI_CONVERGENCE},
+            hunt_types_filter={
+                HuntType.KALSHI_CONVERGENCE,
+                HuntType.KALSHI_METACULUS_DIVERGE,
+                HuntType.KALSHI_METACULUS_AGREE,
+            },
         )
         log.info("kalshi_convergence: markets=%s execution_attempts=%s", n, att)
 
@@ -398,6 +402,7 @@ def main() -> None:
         kalshi_hf_scan=kalshi_hf_scan,
         kalshi_convergence_scan=kalshi_convergence_scan,
         kalshi_full_scan=kalshi_full_scan,
+        avenue_pulse=avenue_pulse,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

@@ -95,6 +95,106 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
         from trading_ai.shark.manifold_live import submit_manifold_bet
 
         return submit_manifold_bet(intent)
+    if o == "metaculus":
+        logger.info("Metaculus is intelligence-only — no orders")
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="intelligence_only",
+            outlet="metaculus",
+            raw={},
+            success=False,
+            reason="Metaculus has no tradeable venue in this stack",
+        )
+    if o == "coinbase":
+        if (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() != "true":
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="disabled",
+                outlet="coinbase",
+                raw={},
+                success=False,
+                reason="COINBASE_EXECUTION_ENABLED is not true",
+            )
+        from trading_ai.shark.outlets.coinbase import CoinbaseFetcher
+
+        pid = str(intent.meta.get("product_id") or intent.market_id or "BTC-USD")
+        side = str(intent.side or "buy")
+        size = str(intent.meta.get("base_size") or intent.shares or "0")
+        r = CoinbaseFetcher.place_market_order(pid, side, size)
+        return OrderResult(
+            order_id=str((r.get("raw") or {}).get("order_id", "") or ""),
+            filled_price=float(intent.expected_price or 0.0),
+            filled_size=float(intent.shares or 0.0),
+            timestamp=time.time(),
+            status="submitted" if r.get("ok") else "error",
+            outlet="coinbase",
+            raw=r,
+            success=bool(r.get("ok")),
+            reason=None if r.get("ok") else str(r.get("error")),
+        )
+    if o == "robinhood":
+        if (os.environ.get("ROBINHOOD_EXECUTION_ENABLED") or "").strip().lower() != "true":
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="disabled",
+                outlet="robinhood",
+                raw={},
+                success=False,
+                reason="ROBINHOOD_EXECUTION_ENABLED is not true",
+            )
+        from trading_ai.shark.outlets.robinhood import RobinhoodFetcher
+
+        sym = str(intent.market_id or intent.meta.get("symbol") or "").upper()
+        sh = float(intent.shares or intent.meta.get("shares") or 0.0)
+        rh = RobinhoodFetcher()
+        if (intent.side or "buy").lower() == "sell":
+            r = rh.sell_market(sym, sh)
+        else:
+            r = rh.buy_market(sym, sh)
+        return OrderResult(
+            order_id=str((r.get("raw") or {}).get("id", "") or ""),
+            filled_price=float(intent.expected_price or 0.0),
+            filled_size=sh,
+            timestamp=time.time(),
+            status="submitted" if r.get("ok") else "error",
+            outlet="robinhood",
+            raw=r,
+            success=bool(r.get("ok")),
+            reason=None if r.get("ok") else str(r.get("error")),
+        )
+    if o == "tastytrade":
+        if (os.environ.get("TASTYTRADE_EXECUTION_ENABLED") or "").strip().lower() != "true":
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="disabled",
+                outlet="tastytrade",
+                raw={},
+                success=False,
+                reason="TASTYTRADE_EXECUTION_ENABLED is not true",
+            )
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="not_wired",
+            outlet="tastytrade",
+            raw={},
+            success=False,
+            reason="Map options legs via TastytradeClient.place_order before enabling",
+        )
     raise ValueError(f"unknown outlet: {intent.outlet}")
 
 

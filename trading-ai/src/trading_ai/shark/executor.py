@@ -79,6 +79,8 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
         HuntType.KALSHI_NEAR_CLOSE,
         HuntType.KALSHI_CONVERGENCE,
         HuntType.KALSHI_MOMENTUM,
+        HuntType.KALSHI_METACULUS_AGREE,
+        HuntType.KALSHI_METACULUS_DIVERGE,
     ):
         return str(d.get("side", "yes")), 0.0
     return "yes", 0.0
@@ -106,7 +108,12 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
         return m.yes_price if side == "yes" else m.no_price
     if h.hunt_type == HuntType.PURE_ARBITRAGE:
         return 0.99
-    if h.hunt_type in (HuntType.KALSHI_NEAR_CLOSE, HuntType.KALSHI_CONVERGENCE):
+    if h.hunt_type in (
+        HuntType.KALSHI_NEAR_CLOSE,
+        HuntType.KALSHI_CONVERGENCE,
+        HuntType.KALSHI_METACULUS_AGREE,
+        HuntType.KALSHI_METACULUS_DIVERGE,
+    ):
         side = str((h.details or {}).get("side", "yes"))
         px = m.yes_price if side == "yes" else m.no_price
         return max(0.01, min(0.99, float(px)))
