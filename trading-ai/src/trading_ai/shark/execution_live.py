@@ -28,14 +28,6 @@ logger = logging.getLogger(__name__)
 SleepFn = Callable[[float], None]
 
 
-def _log_kalshi_hv_order_mode_startup() -> None:
-    mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "market").strip().lower()
-    logger.info("Kalshi HV order mode: %s", mode)
-
-
-_log_kalshi_hv_order_mode_startup()
-
-
 def ezras_dry_run_from_env() -> bool:
     """True when ``EZRAS_DRY_RUN`` is set to a truthy value (1, true, yes). Default: false → live execution."""
     v = (os.environ.get("EZRAS_DRY_RUN") or "").strip().lower()
@@ -83,78 +75,17 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             reason="US geoblock — scan only",
         )
     if o == "kalshi":
-        from trading_ai.shark.outlets.kalshi import KalshiClient, fetch_kalshi_orderbook_best_ask_cents
+        from trading_ai.shark.outlets.kalshi import KalshiClient
 
         client = KalshiClient()
         ticker = intent.market_id
         if ":" in ticker:
             ticker = ticker.split(":")[-1]
-        base_yes_cents = (
-            int(round(intent.expected_price * 100))
-            if intent.side == "yes"
-            else int(round((1.0 - intent.expected_price) * 100))
-        )
-        base_yes_cents = max(1, min(99, base_yes_cents))
-        meta = intent.meta or {}
-        is_hv = bool(meta.get("near_resolution_hv"))
-
-        if not is_hv:
-            return client.place_order(
-                ticker=ticker,
-                side=intent.side,
-                count=max(1, int(intent.shares)),
-                yes_price_cents=base_yes_cents,
-            )
-
-        hv_mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "market").strip().lower()
-        try:
-            bump = int((os.environ.get("KALSHI_HV_LIMIT_BUMP_CENTS") or "2").strip() or "2")
-        except ValueError:
-            bump = 2
-        bump = max(0, min(5, bump))
-
-        if hv_mode == "market":
-            logger.info(
-                "Kalshi HV submit: mode=market ticker=%s side=%s count=%s (snapshot limit would be yes_price=%s¢)",
-                ticker,
-                intent.side,
-                max(1, int(intent.shares)),
-                base_yes_cents,
-            )
-            return client.place_order(
-                ticker=ticker,
-                side=intent.side,
-                count=max(1, int(intent.shares)),
-                order_type="market",
-            )
-
-        ask_yes, ask_no = fetch_kalshi_orderbook_best_ask_cents(ticker, client=client)
-        limit_yes: int = base_yes_cents
-        if intent.side == "yes" and ask_yes is not None:
-            limit_yes = min(99, max(1, ask_yes + bump))
-        elif intent.side == "no" and ask_no is not None:
-            aggressive_no = min(99, max(1, ask_no + bump))
-            limit_yes = min(99, max(1, 100 - aggressive_no))
-        else:
-            limit_yes = min(99, max(1, base_yes_cents + bump))
-
-        tif = (os.environ.get("KALSHI_HV_TIME_IN_FORCE") or "").strip() or None
-        logger.info(
-            "Kalshi HV submit: aggressive_limit ticker=%s side=%s ask_yes=%s ask_no=%s base_yes_price=%s¢ limit_yes_price=%s¢ bump=%s",
-            ticker,
-            intent.side,
-            ask_yes,
-            ask_no,
-            base_yes_cents,
-            limit_yes,
-            bump,
-        )
         return client.place_order(
             ticker=ticker,
             side=intent.side,
             count=max(1, int(intent.shares)),
-            yes_price_cents=limit_yes,
-            time_in_force=tif,
+            order_type="market",
         )
     if o == "manifold":
         if not manifold_real_money_execution_enabled():
@@ -275,51 +206,33 @@ def confirm_execution(
     poll_order: Optional[Callable[[str], Dict[str, Any]]] = None,
     cancel_order: Optional[Callable[[str], None]] = None,
 ) -> ConfirmationResult:
-    """Verify fill; slippage vs expected_price; optional unfilled cancel after 60s."""
-    sleep = sleep_fn or time.sleep
-    now = time_fn or time.time
+    """Verify fill and slippage vs ``expected_price``. Kalshi fills are finalized in ``KalshiClient.place_order``."""
+    _ = sleep_fn, time_fn, poll_order, cancel_order  # retained for API compatibility
     exp = max(intent.expected_price, 1e-9)
     fp = order_result.filled_price or exp
     slip = abs(fp - exp) / exp
     edge = max(intent.edge_after_fees, 1e-9)
     high_slip = slip > (0.30 * edge)
 
-    status_l = (order_result.status or "").lower()
     unfilled_cancelled = False
-    if status_l in ("resting", "open", "pending") and intent.outlet.lower() == "kalshi":
-        t0 = now()
-        sleep(30)
-        po = poll_order or _default_poll_kalshi
-        st = po(order_result.order_id)
-        st_s = str(st.get("status") or st.get("order", {}).get("status") or "").lower()
-        if st_s in ("resting", "open", "pending"):
-            while now() - t0 < 60:
-                sleep(2)
-                st = po(order_result.order_id)
-                st_s = str(st.get("status") or "").lower()
-                if st_s in ("filled", "executed", "closed"):
-                    break
-            else:
-                co = cancel_order or _default_cancel_kalshi
-                try:
-                    co(order_result.order_id)
-                except Exception as exc:
-                    logger.warning("cancel failed: %s", exc)
-                unfilled_cancelled = True
-                return ConfirmationResult(
-                    actual_fill_price=fp,
-                    actual_fill_size=0.0,
-                    slippage_pct=slip,
-                    confirmed=False,
-                    high_slippage_warning=high_slip,
-                    unfilled_cancelled=True,
-                )
+    if intent.outlet.lower() == "kalshi":
+        fs_k = float(order_result.filled_size or 0.0)
+        st_k = (order_result.status or "").lower()
+        if fs_k <= 0.0 or st_k in ("canceled", "cancelled"):
+            return ConfirmationResult(
+                actual_fill_price=0.0,
+                actual_fill_size=0.0,
+                slippage_pct=0.0,
+                confirmed=False,
+                high_slippage_warning=False,
+                unfilled_cancelled=True,
+            )
 
     return ConfirmationResult(
         actual_fill_price=fp,
         actual_fill_size=order_result.filled_size,
         slippage_pct=slip,
-        confirmed=not unfilled_cancelled,
+        confirmed=True,
         high_slippage_warning=high_slip,
         unfilled_cancelled=unfilled_cancelled,
     )

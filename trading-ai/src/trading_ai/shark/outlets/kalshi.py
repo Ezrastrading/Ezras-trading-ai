@@ -614,47 +614,135 @@ class KalshiClient:
         side: str,
         count: int,
         action: str = "buy",
-        yes_price_cents: Optional[int] = None,
-        order_type: str = "limit",
-        time_in_force: Optional[str] = None,
+        order_type: str = "market",
     ) -> OrderResult:
         """
-        ``action``: ``buy`` (default) or ``sell`` (exit / take profit).
+        Kalshi execution is **market-only** (no limit / no resting orders).
 
-        ``order_type``: ``limit`` (default) requires ``yes_price_cents``; ``market`` crosses at best available.
-
-        ``time_in_force``: optional Kalshi values e.g. ``immediate_or_cancel``, ``good_till_canceled``.
+        After submit, polls up to 5s; if ``fill_count`` is still zero, cancels the order.
         """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
 
             require_kalshi_api_key()
-        ot = (order_type or "limit").strip().lower()
-        if ot not in ("limit", "market"):
-            ot = "limit"
+        _ = (order_type or "market").strip().lower()  # API always uses market; kept for call-site clarity
         act = (action or "buy").strip().lower()
         if act not in ("buy", "sell"):
             act = "buy"
+        cnt = max(1, int(count))
         body: Dict[str, Any] = {
             "ticker": ticker,
             "action": act,
             "side": side,
-            "type": ot,
-            "count": count,
+            "type": "market",
+            "count": cnt,
         }
-        if ot == "limit":
-            if yes_price_cents is None:
-                raise ValueError("yes_price_cents required for Kalshi limit orders")
-            body["yes_price"] = max(1, min(99, int(yes_price_cents)))
-        if time_in_force:
-            body["time_in_force"] = time_in_force
+        logger.info("Kalshi order: market fill %s %s", ticker, cnt)
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
-        status = str(j.get("status") or j.get("order", {}).get("status") or "submitted")
-        fp = float(j.get("filled_price", 0) or j.get("order", {}).get("avg_price", 0) or 0) / 100.0
-        fs = float(j.get("filled_count", 0) or j.get("order", {}).get("filled_count", 0) or 0)
+        if not oid:
+            status = str(j.get("status") or j.get("order", {}).get("status") or "error")
+            return OrderResult(
+                order_id="unknown",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status=status,
+                outlet="kalshi",
+                raw=j,
+                success=False,
+                reason="missing order_id in Kalshi response",
+            )
+
+        deadline = time.time() + 5.0
+
+        def _fill_metrics(payload: Dict[str, Any]) -> Tuple[float, float, str]:
+            root = payload.get("order") if isinstance(payload.get("order"), dict) else payload
+            if not isinstance(root, dict):
+                root = {}
+            fs = 0.0
+            for key in ("filled_count", "fill_count"):
+                v = root.get(key)
+                if v is None and payload.get(key) is not None:
+                    v = payload.get(key)
+                if v is not None:
+                    try:
+                        fs = float(v)
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            fp_cents = float(
+                root.get("filled_price")
+                or root.get("avg_price")
+                or payload.get("filled_price")
+                or payload.get("avg_price")
+                or 0
+            )
+            fp = fp_cents / 100.0
+            st = str(
+                root.get("status") or payload.get("status") or "submitted",
+            ).lower()
+            return fs, fp, st
+
+        fs, fp, status = _fill_metrics(j)
+        terminal = {
+            "filled",
+            "executed",
+            "closed",
+            "canceled",
+            "cancelled",
+        }
+
+        while fs <= 0 and status not in terminal and time.time() < deadline:
+            time.sleep(0.2)
+            try:
+                poll = self.get_order(oid)
+            except Exception as exc:
+                logger.warning("Kalshi get_order %s failed during fill wait: %s", oid, exc)
+                break
+            j = poll
+            fs, fp, status = _fill_metrics(j)
+
+        if fs > 0:
+            logger.info("Order filled: %s %s@%s", ticker, fs, fp)
+            return OrderResult(
+                order_id=oid,
+                filled_price=fp,
+                filled_size=fs,
+                timestamp=time.time(),
+                status=status or "filled",
+                outlet="kalshi",
+                raw=j,
+            )
+
+        if fs <= 0 and status not in ("canceled", "cancelled"):
+            try:
+                self.cancel_order(oid)
+            except Exception as exc:
+                logger.warning("Kalshi cancel after no fill failed %s: %s", oid, exc)
+            try:
+                j = self.get_order(oid)
+            except Exception:
+                pass
+            fs, fp, status = _fill_metrics(j)
+            logger.warning("Order cancelled: %s — no fill in 5s", ticker)
+
+        if fs <= 0:
+            return OrderResult(
+                order_id=oid,
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status=status if status in ("canceled", "cancelled") else "canceled",
+                outlet="kalshi",
+                raw=j,
+                success=False,
+                reason="no fill within 5s",
+            )
+
+        logger.info("Order filled: %s %s@%s", ticker, fs, fp)
         return OrderResult(
-            order_id=oid or "unknown",
+            order_id=oid,
             filled_price=fp,
             filled_size=fs,
             timestamp=time.time(),
