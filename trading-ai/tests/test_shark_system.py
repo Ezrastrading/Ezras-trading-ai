@@ -649,9 +649,21 @@ def test_32b_kalshi_rsa_pem_normalization_and_signed_headers(monkeypatch):
 
 
 def test_32_kalshi_order_placement_returns_valid_order_result_structure(monkeypatch):
+    import time as time_mod
+
     from trading_ai.shark.outlets.kalshi import KalshiClient
 
     def fake_request(self, method, path, **kwargs):
+        if method == "GET" and "/markets/" in path:
+            close_ts = time_mod.time() + 1800
+            return {
+                "market": {
+                    "ticker": "KX-T",
+                    "close_time": close_ts,
+                    "yes_ask": 90,
+                    "no_ask": 10,
+                }
+            }
         assert method == "POST"
         assert "/portfolio/orders" in path
         return {

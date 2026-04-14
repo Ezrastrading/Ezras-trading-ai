@@ -46,6 +46,35 @@ def kalshi_exclude_crypto_from_hv() -> bool:
     )
 
 
+_NC_HF_PRIORITY_SERIES: Tuple[str, ...] = (
+    "KXINX",
+    "KXNBA",
+    "KXNFL",
+    "KXMLB",
+    "KXNHL",
+    "KXFED",
+    "KXECON",
+    "KXPOL",
+)
+
+
+def kalshi_nc_hf_series_to_scan() -> Tuple[str, ...]:
+    """Series for the 30s NC HF job: priority list plus the full non-crypto active pool (deduped)."""
+    pool = kalshi_non_crypto_series_for_active_pool()
+    merged: list[str] = []
+    seen: set[str] = set()
+    for s in _NC_HF_PRIORITY_SERIES:
+        su = s.strip().upper()
+        if su and su not in seen:
+            seen.add(su)
+            merged.append(su)
+    for s in pool:
+        if s not in seen:
+            seen.add(s)
+            merged.append(s)
+    return tuple(merged)
+
+
 def kalshi_non_crypto_series_for_active_pool() -> Tuple[str, ...]:
     """
     Series roots scanned in ``fetch_kalshi_active_markets`` (non-crypto HV pool).

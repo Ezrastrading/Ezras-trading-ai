@@ -68,8 +68,13 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
     kalshi_expiry_tier: Optional[str] = None
     if is_kalshi:
         from trading_ai.shark.kalshi_crypto import kalshi_exclude_crypto_from_hv, kalshi_ticker_is_crypto
+        from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
 
         if kalshi_exclude_crypto_from_hv() and kalshi_ticker_is_crypto(str(m.market_id or "")):
+            return None
+
+        # Hard TTR ceiling — rejects multi-hour / multi-day markets before tier check.
+        if kalshi_snapshot_over_max_ttr(m):
             return None
 
         from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
@@ -132,14 +137,18 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
 def hunt_kalshi_near_close(m: MarketSnapshot) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
         return None
+    # TTR gate — must resolve within KALSHI_MAX_TTR_SECONDS (default 90 min).
+    from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+    if kalshi_snapshot_over_max_ttr(m):
+        return None
     end = getattr(m, "end_date_seconds", None)
     if end is None:
         end = getattr(m, "end_timestamp_unix", None)
     if end is None:
         return None
     hours_left = (float(end) - time.time()) / 3600.0
-    # Within 24h of resolution (was 4h); skip expired or far-dated.
-    if hours_left > 24.0 or hours_left < 0:
+    # Skip expired; far-dated caught by TTR gate above.
+    if hours_left < 0:
         return None
     yes = m.yes_price
     no = m.no_price
@@ -178,6 +187,9 @@ def hunt_kalshi_near_close(m: MarketSnapshot) -> Optional[HuntSignal]:
 def hunt_kalshi_metaculus_divergence(m: MarketSnapshot) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
         return None
+    from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+    if kalshi_snapshot_over_max_ttr(m):
+        return None
     u = m.underlying_data_if_available or {}
     meta = u.get("metaculus_yes_reference")
     if meta is None:
@@ -206,6 +218,9 @@ def hunt_kalshi_metaculus_divergence(m: MarketSnapshot) -> Optional[HuntSignal]:
 def hunt_kalshi_metaculus_agreement(m: MarketSnapshot) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
         return None
+    from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+    if kalshi_snapshot_over_max_ttr(m):
+        return None
     u = m.underlying_data_if_available or {}
     meta = u.get("metaculus_yes_reference")
     if meta is None:
@@ -232,6 +247,9 @@ def hunt_kalshi_metaculus_agreement(m: MarketSnapshot) -> Optional[HuntSignal]:
 
 def hunt_kalshi_polymarket_divergence(m: MarketSnapshot) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
+        return None
+    from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+    if kalshi_snapshot_over_max_ttr(m):
         return None
     u = m.underlying_data_if_available or {}
     poly_price = u.get("poly_yes_reference")
@@ -265,6 +283,9 @@ def hunt_kalshi_momentum(
     price_history: Optional[Dict[str, List[float]]] = None,
 ) -> Optional[HuntSignal]:
     if (m.outlet or "").lower() != "kalshi":
+        return None
+    from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+    if kalshi_snapshot_over_max_ttr(m):
         return None
     ph = price_history or {}
     history = ph.get(m.market_id, [])

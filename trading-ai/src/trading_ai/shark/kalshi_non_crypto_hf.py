@@ -59,7 +59,8 @@ def run_kalshi_non_crypto_hf() -> None:
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
     from trading_ai.shark.execution_live import monitor_position
-    from trading_ai.shark.kalshi_crypto import kalshi_non_crypto_series_for_active_pool, kalshi_ticker_is_crypto
+    from trading_ai.shark.kalshi_crypto import kalshi_nc_hf_series_to_scan, kalshi_ticker_is_crypto
+    from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
     from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
     from trading_ai.shark.kalshi_limits import (
         count_kalshi_open_positions,
@@ -92,7 +93,7 @@ def run_kalshi_non_crypto_hf() -> None:
 
     now = time.time()
     merged: Dict[str, Dict[str, Any]] = {}
-    for ser in kalshi_non_crypto_series_for_active_pool():
+    for ser in kalshi_nc_hf_series_to_scan():
         try:
             rows = client.fetch_markets_for_series(ser, limit=120)
         except Exception as exc:
@@ -120,6 +121,8 @@ def run_kalshi_non_crypto_hf() -> None:
         ttr = end - now
         if ttr <= 0:
             continue
+        if ttr > kalshi_max_ttr_seconds():
+            continue
         tier = classify_kalshi_expiry_tier(ttr)
         if tier != "A":
             continue
@@ -145,11 +148,7 @@ def run_kalshi_non_crypto_hf() -> None:
     slots = max(0, max_open - open_n)
     n_take = min(len(candidates), max_per_run, slots)
     if n_take <= 0:
-        logger.info(
-            "kalshi_nc_hf: Tier_A min_prob=%.2f — %s candidates, 0 trades (slots/cap)",
-            min_prob,
-            len(candidates),
-        )
+        logger.info("NC_HF: found %s markets, placing 0 trades", len(candidates))
         return
 
     selected = candidates[:n_take]
@@ -216,11 +215,4 @@ def run_kalshi_non_crypto_hf() -> None:
         except Exception as exc:
             logger.warning("kalshi_nc_hf monitor_position failed %s: %s", pos.market_id, exc)
 
-    logger.info(
-        "kalshi_nc_hf: Tier_A min_prob=%.2f — %s candidates, placing %s trades, headroom was $%.2f (cap %.0f%%)",
-        min_prob,
-        len(candidates),
-        placed,
-        headroom,
-        deploy_cap_pct * 100,
-    )
+    logger.info("NC_HF: found %s markets, placing %s trades", len(candidates), placed)

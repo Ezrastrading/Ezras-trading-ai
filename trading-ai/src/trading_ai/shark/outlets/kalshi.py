@@ -536,7 +536,7 @@ class KalshiClient:
             if not _kalshi_market_tradeable_core(m, now):
                 rejected_tradeable += 1
                 continue
-            if not _kalshi_market_close_within_seven_days(m, now):
+            if not _kalshi_market_within_max_ttr(m, now):
                 rejected_time += 1
                 continue
             if _kalshi_market_volume(m) < 1.0:
@@ -618,6 +618,9 @@ class KalshiClient:
         """
         Kalshi execution is **market-only**: POST body is ``type: market`` (no limit / no resting).
 
+        **Buys** (last line of defense): TTR ≤ ``KALSHI_MAX_TTR_SECONDS`` and implied prob ≥
+        ``KALSHI_MIN_ORDER_PROB`` (default 0.85). **Sells** skip (profit exit / unwind).
+
         After POST, polls GET ``/portfolio/orders/{id}`` for up to 5s; zero fill → cancel.
         """
         if not self.has_kalshi_credentials():
@@ -629,6 +632,55 @@ class KalshiClient:
         if act not in ("buy", "sell"):
             act = "buy"
         cnt = max(1, int(count))
+
+        if act == "buy":
+            from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
+
+            try:
+                mj = self.get_market(ticker)
+                inner = mj.get("market") if isinstance(mj.get("market"), dict) else mj
+                if not isinstance(inner, dict):
+                    inner = {}
+                end = _parse_close_timestamp_unix(inner)
+                if end is not None:
+                    ttr = end - time.time()
+                    if ttr > kalshi_max_ttr_seconds():
+                        logger.error(
+                            "BLOCKED: TTR %.0fs exceeds max %.0fs — %s",
+                            ttr,
+                            kalshi_max_ttr_seconds(),
+                            ticker,
+                        )
+                        return OrderResult(
+                            order_id="",
+                            filled_price=0.0,
+                            filled_size=0.0,
+                            timestamp=time.time(),
+                            status="blocked_ttr",
+                            outlet="kalshi",
+                            raw=mj,
+                            success=False,
+                            reason="ttr_over_max",
+                        )
+                yp, npv, _, _ = _kalshi_yes_no_from_market_row(inner)
+                implied = float(yp if (side or "").lower() == "yes" else npv)
+                min_p = float((os.environ.get("KALSHI_MIN_ORDER_PROB") or "0.85").strip() or "0.85")
+                if implied < min_p:
+                    pct = implied * 100.0
+                    logger.error("BLOCKED: prob %.1f%% below 85%% minimum", pct)
+                    return OrderResult(
+                        order_id="",
+                        filled_price=0.0,
+                        filled_size=0.0,
+                        timestamp=time.time(),
+                        status="blocked_prob",
+                        outlet="kalshi",
+                        raw=mj,
+                        success=False,
+                        reason="prob_below_min",
+                    )
+            except Exception as exc:
+                logger.warning("Kalshi pre-trade gate (get_market) failed %s: %s — proceeding", ticker, exc)
 
         body: Dict[str, Any] = {
             "ticker": ticker,
@@ -1189,6 +1241,30 @@ def _kalshi_market_close_within_seven_days(m: Dict[str, Any], now: float) -> boo
     if days_away <= 7.0:
         return True
     return _kalshi_close_time_string_has_today(m, now)
+
+
+def _kalshi_max_ttr_seconds() -> float:
+    """Hard ceiling on time-to-resolution for the active market pool (default 5400 s = 90 min)."""
+    from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
+
+    return kalshi_max_ttr_seconds()
+
+
+def _kalshi_market_within_max_ttr(m: Dict[str, Any], now: float) -> bool:
+    """True when market TTR ≤ KALSHI_MAX_TTR_SECONDS (or close_time is unparseable → pass through)."""
+    close_ts = _parse_close_timestamp_unix(m)
+    if close_ts is None:
+        return True          # missing close time → let hunt-level TTR checks decide
+    ttr = close_ts - now
+    if ttr <= 0:
+        return False         # already expired
+    max_ttr = _kalshi_max_ttr_seconds()
+    if ttr <= max_ttr:
+        return True
+    ticker = str(m.get("ticker") or "").strip()
+    ttr_min = ttr / 60.0
+    logger.info("Skipped %s: TTR too long (%.0fmin > %.0fmin)", ticker, ttr_min, max_ttr / 60.0)
+    return False
 
 
 def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:

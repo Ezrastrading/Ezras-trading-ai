@@ -202,6 +202,11 @@ def run_scan_execution_cycle(
         batch_rows: list[tuple] = []
         for j, m in enumerate(batch):
             global_idx = i + j
+            if (getattr(m, "outlet", None) or "").strip().lower() == "kalshi":
+                from trading_ai.shark.kalshi_ttr import kalshi_snapshot_over_max_ttr
+
+                if kalshi_snapshot_over_max_ttr(m):
+                    continue
             htf = hunt_types_filter
             if (m.outlet or "").strip().lower() == "manifold":
                 from trading_ai.shark.mana_sandbox import mana_effective_hunt_filter
