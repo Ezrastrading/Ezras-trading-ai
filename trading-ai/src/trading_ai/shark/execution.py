@@ -291,6 +291,15 @@ def run_execution_chain(
                     pass
             return ChainResult(False, "submit_failed", audit, intent)
 
+        if not getattr(order_res, "success", True):
+            st = str(order_res.status or "blocked")
+            rs = getattr(order_res, "reason", None) or ""
+            _append(audit, "9_submit_order", status=st, reason=rs, order_id=order_res.order_id)
+            append_shark_audit_record(
+                {"step": "submit_blocked", "market_id": intent.market_id, "status": st, "reason": rs}
+            )
+            return ChainResult(False, st, audit, intent)
+
         _append(audit, "9_submit_order", status="submitted", order_id=order_res.order_id)
         append_shark_audit_record({"step": "submit", "market_id": intent.market_id, "order_id": order_res.order_id})
 

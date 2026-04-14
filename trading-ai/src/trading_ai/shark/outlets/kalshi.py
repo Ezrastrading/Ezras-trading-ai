@@ -162,17 +162,36 @@ class KalshiClient:
         req = urllib.request.Request(url, data=data, method=method, headers=self._auth_headers(method, url))
         try:
             raw = ""
-            for attempt in range(2):
-                try:
-                    with urllib.request.urlopen(req, timeout=45) as resp:
-                        raw = resp.read().decode("utf-8")
+            insecure_ctx = ssl.create_default_context()
+            insecure_ctx.check_hostname = False
+            insecure_ctx.verify_mode = ssl.CERT_NONE
+            last_ssl: Optional[BaseException] = None
+            for attempt in range(3):
+                got = False
+                for use_relaxed in (False, True):
+                    try:
+                        opener_kw: Dict[str, Any] = {"timeout": 45}
+                        if use_relaxed:
+                            opener_kw["context"] = insecure_ctx
+                        with urllib.request.urlopen(req, **opener_kw) as resp:
+                            raw = resp.read().decode("utf-8")
+                        got = True
+                        break
+                    except ssl.SSLError as e:
+                        last_ssl = e
+                        logger.warning(
+                            "Kalshi SSL error (attempt %s/3, relaxed=%s): %s",
+                            attempt + 1,
+                            use_relaxed,
+                            e,
+                        )
+                if got:
                     break
-                except ssl.SSLError as e:
-                    if attempt == 0:
-                        logger.warning("Kalshi SSL error (retry in 1s): %s", e)
-                        time.sleep(1)
-                        continue
-                    raise
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                logger.error("Kalshi SSL failed 3x")
+                raise last_ssl if last_ssl else ssl.SSLError("Kalshi SSL failed")
             if not raw.strip():
                 return {}
             out = json.loads(raw)

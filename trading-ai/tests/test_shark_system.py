@@ -1240,6 +1240,113 @@ def test_91_scan_loop_calls_run_execution_chain_when_valid_opportunity(tmp_path,
     assert calls[0][1] == "kalshi"
 
 
+def test_91b_scan_skips_live_execution_for_polymarket(tmp_path, monkeypatch):
+    """Polymarket markets are scanned but do not invoke ``run_execution_chain`` (Kalshi-only live)."""
+    from trading_ai.shark import scan_execute as se
+    from trading_ai.shark.models import (
+        HuntSignal,
+        HuntType,
+        MarketSnapshot,
+        OpportunityTier,
+        ScoredOpportunity,
+    )
+    from trading_ai.shark.state_store import CapitalRecord, save_capital
+
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0))
+
+    m = MarketSnapshot(
+        market_id="poly:abc",
+        outlet="polymarket",
+        yes_price=0.45,
+        no_price=0.55,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=8000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+        market_category="cat1",
+    )
+    hs = [HuntSignal(HuntType.STRUCTURAL_ARBITRAGE, 0.12, 0.8, {})]
+    scored = ScoredOpportunity(
+        market=m,
+        hunts=hs,
+        edge_size=0.12,
+        confidence=0.7,
+        liquidity_score=0.9,
+        resolution_speed_score=0.8,
+        strategy_performance_weight=0.5,
+        score=0.85,
+        tier=OpportunityTier.TIER_A,
+        tier_sizing_multiplier=1.3,
+    )
+
+    monkeypatch.setattr(se, "scan_markets", lambda fetchers, fallback_demo=False: [m])
+    monkeypatch.setattr(se, "run_hunts_on_market", lambda *a, **k: hs)
+    monkeypatch.setattr(se, "score_opportunity", lambda mm, hh: scored)
+
+    def boom(*a, **k):
+        raise AssertionError("run_execution_chain must not run for polymarket")
+
+    monkeypatch.setattr(se, "run_execution_chain", boom)
+
+    class FF:
+        outlet_name = "polymarket"
+
+        def fetch_binary_markets(self):
+            return [m]
+
+    n, att = se.run_scan_execution_cycle((FF(),), tag="unit_poly")
+    assert n == 1
+    assert att == 1
+
+
+def test_polymarket_submit_order_blocked_by_default(monkeypatch):
+    from trading_ai.shark.execution_live import submit_order
+    from trading_ai.shark.models import ExecutionIntent, HuntType
+
+    monkeypatch.delenv("POLY_EXECUTION_ENABLED", raising=False)
+    intent = ExecutionIntent(
+        market_id="0x1",
+        outlet="polymarket",
+        side="yes",
+        stake_fraction_of_capital=0.01,
+        edge_after_fees=0.1,
+        estimated_win_probability=0.55,
+        hunt_types=[HuntType.PURE_ARBITRAGE],
+        source="test",
+        expected_price=0.5,
+        notional_usd=1.0,
+        shares=1,
+    )
+    r = submit_order(intent)
+    assert r.success is False
+    assert r.status == "disabled"
+    assert "disabled" in (r.reason or "").lower()
+
+
+def test_polymarket_submit_order_geoblock_when_env_true(monkeypatch):
+    from trading_ai.shark.execution_live import submit_order
+    from trading_ai.shark.models import ExecutionIntent, HuntType
+
+    monkeypatch.setenv("POLY_EXECUTION_ENABLED", "true")
+    intent = ExecutionIntent(
+        market_id="0x1",
+        outlet="polymarket",
+        side="yes",
+        stake_fraction_of_capital=0.01,
+        edge_after_fees=0.1,
+        estimated_win_probability=0.55,
+        hunt_types=[HuntType.PURE_ARBITRAGE],
+        source="test",
+        expected_price=0.5,
+        notional_usd=1.0,
+        shares=1,
+    )
+    r = submit_order(intent)
+    assert r.success is False
+    assert r.status == "geoblock_skip"
+
+
 def test_74_kalshi_401_does_not_block_all_systems_go(tmp_path, monkeypatch):
     """Kalshi auth failure is non-fatal for setup_env — compound elsewhere."""
     se = _load_setup_env()

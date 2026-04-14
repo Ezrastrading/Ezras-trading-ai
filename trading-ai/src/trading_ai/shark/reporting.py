@@ -476,17 +476,9 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
 
 
 def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
-    """Banner: Kalshi USD only unless ``MANIFOLD_REAL_MONEY`` (then optional Manifold USD line)."""
+    """Banner: active trading capital is Kalshi USD; optional Manifold USD when ``MANIFOLD_REAL_MONEY``."""
     _ = gaps_n
     k = trading_capital_usd_for_alerts(fallback=capital)
-    poly_line = ""
-    try:
-        from trading_ai.shark.treasury import load_treasury
-
-        pbal = float(load_treasury().get("polymarket_balance_usd", 0.0) or 0.0)
-        poly_line = f" Polymarket: ${pbal:.2f}\n"
-    except Exception:
-        pass
     extra = ""
     rm = (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() == "true"
     if rm:
@@ -500,11 +492,10 @@ def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
             pass
     return (
         "🦈 Ezras Shark System — LIVE\n"
-        f" Capital: ${k:.2f}\n"
-        + poly_line
+        f" Capital: ${k:.2f} (Kalshi)\n"
         + extra
         + f" Phase: {phase}\n"
-        " Scanning: ALL OUTLETS | Mode: 24/7\n"
+        " Scanning: Kalshi | Mode: 24/7\n"
         " Targets: MINIMUM expectations.\n"
         " Faster is always better. 🦈\n"
         " System is hunting. Always."

@@ -1,6 +1,9 @@
 """
 Bridge: market scan → hunts → score → ``run_execution_chain`` (live venues when not dry-run).
-Manifold routes to mana sandbox (silent learning); Kalshi/Polymarket use real chain.
+
+Scanning uses all ``fetchers`` (Kalshi, Polymarket, Manifold, …) for intelligence and price
+feeds. **Live US execution is Kalshi only** — Polymarket orders are blocked in
+``execution_live.submit_order``; Manifold stays on the mana sandbox path below.
 """
 
 from __future__ import annotations
@@ -9,7 +12,7 @@ import gc
 import json
 import logging
 import time
-from typing import Optional, Sequence, Set, Tuple
+from typing import Optional, Sequence, Set, Tuple, List
 
 from trading_ai.shark.capital_effective import effective_capital_for_outlet
 from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
@@ -24,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50
 _TOP_PER_BATCH = 5
+
+
+def scan_fetchers_all() -> List[OutletFetcher]:
+    """All default outlets for market intelligence (Kalshi + Polymarket + …)."""
+    from trading_ai.shark.outlets import default_fetchers
+
+    return default_fetchers()
+
+
+def execution_fetchers_kalshi_only() -> List[OutletFetcher]:
+    """Subset used when wiring jobs that must only touch Kalshi HTTP; prefer ``scan_fetchers_all()`` for scans."""
+    return [f for f in scan_fetchers_all() if "kalshi" in f.outlet_name.lower()]
 
 
 def _ceo_bump_scan_stats(markets: int, execution_attempts: int) -> None:
@@ -211,6 +226,15 @@ def run_scan_execution_cycle(
                     tag,
                     m.market_id,
                     intent is not None,
+                )
+                continue
+
+            if outlet.lower() != "kalshi":
+                logger.info(
+                    "%s: live execution skipped (Kalshi only) outlet=%s market=%s",
+                    tag,
+                    outlet,
+                    m.market_id,
                 )
                 continue
 

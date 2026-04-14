@@ -43,10 +43,37 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
     """
     Live submit — credentials:
     Kalshi: ``KALSHI_API_KEY`` (``KalshiClient.place_order``).
-    Polymarket: ``outlets.polymarket.submit_polymarket_order`` (``POLY_WALLET_KEY`` + ``POLY_API_KEY``/``POLY_API_SECRET``).
+    Polymarket: execution blocked by default (US geoblock / ``POLY_EXECUTION_ENABLED``); scanning still uses Polymarket data.
     Manifold: ``MANIFOLD_API_KEY`` (``submit_manifold_bet``).
     """
     o = (intent.outlet or "").lower()
+    if o == "polymarket":
+        poly_exec = (os.getenv("POLY_EXECUTION_ENABLED") or "false").strip().lower()
+        if poly_exec != "true":
+            logger.warning("Polymarket execution disabled (POLY_EXECUTION_ENABLED is not true)")
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="disabled",
+                outlet="polymarket",
+                raw={},
+                success=False,
+                reason="Polymarket execution disabled",
+            )
+        logger.warning("Polymarket execution blocked — US geoblock (403)")
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="geoblock_skip",
+            outlet="polymarket",
+            raw={},
+            success=False,
+            reason="Polymarket US restricted",
+        )
     if o == "kalshi":
         from trading_ai.shark.outlets.kalshi import KalshiClient
 
@@ -61,10 +88,6 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             count=max(1, int(intent.shares)),
             yes_price_cents=max(1, min(99, yes_cents)),
         )
-    if o == "polymarket":
-        from trading_ai.shark.outlets.polymarket import submit_polymarket_order
-
-        return submit_polymarket_order(intent)
     if o == "manifold":
         if not manifold_real_money_execution_enabled():
             logger.info("Manifold skipped — play money only")

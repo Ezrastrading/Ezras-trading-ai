@@ -118,6 +118,8 @@ class OrderResult:
     status: str
     outlet: str
     raw: Dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    reason: Optional[str] = None
 
 
 @dataclass
