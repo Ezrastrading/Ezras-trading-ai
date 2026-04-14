@@ -53,9 +53,15 @@ def main() -> None:
     try:
         import resource
 
-        _lim = 512 * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (_lim, _lim))
-        log.info("Memory limit set: 512MB (RLIMIT_AS)")
+        # Optional hard cap — default OFF. A fixed 512MB cap caused ENOMEM during concurrent
+        # HTTPS (SSL) on small Railway dynos. Set SHARK_RLIMIT_MB explicitly if you need a limit.
+        raw_mb = (os.environ.get("SHARK_RLIMIT_MB") or "").strip()
+        if raw_mb.isdigit():
+            mb = int(raw_mb)
+            if mb > 0:
+                _lim = mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (_lim, _lim))
+                log.info("Memory limit set: %sMB (RLIMIT_AS)", mb)
     except (ValueError, OSError) as exc:
         log.warning("Memory limit not applied: %s", exc)
     boot_unix = time.time()
@@ -186,6 +192,12 @@ def main() -> None:
         hunt_filter = {HuntType.CRYPTO_SCALP}
         n, att = run_scan_execution_cycle(fetchers, tag="crypto_scalp", hunt_types_filter=hunt_filter)
         log.info("crypto_scalp_scan: markets=%s execution_attempts=%s", n, att)
+
+    _crypto_scalp_sched = (
+        crypto_scalp_scan
+        if (os.environ.get("CRYPTO_SCALP_SCAN_ENABLED") or "false").strip().lower() == "true"
+        else None
+    )
 
     def near_resolution_sweep() -> None:
         from trading_ai.shark.models import HuntType
@@ -377,7 +389,7 @@ def main() -> None:
         balance_sync=_balance_sync,
         heartbeat=_heartbeat,
         eod_force_trade=eod_force_scan,
-        crypto_scalp_scan=crypto_scalp_scan,
+        crypto_scalp_scan=_crypto_scalp_sched,
         near_resolution_sweep=near_resolution_sweep,
         arb_sweep=arb_sweep,
         kalshi_near_resolution=kalshi_near_resolution,

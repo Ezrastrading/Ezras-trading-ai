@@ -2171,6 +2171,16 @@ def test_125b_hunt_volume_spike_fires_on_high_volume_contested():
     assert r.details.get("side") in ("yes", "no")
 
 
+def test_gamma_fetch_skips_cleanly_on_enomem(monkeypatch):
+    from trading_ai.shark.outlets import polymarket as poly
+
+    def boom(*_a, **_k):
+        raise OSError(12, "Cannot allocate memory")
+
+    monkeypatch.setattr(poly.requests, "get", boom)
+    assert poly.fetch_gamma_markets_page(limit=10, offset=0) == []
+
+
 def test_126_crypto_scalp_scan_interval_job_registered():
     from trading_ai.shark.scheduler import build_shark_scheduler
 

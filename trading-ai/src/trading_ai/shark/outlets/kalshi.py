@@ -106,7 +106,13 @@ def _get_ssl_context() -> ssl.SSLContext:
         try:
             return ssl.create_default_context(cafile=certifi.where())
         except Exception as exc:
-            logger.warning("Kalshi: certifi context failed (%s), using default", exc)
+            # ENOMEM during SSL setup — avoid formatting huge nested tracebacks
+            if isinstance(exc, OSError) and getattr(exc, "errno", None) == 12:
+                logger.debug("Kalshi: certifi context skipped (ENOMEM), using default SSL context")
+            elif isinstance(exc, MemoryError):
+                logger.debug("Kalshi: certifi context skipped (MemoryError), using default SSL context")
+            else:
+                logger.warning("Kalshi: certifi context failed (%s), using default", type(exc).__name__)
     return ssl.create_default_context()
 
 

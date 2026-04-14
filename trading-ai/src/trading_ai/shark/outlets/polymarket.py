@@ -114,18 +114,47 @@ def _parse_polymarket_json_list(val: Any) -> List[Any]:
     return []
 
 
+def _resource_exhausted(exc: Optional[BaseException]) -> bool:
+    """True for MemoryError, ENOMEM (errno 12), or chained causes (avoid huge str(exc) when logging)."""
+    if exc is None:
+        return False
+    if isinstance(exc, MemoryError):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == 12:
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and _resource_exhausted(cause if isinstance(cause, BaseException) else None):
+        return True
+    ctx = getattr(exc, "__context__", None)
+    if ctx is not None and _resource_exhausted(ctx if isinstance(ctx, BaseException) else None):
+        return True
+    return False
+
+
 def fetch_gamma_markets_page(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
     """Gamma API — curated active market list (recommended over CLOB ``active=`` query params)."""
     base = _gamma_api_base()
     url = f"{base}/markets?closed=false&archived=false&limit={int(limit)}&offset={int(offset)}"
     try:
-        r = requests.get(url, headers={"User-Agent": "EzrasShark/1.0"}, timeout=25)
+        r = requests.get(url, headers={"User-Agent": "EzrasShark/1.0"}, timeout=(5, 20))
         r.raise_for_status()
         data = r.json()
         if isinstance(data, list):
             return [x for x in data if isinstance(x, dict)]
+    except MemoryError:
+        logger.warning("Polymarket Gamma fetch skipped offset=%s (MemoryError)", offset)
     except Exception as exc:
-        logger.warning("Polymarket Gamma page fetch failed offset=%s: %s", offset, exc)
+        if _resource_exhausted(exc):
+            logger.warning(
+                "Polymarket Gamma fetch skipped offset=%s (low memory / ENOMEM)",
+                offset,
+            )
+        else:
+            logger.warning(
+                "Polymarket Gamma page fetch failed offset=%s: %s",
+                offset,
+                type(exc).__name__,
+            )
     return []
 
 
