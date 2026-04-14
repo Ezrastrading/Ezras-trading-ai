@@ -82,6 +82,13 @@ def execution_control_path() -> Path:
 
 
 def load_execution_control() -> Dict[str, Any]:
+    """Railway ``EZRAS_MANUAL_PAUSE=true|false`` overrides stale ``execution_control.json`` on disk."""
+    env_pause = (os.getenv("EZRAS_MANUAL_PAUSE") or "").strip().lower()
+    if env_pause == "false":
+        return {"manual_pause": False}
+    if env_pause == "true":
+        return {"manual_pause": True}
+
     p = execution_control_path()
     if not p.is_file():
         return {"manual_pause": False}
@@ -147,6 +154,11 @@ def load_capital() -> CapitalRecord:
             acceleration_mode=bool(raw.get("acceleration_mode", True)),
             last_trade_unix=float(raw["last_trade_unix"]) if raw.get("last_trade_unix") is not None else None,
         )
+        # Stale peak from a prior deploy makes drawdown look >40% with zero trades — reset.
+        if int(rec.total_trades or 0) == 0 and rec.current_capital > 0:
+            if rec.peak_capital > rec.current_capital + 1e-6:
+                rec.peak_capital = rec.current_capital
+                save_capital(rec)
         _maybe_halt_drawdown(rec)
         actual = os.getenv("KALSHI_ACTUAL_BALANCE")
         if actual:
@@ -178,10 +190,13 @@ def save_capital(rec: CapitalRecord) -> None:
 
 def _maybe_halt_drawdown(rec: CapitalRecord) -> None:
     if rec.peak_capital <= 0:
+        MANDATE.execution_paused = False
         return
     dd = (rec.peak_capital - rec.current_capital) / rec.peak_capital
     if dd > 0.40:
         MANDATE.execution_paused = True
+    else:
+        MANDATE.execution_paused = False
 
 
 def load_positions() -> Dict[str, Any]:
