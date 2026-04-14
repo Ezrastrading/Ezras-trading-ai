@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 MARGIN_DOCTRINE: Dict[str, Any] = {
     "never_borrow_for_low_confidence": True,
@@ -40,25 +43,32 @@ class DoctrineResult:
 
 def is_execution_paused() -> bool:
     """
-    Execution pause only when persisted capital drawdown exceeds 40% or ``manual_pause`` is set.
+    Pause only when ``execution_control.json`` sets ``manual_pause``, or when
+    persisted capital drawdown vs ``peak_capital`` exceeds 40%.
 
-    Ignores in-memory ``MANDATE.execution_paused`` so stale flags cannot block at 0% drawdown.
+    Default: not paused. Does not consult in-memory ``MANDATE`` alone — always
+    re-reads persisted state (``load_execution_control`` / ``load_capital``).
     """
     try:
-        from trading_ai.shark.state_store import load_capital, load_execution_control
+        from trading_ai.shark.state_store import load_execution_control
+
+        state = load_execution_control()
+        if bool(state.get("manual_pause")):
+            return True
     except Exception:
-        return False
-    cap = load_capital()
-    if cap.current_capital <= 0:
-        return False
-    peak = cap.peak_capital
-    if peak <= 0:
-        return False
-    drawdown = (peak - cap.current_capital) / peak
-    if drawdown > 0.40:
-        return True
-    state = load_execution_control()
-    return bool(state.get("manual_pause", False))
+        pass
+    try:
+        from trading_ai.shark.state_store import load_capital
+
+        cap = load_capital()
+        if cap.peak_capital > 0:
+            drawdown = (cap.peak_capital - cap.current_capital) / cap.peak_capital
+            if drawdown > 0.40:
+                logger.warning("Execution paused: drawdown=%.1f%%", drawdown * 100.0)
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def check_doctrine_gate(ctx: DoctrineContext) -> DoctrineResult:

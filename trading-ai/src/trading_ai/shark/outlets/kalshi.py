@@ -300,22 +300,43 @@ def build_kalshi_request_headers(method: str, full_url: str) -> Dict[str, str]:
     return h
 
 
-def _parse_close_time_seconds(m: Dict[str, Any], now: float) -> float:
+def _parse_close_timestamp_unix(m: Dict[str, Any]) -> Optional[float]:
+    """Absolute resolution time in unix seconds, if parseable from Kalshi market JSON."""
     ct = m.get("close_time") or m.get("expiration_time") or m.get("expected_expiration_time")
     if not ct:
-        return 86400.0
+        return None
     if isinstance(ct, (int, float)):
         ts = float(ct)
         if ts > 1e12:
             ts /= 1000.0
-        return max(60.0, ts - now)
+        return ts
     if isinstance(ct, str):
         try:
             dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
-            return max(60.0, dt.timestamp() - now)
+            return float(dt.timestamp())
         except ValueError:
             pass
+    return None
+
+
+def _parse_close_time_seconds(m: Dict[str, Any], now: float) -> float:
+    abs_ts = _parse_close_timestamp_unix(m)
+    if abs_ts is not None:
+        return max(60.0, abs_ts - now)
     return 86400.0
+
+
+def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
+    """Only open, unsettled markets with close time in the future (when parseable)."""
+    st = str(m.get("status", "open")).lower()
+    if st != "open":
+        return False
+    if m.get("settled") or m.get("is_settled"):
+        return False
+    end = _parse_close_timestamp_unix(m)
+    if end is not None and end <= now:
+        return False
+    return True
 
 
 def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapshot:
@@ -324,6 +345,7 @@ def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapsh
     no_ask = float(m.get("no_ask") or m.get("no_bid") or 50)
     vol = float(m.get("volume_24h") or m.get("volume") or 0)
     title = str(m.get("title") or m.get("subtitle") or "")
+    end_ts = _parse_close_timestamp_unix(m)
     return MarketSnapshot(
         market_id=ticker,
         outlet="kalshi",
@@ -335,6 +357,9 @@ def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapsh
         last_price_update_timestamp=now,
         underlying_data_if_available={"kalshi_raw": m},
         market_category="kalshi",
+        question_text=title or None,
+        end_timestamp_unix=end_ts,
+        end_date_seconds=end_ts,
     )
 
 
@@ -356,7 +381,13 @@ class KalshiFetcher(BaseOutletFetcher):
         try:
             now = time.time()
             raw_list = self._client.fetch_markets_open(limit=500)
-            return [map_kalshi_market_to_snapshot(m, now) for m in raw_list if isinstance(m, dict)]
+            active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
+            logger.info(
+                "Kalshi: %s fetched → %s active open markets",
+                len(raw_list),
+                len(active_rows),
+            )
+            return [map_kalshi_market_to_snapshot(m, now) for m in active_rows]
         except KalshiAuthError:
             return []
         except Exception as exc:

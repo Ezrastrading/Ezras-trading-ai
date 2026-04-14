@@ -193,8 +193,8 @@ def _build_pure_arbitrage_intent(
     notional *= risk_position_multiplier
     units = notional / pair_cost
     u = m.underlying_data_if_available or {}
-    yes_tid = u.get("yes_token_id") or u.get("token_id")
-    no_tid = u.get("no_token_id")
+    yes_tid = getattr(m, "yes_token_id", None) or u.get("yes_token_id") or u.get("token_id")
+    no_tid = getattr(m, "no_token_id", None) or u.get("no_token_id")
     if not yes_tid or not no_tid:
         _log.info("Intent built: False market=%s reason=pure_arb_missing_tokens", m.market_id)
         return None
@@ -388,8 +388,8 @@ def build_execution_intent(
                 shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
         margin_borrowed = max(0.0, notional - capital)
     u = m.underlying_data_if_available or {}
-    yes_tid = u.get("yes_token_id") or u.get("token_id")
-    no_tid = u.get("no_token_id")
+    yes_tid = getattr(m, "yes_token_id", None) or u.get("yes_token_id") or u.get("token_id")
+    no_tid = getattr(m, "no_token_id", None) or u.get("no_token_id")
     tok = no_tid if side == "no" else yes_tid
     meta = {
         "phase": phase.value,
@@ -404,6 +404,15 @@ def build_execution_intent(
     }
     if wallet_copy_trade:
         meta["trade_type"] = "wallet_copy"
+    if (outlet or "").strip().lower() == "polymarket":
+        from trading_ai.shark.outlets.polymarket import _token_id_log_preview as _tidpv
+
+        _log.info(
+            "Polymarket intent tokens: yes=%s no=%s market=%s",
+            _tidpv(str(yes_tid) if yes_tid else None) or "MISSING",
+            _tidpv(str(no_tid) if no_tid else None) or "MISSING",
+            m.market_id,
+        )
     _log.info(
         "Intent built: True market=%s notional_usd=%.2f outlet=%s",
         m.market_id,

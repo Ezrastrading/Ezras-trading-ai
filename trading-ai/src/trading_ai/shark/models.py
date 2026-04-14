@@ -65,6 +65,8 @@ class MarketSnapshot:
     end_date_seconds: Optional[float] = None  # alias epoch for resolution (optional; same role as end_timestamp_unix)
     best_ask_yes: Optional[float] = None
     best_ask_no: Optional[float] = None
+    yes_token_id: Optional[str] = None
+    no_token_id: Optional[str] = None
 
 
 @dataclass

@@ -87,6 +87,33 @@ def _poly_end_timestamp_seconds(row: Dict[str, Any], now: float) -> Tuple[Option
     return end_ts, ttr
 
 
+def _coerce_boolish(val: Any, default: bool) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "active"):
+        return True
+    if s in ("false", "0", "no", ""):
+        return False
+    return default
+
+
+def _is_tradeable_market_dict(row: Dict[str, Any], now: float) -> bool:
+    """CLOB row must be active, not closed/archived, and not past resolution."""
+    if not _coerce_boolish(row.get("active"), True):
+        return False
+    if _coerce_boolish(row.get("closed"), False):
+        return False
+    if _coerce_boolish(row.get("archived"), False):
+        return False
+    end_ts, _ = _poly_end_timestamp_seconds(row, now)
+    if end_ts is not None and end_ts < now:
+        return False
+    return True
+
+
 def fetch_polymarket_clob_market_json(condition_id: str) -> Optional[Dict[str, Any]]:
     """GET ``/markets/{condition_id}`` — public; used to backfill token_ids."""
     cid = (condition_id or "").replace("poly:", "").strip()
@@ -142,8 +169,11 @@ def enrich_polymarket_snapshot_tokens(m: MarketSnapshot) -> None:
     if (m.outlet or "").lower() != "polymarket":
         return
     u = dict(m.underlying_data_if_available or {})
-    yt = (u.get("yes_token_id") or u.get("token_id") or "").strip()
-    nt = (u.get("no_token_id") or "").strip()
+    yt = (
+        (getattr(m, "yes_token_id", None) or "")
+        or (u.get("yes_token_id") or u.get("token_id") or "")
+    ).strip()
+    nt = ((getattr(m, "no_token_id", None) or "") or (u.get("no_token_id") or "")).strip()
     if yt and nt:
         m.underlying_data_if_available = u
         return
@@ -175,7 +205,11 @@ def ensure_polymarket_intent_token_ids(intent: Any, market: MarketSnapshot) -> b
         nl = dict(meta.get("no_leg") or {})
         if (yl.get("token_id") or "").strip() and (nl.get("token_id") or "").strip():
             return True
-        u = market.underlying_data_if_available or {}
+        u = dict(market.underlying_data_if_available or {})
+        if getattr(market, "yes_token_id", None):
+            u.setdefault("yes_token_id", str(market.yes_token_id).strip())
+        if getattr(market, "no_token_id", None):
+            u.setdefault("no_token_id", str(market.no_token_id).strip())
         cid = str(u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
         j = fetch_polymarket_clob_market_json(cid)
         if not j:
@@ -196,7 +230,11 @@ def ensure_polymarket_intent_token_ids(intent: Any, market: MarketSnapshot) -> b
     tid = (meta.get("token_id") or meta.get("yes_token_id") or "").strip()
     if tid:
         return True
-    u = market.underlying_data_if_available or {}
+    u = dict(market.underlying_data_if_available or {})
+    if getattr(market, "yes_token_id", None):
+        u.setdefault("yes_token_id", str(market.yes_token_id).strip())
+    if getattr(market, "no_token_id", None):
+        u.setdefault("no_token_id", str(market.no_token_id).strip())
     cid = str(meta.get("condition_id") or u.get("condition_id") or market.market_id.replace("poly:", "")).strip()
     j = fetch_polymarket_clob_market_json(cid)
     if not j:
@@ -826,8 +864,10 @@ class PolymarketFetcher(BaseOutletFetcher):
         except Exception:
             return []
         now = time.time()
+        raw_fetched = len(rows)
+        tradeable_rows = [r for r in rows if isinstance(r, dict) and _is_tradeable_market_dict(r, now)]
         out: List[MarketSnapshot] = []
-        for row in rows:
+        for row in tradeable_rows:
             cid = str(row.get("condition_id") or row.get("id") or "")
             if not cid:
                 continue
@@ -852,8 +892,8 @@ class PolymarketFetcher(BaseOutletFetcher):
                     no = n_ask if n_ask is not None else (n_mid if n_mid is not None else max(1e-6, 1.0 - yes))
                 except (TypeError, ValueError):
                     continue
-                yes_tid = str(tokens[0].get("token_id") or "")
-                no_tid = str(tokens[1].get("token_id") or "")
+                yes_tid = str(tokens[0].get("token_id") or tokens[0].get("tokenId") or "") or None
+                no_tid = str(tokens[1].get("token_id") or tokens[1].get("tokenId") or "") or None
             elif len(tokens) == 1 and isinstance(tokens[0], dict):
                 try:
                     y_ask = _token_best_ask_price(tokens[0])
@@ -861,7 +901,7 @@ class PolymarketFetcher(BaseOutletFetcher):
                     no = max(1e-6, 1.0 - yes)
                 except (TypeError, ValueError):
                     continue
-                yes_tid = str(tokens[0].get("token_id") or "")
+                yes_tid = str(tokens[0].get("token_id") or tokens[0].get("tokenId") or "") or None
             else:
                 try:
                     op = row.get("outcomePrices") or row.get("outcome_prices")
@@ -877,6 +917,11 @@ class PolymarketFetcher(BaseOutletFetcher):
                         )
                 except (TypeError, ValueError):
                     continue
+            ly, ln = token_ids_from_clob_market_payload(row)
+            if ly:
+                yes_tid = ly
+            if ln:
+                no_tid = ln
             yes = max(1e-6, min(1.0 - 1e-6, float(yes)))
             no = max(1e-6, min(1.0 - 1e-6, float(no)))
             end_ts, ttr = _poly_end_timestamp_seconds(row, now)
@@ -892,6 +937,14 @@ class PolymarketFetcher(BaseOutletFetcher):
                 "no_token_id": no_tid,
                 "token_id": yes_tid or no_tid,
             }
+            yt_s = yes_tid if yes_tid else None
+            nt_s = no_tid if no_tid else None
+            logger.debug(
+                "Polymarket tokens: yes=%s no=%s condition_id=%s",
+                _token_id_log_preview(yt_s) or "MISSING",
+                _token_id_log_preview(nt_s) or "MISSING",
+                cid[:12] if cid else "",
+            )
             out.append(
                 MarketSnapshot(
                     market_id=f"poly:{cid}",
@@ -909,12 +962,14 @@ class PolymarketFetcher(BaseOutletFetcher):
                     end_date_seconds=end_ts,
                     best_ask_yes=best_y,
                     best_ask_no=best_n,
+                    yes_token_id=yt_s,
+                    no_token_id=nt_s,
                 )
             )
         active_markets = [m for m in out if m.end_date_seconds is None or m.end_date_seconds > now]
         logger.info(
-            "Polymarket: %s total CLOB rows → %s active (end unset or future)",
-            len(out),
+            "Polymarket: %s fetched → %s tradeable active markets",
+            raw_fetched,
             len(active_markets),
         )
         return active_markets

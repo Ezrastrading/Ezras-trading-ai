@@ -57,6 +57,7 @@ def scan_markets(
     *,
     fallback_demo: bool = True,
 ) -> List[MarketSnapshot]:
+    """Merge all markets from each fetcher — no category whitelist (each outlet returns its full listing)."""
     if fetchers:
         return merge_outlet_snapshots(fetchers)
     if fallback_demo:

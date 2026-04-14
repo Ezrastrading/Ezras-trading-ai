@@ -47,6 +47,7 @@ def build_shark_scheduler(
     crypto_scalp_scan: Optional[Callable[[], None]] = None,
     near_resolution_sweep: Optional[Callable[[], None]] = None,
     arb_sweep: Optional[Callable[[], None]] = None,
+    kalshi_near_resolution: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -61,6 +62,8 @@ def build_shark_scheduler(
         sched.add_job(near_resolution_sweep, IntervalTrigger(seconds=60), id="near_resolution_sweep", replace_existing=True)
     if arb_sweep is not None:
         sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
+    if kalshi_near_resolution is not None:
+        sched.add_job(kalshi_near_resolution, IntervalTrigger(seconds=60), id="kalshi_near_resolution", replace_existing=True)
 
     def _hot_wrapper() -> None:
         if hot_window_active():

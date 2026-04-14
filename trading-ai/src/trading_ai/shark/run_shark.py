@@ -167,12 +167,21 @@ def main() -> None:
 
     def near_resolution_sweep() -> None:
         from trading_ai.shark.models import HuntType
-        from trading_ai.shark.outlets import default_fetchers
+        from trading_ai.shark.outlets.polymarket import PolymarketFetcher
 
-        fetchers = tuple(default_fetchers())
+        fetchers = (PolymarketFetcher(),)
         hunt_filter = {HuntType.NEAR_RESOLUTION}
         n, att = run_scan_execution_cycle(fetchers, tag="near_resolution_sweep", hunt_types_filter=hunt_filter)
         log.info("near_resolution_sweep: markets=%s execution_attempts=%s", n, att)
+
+    def kalshi_near_resolution() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.outlets.kalshi import KalshiFetcher
+
+        fetchers = (KalshiFetcher(),)
+        hunt_filter = {HuntType.NEAR_RESOLUTION, HuntType.PURE_ARBITRAGE}
+        n, att = run_scan_execution_cycle(fetchers, tag="kalshi_near_resolution", hunt_types_filter=hunt_filter)
+        log.info("kalshi_near_resolution: markets=%s execution_attempts=%s", n, att)
 
     def arb_sweep() -> None:
         from trading_ai.shark.models import HuntType
@@ -278,6 +287,7 @@ def main() -> None:
         crypto_scalp_scan=crypto_scalp_scan,
         near_resolution_sweep=near_resolution_sweep,
         arb_sweep=arb_sweep,
+        kalshi_near_resolution=kalshi_near_resolution,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

@@ -450,9 +450,37 @@ def test_27_drawdown_25_reduces_sizing():
     assert r.position_size_multiplier == 0.5
 
 
+def test_27b_zero_trades_resets_stale_peak_capital(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.delenv("KALSHI_ACTUAL_BALANCE", raising=False)
+    save_capital(
+        CapitalRecord(
+            current_capital=52.70,
+            peak_capital=100.0,
+            starting_capital=52.70,
+            total_trades=0,
+            winning_trades=0,
+            losing_trades=0,
+        )
+    )
+    MANDATE.execution_paused = True
+    rec = load_capital()
+    assert rec.peak_capital == pytest.approx(52.70, rel=1e-6)
+    assert doctrine.is_execution_paused() is False
+
+
 def test_28_drawdown_40_pauses_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
-    save_capital(CapitalRecord(current_capital=50.0, peak_capital=100.0, starting_capital=50.0))
+    save_capital(
+        CapitalRecord(
+            current_capital=50.0,
+            peak_capital=100.0,
+            starting_capital=50.0,
+            total_trades=5,
+            winning_trades=2,
+            losing_trades=3,
+        )
+    )
     MANDATE.execution_paused = False
     load_capital()
     assert MANDATE.execution_paused is True
