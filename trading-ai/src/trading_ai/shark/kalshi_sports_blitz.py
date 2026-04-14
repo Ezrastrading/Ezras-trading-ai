@@ -1,4 +1,4 @@
-"""Kalshi sports blitz — live game series, 1–10 minute close window (direct series fetch)."""
+"""Kalshi sports blitz — non-crypto markets closing within ~1h (series + broad open scan)."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _sports_series() -> Tuple[str, ...]:
 
 
 def run_kalshi_sports_blitz() -> int:
-    """Open sports markets closing in 60–600s with max(yes,no) ≥ min prob; up to N orders per run."""
+    """Non-crypto open markets, TTR in [60, 3600]s, max(yes,no) ≥ 92%, volume above floor; up to N orders."""
     if (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() not in (
         "1",
         "true",
@@ -59,8 +59,10 @@ def run_kalshi_sports_blitz() -> int:
         return 0
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
+    from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
+        _kalshi_market_volume,
         _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
     )
@@ -69,12 +71,14 @@ def run_kalshi_sports_blitz() -> int:
 
     min_prob = _parse_env_float("KALSHI_SPORTS_BLITZ_MIN_PROB", 0.92)
     ttr_min = _parse_env_float("KALSHI_SPORTS_BLITZ_TTR_MIN_SEC", 60.0)
-    ttr_max = _parse_env_float("KALSHI_SPORTS_BLITZ_TTR_MAX_SEC", 600.0)
+    ttr_max = _parse_env_float("KALSHI_SPORTS_BLITZ_TTR_MAX_SEC", 3600.0)
+    min_volume = _parse_env_float("KALSHI_SPORTS_BLITZ_MIN_VOLUME", 100.0)
     max_trades = max(1, _parse_env_int("KALSHI_SPORTS_BLITZ_MAX_TRADES", 20))
     budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_SPORTS_BLITZ_BUDGET_PCT", 0.40)))
     trade_min = max(0.50, _parse_env_float("KALSHI_SPORTS_BLITZ_MIN_TRADE_USD", 1.00))
     trade_max = max(trade_min, _parse_env_float("KALSHI_SPORTS_BLITZ_MAX_TRADE_USD", 4.00))
     api_limit = max(50, min(500, _parse_env_int("KALSHI_SPORTS_BLITZ_SERIES_LIMIT", 200)))
+    open_scan_limit = max(100, min(1000, _parse_env_int("KALSHI_SPORTS_BLITZ_OPEN_SCAN_LIMIT", 500)))
 
     client = KalshiClient()
     if not client.has_kalshi_credentials():
@@ -82,7 +86,8 @@ def run_kalshi_sports_blitz() -> int:
         return 0
 
     now = time.time()
-    raw_rows: List[Dict[str, Any]] = []
+    merged: Dict[str, Dict[str, Any]] = {}
+
     for ser in _sports_series():
         try:
             j = client._request(
@@ -92,15 +97,40 @@ def run_kalshi_sports_blitz() -> int:
             )
             batch = j.get("markets") or []
             if isinstance(batch, list):
-                raw_rows.extend(m for m in batch if isinstance(m, dict))
+                for m in batch:
+                    if not isinstance(m, dict):
+                        continue
+                    tid = str(m.get("ticker") or "").strip()
+                    if tid:
+                        merged[tid] = m
         except Exception as exc:
             logger.warning("Sports blitz fetch %s failed: %s", ser, exc)
 
+    n_series = len(merged)
+    try:
+        j = client._request(
+            "GET",
+            "/markets",
+            params={"status": "open", "limit": open_scan_limit},
+        )
+        batch = j.get("markets") or []
+        if isinstance(batch, list):
+            for m in batch:
+                if not isinstance(m, dict):
+                    continue
+                tid = str(m.get("ticker") or "").strip()
+                if tid and tid not in merged:
+                    merged[tid] = m
+    except Exception as exc:
+        logger.warning("Sports blitz open-market scan failed: %s", exc)
+
+    n_open_extra = len(merged) - n_series
+
     targets: List[Dict[str, Any]] = []
-    for m in raw_rows:
+    for m in merged.values():
         try:
             ticker = str(m.get("ticker") or "").strip()
-            if not ticker:
+            if not ticker or kalshi_ticker_is_crypto(ticker):
                 continue
             row = dict(m)
             y, n, _, _ = _kalshi_yes_no_from_market_row(row)
@@ -111,6 +141,8 @@ def run_kalshi_sports_blitz() -> int:
                 except Exception:
                     continue
             if y <= 0 or n <= 0:
+                continue
+            if _kalshi_market_volume(row) <= min_volume:
                 continue
             close_ts = _parse_close_timestamp_unix(row)
             if close_ts is None:
@@ -135,7 +167,16 @@ def run_kalshi_sports_blitz() -> int:
             continue
 
     if not targets:
-        logger.info("SPORTS BLITZ: 0 markets in %.0f–%.0fs window", ttr_min, ttr_max)
+        logger.info(
+            "SPORTS BLITZ: 0 markets (TTR %.0f–%.0fs, vol>%.0f, prob≥%.0f%%) — series=%s open+=%s merged=%s",
+            ttr_min,
+            ttr_max,
+            min_volume,
+            min_prob * 100.0,
+            n_series,
+            n_open_extra,
+            len(merged),
+        )
         return 0
 
     targets.sort(key=lambda x: x["ttr"])
@@ -152,11 +193,13 @@ def run_kalshi_sports_blitz() -> int:
         return 0
 
     logger.info(
-        "SPORTS BLITZ: %s markets found, placing %s trades $%.2f each, budget $%.2f",
+        "SPORTS BLITZ: %s markets found, placing %s trades $%.2f each, budget $%.2f (series=%s open+=%s)",
         len(targets),
         len(selected),
         per_trade,
         budget,
+        n_series,
+        n_open_extra,
     )
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
