@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python3 -m trading_ai.shark.run_shark"
+startCommand = "cd trading-ai && PYTHONPATH=src python3.11 -m trading_ai.shark.run_shark"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
 # Service variables (set in Railway dashboard): WITHDRAWAL_ALERT_THRESHOLD=2000
