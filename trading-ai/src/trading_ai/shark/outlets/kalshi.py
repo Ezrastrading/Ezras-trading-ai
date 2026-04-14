@@ -549,6 +549,7 @@ class KalshiClient:
             require_kalshi_api_key()
         body = {
             "ticker": ticker,
+            "action": "buy",
             "side": side,
             "type": "limit",
             "count": count,
