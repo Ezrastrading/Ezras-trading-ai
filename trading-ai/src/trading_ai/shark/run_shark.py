@@ -438,6 +438,20 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_blitz failed (non-blocking): %s", exc)
 
+    def kalshi_sports_blitz() -> None:
+        if (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return
+        try:
+            from trading_ai.shark.kalshi_sports_blitz import run_kalshi_sports_blitz
+
+            run_kalshi_sports_blitz()
+        except Exception as exc:
+            log.warning("kalshi_sports_blitz failed (non-blocking): %s", exc)
+
     def kalshi_non_crypto_hf() -> None:
         if (os.environ.get("KALSHI_NC_HF_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
             return
@@ -476,6 +490,7 @@ def main() -> None:
         live_sports_scan=live_sports_hv_scan,
         kalshi_stale_order_sweep=kalshi_stale_order_sweep,
         kalshi_blitz=kalshi_blitz,
+        kalshi_sports_blitz=kalshi_sports_blitz,
         kalshi_non_crypto_hf=kalshi_non_crypto_hf,
     )
     if sched is None:

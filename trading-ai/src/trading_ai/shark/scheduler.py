@@ -58,6 +58,7 @@ def build_shark_scheduler(
     live_sports_scan: Optional[Callable[[], None]] = None,
     kalshi_stale_order_sweep: Optional[Callable[[], None]] = None,
     kalshi_blitz: Optional[Callable[[], None]] = None,
+    kalshi_sports_blitz: Optional[Callable[[], None]] = None,
     kalshi_non_crypto_hf: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
@@ -178,6 +179,13 @@ def build_shark_scheduler(
             kalshi_blitz,
             IntervalTrigger(seconds=120),
             id="kalshi_blitz",
+            replace_existing=True,
+        )
+    if kalshi_sports_blitz is not None:
+        sched.add_job(
+            kalshi_sports_blitz,
+            IntervalTrigger(seconds=60),
+            id="kalshi_sports_blitz",
             replace_existing=True,
         )
     if kalshi_non_crypto_hf is not None:
