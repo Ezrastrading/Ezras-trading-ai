@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 class CandidateMarket(BaseModel):
     market_id: str
     slug: Optional[str] = None
-    question: str
+    question: str = ""
+    source_platform: Optional[str] = None
+    kalshi_ticker: Optional[str] = None
     volume_usd: Optional[float] = None
     end_date_iso: Optional[str] = None
     days_to_expiry: Optional[float] = None
@@ -70,3 +72,12 @@ class DecisionRecord(BaseModel):
     action: str
     notes: Optional[str] = None
     decided_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TradeDecisionView(BaseModel):
+    """Execution-facing view of an approved trade decision (Kalshi path, tests)."""
+
+    edge_pct_yes: float
+    edge_pct_no: float
+    action: str
+    explanation: str

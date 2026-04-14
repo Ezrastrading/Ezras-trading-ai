@@ -21,6 +21,12 @@ def run_scheduler_loop(settings: Settings) -> None:
     def job() -> None:
         try:
             run_pipeline(settings)
+            try:
+                from trading_ai.ops.automation_heartbeat import record_heartbeat
+
+                record_heartbeat("pipeline_schedule", ok=True, note="interval tick")
+            except Exception:
+                logger.debug("pipeline heartbeat record failed", exc_info=True)
         except Exception:
             logger.exception("Scheduled pipeline failed")
 

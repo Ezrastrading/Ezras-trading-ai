@@ -78,6 +78,20 @@ class Settings(BaseSettings):
     # Scheduler (optional — empty disables daemon schedule)
     schedule_interval_minutes: Optional[int] = Field(default=None, ge=1)
 
+    # Kalshi (optional — venue truth / execution paths)
+    kalshi_enabled: bool = Field(default=False, description="Enable Kalshi REST client features")
+    kalshi_execution_enabled: bool = Field(default=False, description="Allow signed order placement")
+    kalshi_trade_api_base: str = Field(
+        default="https://demo.elections.kalshi.com/trade-api/v2",
+        description="Kalshi Trade API base URL",
+    )
+    kalshi_api_key_id: Optional[str] = None
+    kalshi_api_key: Optional[str] = None
+    kalshi_api_secret: Optional[str] = None
+    kalshi_api_passphrase: Optional[str] = None
+    kalshi_private_key_path: Optional[Path] = None
+    kalshi_default_order_size: int = Field(default=1, ge=1)
+
 
 def get_settings() -> Settings:
     return Settings()

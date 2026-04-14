@@ -11,10 +11,10 @@ from typing import Optional, Sequence
 from trading_ai.automation.post_trade_hub import execute_post_trade_closed, execute_post_trade_placed
 
 
-def _read_payload(path: Optional[Path], use_stdin: bool) -> dict:
+def _read_json(path: Optional[Path], use_stdin: bool) -> dict:
     if use_stdin:
         raw = sys.stdin.read()
-    elif path:
+    elif path is not None:
         raw = path.read_text(encoding="utf-8")
     else:
         raise SystemExit("need --json-file or --stdin")
@@ -28,45 +28,76 @@ def main_post_trade(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="trading-ai post-trade")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pl = sub.add_parser("placed", help="Run instant placed trigger (JSON trade payload)")
-    pl.add_argument("--json-file", "-f", type=Path, help="Path to JSON trade object")
-    pl.add_argument("--stdin", action="store_true", help="Read JSON from stdin")
+    pl = sub.add_parser("placed", help="Run placed trigger from JSON trade object")
+    pl.add_argument("--json-file", "-f", type=Path)
+    pl.add_argument("--stdin", action="store_true")
 
-    cl = sub.add_parser("closed", help="Run instant closed trigger")
+    cl = sub.add_parser("closed", help="Run closed trigger from JSON trade object")
     cl.add_argument("--json-file", "-f", type=Path)
     cl.add_argument("--stdin", action="store_true")
 
-    pf = sub.add_parser("from-file", help="Dispatch by event field (placed|closed) in JSON")
-    pf.add_argument("--json-file", "-f", type=Path, required=True)
+    ff = sub.add_parser(
+        "from-file",
+        help="JSON must include event or event_type: placed | closed",
+    )
+    ff.add_argument("--json-file", "-f", type=Path, required=True)
 
-    sp = sub.add_parser("simulate-placed", help="Minimal sample placed payload (file-based test)")
-    sc = sub.add_parser("simulate-closed", help="Minimal sample closed payload")
+    sub.add_parser("simulate-placed", help="Minimal sample placed payload")
+    sub.add_parser("simulate-closed", help="Minimal sample closed payload")
 
     args = p.parse_args(list(argv) if argv is not None else None)
 
     if args.cmd == "placed":
-        payload = _read_payload(args.json_file, args.stdin)
+        payload = _read_json(args.json_file, args.stdin)
         out = execute_post_trade_placed(None, payload)
         print(json.dumps(out, indent=2, default=str))
-        return 0 if out.get("status") in ("sent", "skipped_duplicate", "processed_partial") else 1
+        if out.get("status") in ("sent", "skipped_duplicate", "processed_partial"):
+            try:
+                from trading_ai.ops.automation_heartbeat import record_heartbeat
+
+                record_heartbeat("post_trade", ok=True, note="placed")
+            except Exception:
+                pass
+            return 0
+        return 1
 
     if args.cmd == "closed":
-        payload = _read_payload(args.json_file, args.stdin)
+        payload = _read_json(args.json_file, args.stdin)
         out = execute_post_trade_closed(None, payload)
         print(json.dumps(out, indent=2, default=str))
-        return 0 if out.get("status") in ("sent", "skipped_duplicate", "processed_partial") else 1
+        if out.get("status") in ("sent", "skipped_duplicate", "processed_partial"):
+            try:
+                from trading_ai.ops.automation_heartbeat import record_heartbeat
+
+                record_heartbeat("post_trade", ok=True, note="closed")
+            except Exception:
+                pass
+            return 0
+        return 1
 
     if args.cmd == "from-file":
         data = json.loads(args.json_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise SystemExit("JSON root must be an object")
         ev = str(data.get("event") or data.get("event_type") or "").strip().lower()
         if ev not in ("placed", "closed"):
-            print(json.dumps({"ok": False, "error": "JSON must include event: placed|closed"}), file=sys.stderr)
+            print(
+                json.dumps({"ok": False, "error": "JSON must include event or event_type: placed|closed"}),
+                file=sys.stderr,
+            )
             return 2
         if ev == "placed":
             out = execute_post_trade_placed(None, data)
         else:
             out = execute_post_trade_closed(None, data)
         print(json.dumps(out, indent=2, default=str))
+        if out.get("status") in ("sent", "skipped_duplicate", "processed_partial"):
+            try:
+                from trading_ai.ops.automation_heartbeat import record_heartbeat
+
+                record_heartbeat("post_trade", ok=True, note=f"from-file:{ev}")
+            except Exception:
+                pass
         return 0
 
     if args.cmd == "simulate-placed":

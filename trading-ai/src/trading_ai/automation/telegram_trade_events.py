@@ -9,26 +9,11 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.phase2.config_phase2 import DEFAULT_PHASE2_RISK
 
 logger = logging.getLogger(__name__)
-
-
-def _risk_mode_block(trade: Dict[str, Any], *, phase: str) -> List[str]:
-    """Lines for Risk Mode (+ trading disabled hint when BLOCKED)."""
-    try:
-        from trading_ai.automation.risk_bucket import get_account_risk_bucket
-
-        bucket = get_account_risk_bucket({"phase": phase, "trade": trade})
-    except Exception:
-        bucket = "NORMAL"
-    b = bucket if bucket in ("NORMAL", "REDUCED", "BLOCKED") else "NORMAL"
-    out = [f"Risk Mode: {b}"]
-    if b == "BLOCKED":
-        out.append("Trading Disabled")
-    return out
 
 
 def _nonempty_str(x: Any) -> Optional[str]:
@@ -108,7 +93,6 @@ def _ticker_line(trade: Dict[str, Any]) -> Optional[str]:
 
 
 def _strategy_line(trade: Dict[str, Any]) -> Optional[str]:
-    """Bucket / theme labels only — avoids duplicating ticker/event_name."""
     parts = [
         trade.get("market_category"),
         trade.get("thematic_cluster_id"),
@@ -143,6 +127,56 @@ def _risk_percent_of_account(trade: Dict[str, Any]) -> Optional[float]:
         except (TypeError, ValueError):
             pass
     return float(DEFAULT_PHASE2_RISK.max_pct_per_trade) * 100.0
+
+
+def _open_risk_percent_truthful(
+    trade: Dict[str, Any],
+    *,
+    approved_notional: Optional[float],
+    requested_notional: Optional[float],
+    effective_bucket: str,
+    approval_status: Optional[str],
+) -> Optional[float]:
+    """
+    Risk % for OPEN alerts uses **approved** notional vs account equity when available.
+    BLOCKED / zero approved -> 0.0%. No equity -> scale max per-trade % by approved/requested.
+    """
+    eff = str(effective_bucket or "").upper()
+    st = str(approval_status or "").upper()
+    if eff == "BLOCKED" or st == "BLOCKED":
+        return 0.0
+    if approved_notional is None:
+        return None
+    if approved_notional <= 0:
+        return 0.0
+
+    for key in ("risk_percent_of_account", "allocated_pct_of_account", "size_percent_of_account"):
+        v = trade.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    ov = trade.get("operator_size_override_percent")
+    if ov is not None:
+        try:
+            return float(ov) * 100.0
+        except (TypeError, ValueError):
+            pass
+
+    eq = trade.get("portfolio_equity") or trade.get("account_equity") or trade.get("account_balance")
+    if eq is not None:
+        try:
+            e = float(eq)
+            if e > 0:
+                return (float(approved_notional) / e) * 100.0
+        except (TypeError, ValueError):
+            pass
+
+    base_pct = float(DEFAULT_PHASE2_RISK.max_pct_per_trade) * 100.0
+    if requested_notional is not None and float(requested_notional) > 0:
+        return base_pct * (float(approved_notional) / float(requested_notional))
+    return base_pct
 
 
 def _target_or_ev_open(trade: Dict[str, Any]) -> Optional[str]:
@@ -193,8 +227,116 @@ def _truncate_line(s: str, max_len: int) -> str:
     return s[: max_len - 1] + "…"
 
 
+def _open_requested_approved_from_meta(meta: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    req = meta.get("requested_size")
+    appr = meta.get("approved_size")
+    try:
+        rq = float(req) if req is not None else None
+    except (TypeError, ValueError):
+        rq = None
+    try:
+        ap = float(appr) if appr is not None else None
+    except (TypeError, ValueError):
+        ap = None
+    return rq, ap
+
+
+def _size_adjustment_line(bucket: str, req: Optional[float], appr: Optional[float], meta: Dict[str, Any]) -> Optional[str]:
+    st = str(meta.get("approval_status") or "")
+    reason = str(meta.get("reason") or "")
+    if bucket == "BLOCKED" or st == "BLOCKED":
+        return "Size Adjustment: Blocked"
+    if reason == "unknown_bucket_failsafe":
+        return "Size Adjustment: Failsafe 50% (unknown bucket)"
+    if st == "REDUCED" or (bucket == "REDUCED" and req is not None and appr is not None and appr < req - 0.001):
+        return "Size Adjustment: Reduced 50%"
+    if bucket == "NORMAL" and req is not None and appr is not None and abs(req - appr) < 0.005:
+        return None
+    if req is not None and appr is not None and abs(req - appr) > 0.001:
+        return "Size Adjustment: Reduced 50%"
+    return None
+
+
+def _human_block_reason(decision: Dict[str, Any]) -> str:
+    code = str(decision.get("reason") or "")
+    if code == "hard_lockout_active":
+        reasons = decision.get("lockout_reasons") or []
+        if reasons:
+            return "Hard lockout active: " + ", ".join(str(x) for x in reasons)
+        return "Hard lockout active (daily / weekly / execution anomaly)."
+    return {
+        "risk_bucket_blocked": "Account risk bucket is BLOCKED; no new risk allocated.",
+        "invalid_requested_size": "Invalid or missing requested size (capital_allocated / size_dollars / planned_risk).",
+        "rounded_to_zero": "Approved size rounded to zero at current multiplier.",
+        "sizing_logic_error": "Sizing logic error; open rejected (fail-safe).",
+    }.get(code, code or "policy_block")
+
+
+def format_trade_sizing_blocked_alert(trade_snapshot: Dict[str, Any], decision: Dict[str, Any]) -> str:
+    """Telegram for placement blocked by policy (trade not logged). Distinct from TRADE OPEN."""
+    lines: List[str] = ["Ezras — TRADE BLOCKED", ""]
+
+    m = _nonempty_str(trade_snapshot.get("market"))
+    if m:
+        lines.append(f"Market: {m}")
+
+    tick = _ticker_line(trade_snapshot)
+    if tick:
+        lines.append(f"Ticker: {tick}")
+
+    side = _infer_side(trade_snapshot)
+    if side and side != "—":
+        lines.append(f"Side: {side}")
+
+    lines.append("Risk Mode: BLOCKED")
+    lines.append("Trading Status: DISABLED")
+    if str(decision.get("reason") or "") == "hard_lockout_active":
+        lines.append("Block Reason: " + _human_block_reason(decision))
+
+    req = decision.get("requested_size")
+    appr = decision.get("approved_size")
+    rs = _fmt_dollars(req) if req is not None else "—"
+    lines.append(f"Requested Size: {rs}")
+    lines.append(f"Approved Size: {_fmt_dollars(appr) if appr is not None else '$0.00'}")
+    lines.append("Size Adjustment: Blocked")
+
+    ep = _fmt_entry_exit_price(trade_snapshot.get("entry_price"))
+    if ep:
+        lines.append(f"Entry: {ep}")
+
+    lines.extend(["", f"Block Reason: {_human_block_reason(decision)}"])
+
+    tid = _nonempty_str(trade_snapshot.get("trade_id")) or "—"
+    lines.extend(["", f"Trade ID: {tid}", f"Time: {_format_timestamp(trade_snapshot.get('timestamp'))}"])
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def format_trade_placed_message(trade: Dict[str, Any]) -> str:
-    """Hedge-fund style OPEN alert; omits empty optional fields."""
+    """
+    Placed / open alert. Always canonicalizes sizing via shared policy (no drift from logs).
+
+    If the effective decision is BLOCKED (preview / simulation), returns ``TRADE BLOCKED`` body,
+    never ``TRADE OPEN``.
+    """
+    from trading_ai.automation.position_sizing_policy import normalize_position_sizing_meta
+
+    normalize_position_sizing_meta(
+        trade,
+        source_path="telegram_placed_format",
+        mutate_capital=False,
+        record_audit=False,
+    )
+    meta = trade.get("position_sizing_meta") or {}
+    st = str(meta.get("approval_status") or "")
+    eff = str(meta.get("effective_bucket") or "")
+    if st == "BLOCKED" or eff == "BLOCKED":
+        snap = {
+            k: trade.get(k)
+            for k in ("trade_id", "market", "position", "timestamp", "entry_price", "ticker", "event_name")
+        }
+        return format_trade_sizing_blocked_alert(snap, meta)
+
     lines: List[str] = ["Ezras — TRADE OPEN", ""]
 
     m = _nonempty_str(trade.get("market"))
@@ -206,15 +348,40 @@ def format_trade_placed_message(trade: Dict[str, Any]) -> str:
         lines.append(f"Ticker: {tick}")
 
     side = _infer_side(trade)
+    bucket = str(meta.get("effective_bucket") or trade.get("risk_bucket_at_open") or "NORMAL")
+    req_f, appr_f = _open_requested_approved_from_meta(meta)
+    appr_st = meta.get("approval_status")
+
     if side and side != "—":
         lines.append(f"Side: {side}")
-        lines.extend(_risk_mode_block(trade, phase="open"))
+        acc_m = meta.get("account_risk_bucket")
+        strat_m = meta.get("strategy_risk_bucket")
+        if acc_m:
+            lines.append(f"Account Risk Mode: {acc_m}")
+        if strat_m:
+            lines.append(f"Strategy Risk Mode: {strat_m}")
+        lines.append(f"Effective Risk Mode: {bucket}")
+        lines.append("Trading Status: DISABLED" if bucket == "BLOCKED" else "Trading Status: ACTIVE")
+        rs = _fmt_dollars(req_f)
+        ar = _fmt_dollars(appr_f)
+        if rs:
+            lines.append(f"Requested Size: {rs}")
+        if ar:
+            lines.append(f"Approved Size: {ar}")
+        adj = _size_adjustment_line(bucket, req_f, appr_f, meta)
+        if adj:
+            lines.append(adj)
+        if req_f is not None and appr_f is not None and abs(req_f - appr_f) > 0.001:
+            lines.append(f"Requested Risk Basis: {_fmt_dollars(req_f)}")
+            lines.append(f"Approved Risk Basis: {_fmt_dollars(appr_f)}")
 
-    sz = _fmt_dollars(trade.get("capital_allocated"))
-    if sz:
-        lines.append(f"Size: {sz}")
-
-    rp = _risk_percent_of_account(trade)
+    rp = _open_risk_percent_truthful(
+        trade,
+        approved_notional=appr_f,
+        requested_notional=req_f,
+        effective_bucket=eff,
+        approval_status=str(appr_st) if appr_st is not None else None,
+    )
     if rp is not None:
         lines.append(f"Risk: {rp:.1f}% of account")
 
@@ -262,7 +429,18 @@ def format_trade_closed_message(trade: Dict[str, Any]) -> str:
     side = _infer_side(trade)
     if side and side != "—":
         lines.append(f"Side: {side}")
-        lines.extend(_risk_mode_block(trade, phase="closed"))
+
+    try:
+        from trading_ai.automation.risk_bucket import get_account_risk_bucket
+
+        bucket_after = get_account_risk_bucket({"phase": "closed", "trade": trade})
+    except Exception:
+        bucket_after = "REDUCED"
+
+    lines.append(f"Risk Mode After Close: {bucket_after}")
+    bucket_before = trade.get("risk_bucket_at_open")
+    if bucket_before and str(bucket_before) != str(bucket_after):
+        lines.append(f"Bucket Change: {bucket_before} → {bucket_after}")
 
     xp = _fmt_entry_exit_price(trade.get("exit_price"))
     if xp:

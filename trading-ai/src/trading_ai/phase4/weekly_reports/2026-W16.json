@@ -1,0 +1,89 @@
+{
+  "week_id": "2026-W16",
+  "generated_at_utc": "2026-04-13T06:28:46.555363+00:00",
+  "executive_summary": "Week 2026-W16 \u2014 regenerated from phase4_state.json",
+  "performance": {
+    "weekly_roi_estimate": 0.0
+  },
+  "risk_summary": {
+    "portfolio_heat": {},
+    "alpha_decay_score": 0.5,
+    "monte_carlo_target_probability": 0.999,
+    "ruin_probability": 0.0,
+    "governor_status": "warning"
+  },
+  "trade_summary": {},
+  "adaptation_summary": {
+    "recent": []
+  },
+  "operator_summary": {
+    "veto_accuracy": {
+      "veto_accuracy_rate": null,
+      "false_positive_rate": null,
+      "evidence_count": 0,
+      "sample_size_verdict": "thin"
+    }
+  },
+  "outlook": {
+    "phase4_verdict": "AT_RISK"
+  },
+  "operator_report": {},
+  "risk_report": {},
+  "strategy_sleeve_report": {},
+  "capital_progression_report": {},
+  "data_quality": {
+    "completeness": "partial",
+    "thin_sections": [
+      "weekly_trade_count_low",
+      "weekly_history_short"
+    ],
+    "notes": "Sections may be thin \u2014 see thin_sections; no fabricated metrics."
+  },
+  "trigger_source": "auto_audit",
+  "truth_integrity": {
+    "truth_validation_status": "validated",
+    "contradictions_detected": 0,
+    "unsupported_claims_detected": 0,
+    "numeric_integrity_status": "verified",
+    "uncertainty_flags": [],
+    "evidence_binding_status": "bound",
+    "validation_timestamp": "2026-04-13T06:28:46.556540+00:00",
+    "truth_contract_id": "e337ea22-877f-4084-933d-a4935eb93bbb",
+    "hard_fact_count": 0,
+    "derived_fact_count": 15,
+    "inference_count": 0,
+    "estimate_count": 0,
+    "unknown_count": 0,
+    "unsupported_claim_count": 0,
+    "internal_contradiction_count": 0,
+    "state_contradiction_count": 0,
+    "numeric_integrity_verified": true,
+    "hallucination_attempts_detected": 0,
+    "hallucination_risk_score": 0.01,
+    "evidence_completeness": 1.0,
+    "unknown_statement_count": 0,
+    "validator_passed": true,
+    "evidence_attestation": {
+      "source_type": "record",
+      "evidence_snapshot_hash": "b50cb78d9f365bbdf9be2f54fcf2978647757b108c7a8fc3cce54176b82c5279",
+      "live_source_hash": "b50cb78d9f365bbdf9be2f54fcf2978647757b108c7a8fc3cce54176b82c5279",
+      "hash_match_status": "matched",
+      "attestation_confidence": "medium",
+      "source_timestamp": "2026-04-13T06:28:46.555778+00:00",
+      "notes": "serialized_record_hash"
+    },
+    "replay_artifact": "e337ea22-877f-4084-933d-a4935eb93bbb_full.json",
+    "replay_mode_recorded": "full_validation_replay",
+    "report_narrative_gate": {
+      "blocked": false,
+      "paragraphs_without_metric_backing": [],
+      "prohibited_phrases": [],
+      "vague_language": []
+    }
+  },
+  "truth_hardening": {
+    "pipeline_version": 1,
+    "output_kind": "report",
+    "validation_timestamp": "2026-04-13T06:28:46.556542+00:00"
+  }
+}

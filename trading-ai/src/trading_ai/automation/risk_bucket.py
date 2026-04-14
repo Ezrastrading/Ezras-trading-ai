@@ -18,14 +18,12 @@ _lock = threading.Lock()
 
 _STATE_VERSION = 1
 
-_DEFAULT_RUNTIME = Path.home() / "ezras-runtime"
-
 
 def runtime_root() -> Path:
     raw = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return _DEFAULT_RUNTIME.resolve()
+    return Path(__file__).resolve().parents[4]
 
 
 def risk_state_path() -> Path:
@@ -85,12 +83,13 @@ def get_account_risk_bucket(trade_event: Optional[Dict[str, Any]] = None) -> str
     """
     Returns ``NORMAL``, ``REDUCED``, or ``BLOCKED`` from persisted state.
 
-    ``trade_event`` is reserved for future use (e.g. phase=open|closed); v1 ignores it for logic.
+    ``trade_event`` may supply ``phase`` / ``trade`` for callers; bucket logic uses persisted state.
     """
     _ = trade_event  # API stability
     try:
         st = _load_state()
         recent: List[str] = [str(x).lower() for x in (st.get("recent_results") or []) if x]
+        # keep only win/loss tokens
         recent = [x for x in recent if x in ("win", "loss")]
         equity = float(st.get("equity_index") or 100.0)
         peak = float(st.get("peak_equity_index") or 100.0)
@@ -107,8 +106,8 @@ def get_account_risk_bucket(trade_event: Optional[Dict[str, Any]] = None) -> str
             return "REDUCED"
         return "NORMAL"
     except Exception as exc:
-        logger.warning("get_account_risk_bucket fallback NORMAL: %s", exc)
-        return "NORMAL"
+        logger.warning("get_account_risk_bucket fallback REDUCED (safe): %s", exc)
+        return "REDUCED"
 
 
 def record_closed_trade(trade: Dict[str, Any]) -> None:
