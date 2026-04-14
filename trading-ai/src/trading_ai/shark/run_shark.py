@@ -429,7 +429,7 @@ def main() -> None:
 
     def kalshi_blitz() -> None:
         """Final-5-minute blitz on hourly Kalshi crypto markets. Fires at :54:30 via CronTrigger."""
-        if (os.environ.get("KALSHI_BLITZ_ENABLED") or "false").strip().lower() not in ("1", "true", "yes"):
+        if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
             return
         try:
             from trading_ai.shark.kalshi_blitz import run_kalshi_blitz

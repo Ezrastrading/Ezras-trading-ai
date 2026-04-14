@@ -33,8 +33,8 @@ def _blitz_series_list() -> List[str]:
 
 
 def _close_window_seconds() -> float:
-    """Default 540s (9 min) so a :54:30 cron sees markets resolving at :00 (≈330s away) with generous slack."""
-    raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "540").strip() or "540"
+    """Default 360s (6 min) — :54:30 trigger + 6m window targets the :00 hourly close."""
+    raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "360").strip() or "360"
     try:
         return max(60.0, float(raw))
     except ValueError:
@@ -77,6 +77,7 @@ def run_kalshi_blitz() -> int:
         kalshi_min_position_usd,
     )
     from trading_ai.shark.models import HuntType, OpenPosition
+    from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
         _kalshi_market_tradeable_core,
@@ -128,18 +129,26 @@ def run_kalshi_blitz() -> int:
             if tid:
                 merged[tid] = row
 
+    n_total = len(merged)
+    n_crypto = 0
+    n_in_window = 0
+    n_above_prob = 0
+
     candidates: List[Tuple[Dict[str, Any], float, float, str]] = []
+    max_ttr = kalshi_max_ttr_seconds()
     for m in merged.values():
         if not _kalshi_market_tradeable_core(m, now):
             continue
         if _kalshi_market_volume(m) < 1.0:
             continue
+        n_crypto += 1
         end = _parse_close_timestamp_unix(m)
         if end is None:
             continue
         ttr = end - now
-        if ttr <= 0 or ttr > window_sec:
+        if ttr <= 0 or ttr > max_ttr or ttr > window_sec:
             continue
+        n_in_window += 1
         try:
             row = client.enrich_market_with_detail_and_orderbook(dict(m))
         except Exception:
@@ -148,6 +157,7 @@ def run_kalshi_blitz() -> int:
         mx = max(y, n)
         if mx < min_prob:
             continue
+        n_above_prob += 1
         side = "yes" if y >= n else "no"
         px = y if side == "yes" else n
         candidates.append((row, float(end), float(px), side))
@@ -157,13 +167,16 @@ def run_kalshi_blitz() -> int:
     open_n = count_kalshi_open_positions()
     slots = max(0, max_open - open_n)
     n_take = min(len(candidates), max_trades, slots)
+    logger.info(
+        "Blitz: %s total → %s crypto → %s in window → %s above %.0f%% → %s selected",
+        n_total,
+        n_crypto,
+        n_in_window,
+        n_above_prob,
+        min_prob * 100.0,
+        n_take,
+    )
     if n_take <= 0:
-        logger.info(
-            "BLITZ MODE: found %s crypto markets closing in 5min, placing 0 trades (cap/slots open=%s/%s)",
-            len(candidates),
-            open_n,
-            max_open,
-        )
         return 0
 
     selected = candidates[:n_take]
@@ -223,10 +236,10 @@ def run_kalshi_blitz() -> int:
 
     total_budget = per_usd * n_take
     logger.info(
-        "BLITZ MODE ACTIVATED: found %s crypto markets closing in 5min, placing %s trades with budget $%.2f",
-        len(candidates),
+        "BLITZ MODE ACTIVATED: placing %s trades with budget $%.2f (window=%.0fs)",
         n_take,
         total_budget,
+        window_sec,
     )
 
     placed = 0
