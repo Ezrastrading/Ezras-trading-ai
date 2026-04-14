@@ -123,6 +123,65 @@ def _get_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+def _kalshi_row_has_explicit_quotes(m: Dict[str, Any]) -> bool:
+    """True if list-row payload already has at least one non-null quote field."""
+    for k in ("yes_bid", "yes_ask", "yes_price", "last_price", "no_bid", "no_ask", "no_price"):
+        if m.get(k) is not None:
+            return True
+    return False
+
+
+def _parse_orderbook_yes_no_probs(ob_root: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Best bid from orderbook ``yes`` / ``no`` sides; prices as probabilities in (0, 1)."""
+    ob = ob_root.get("orderbook") if isinstance(ob_root.get("orderbook"), dict) else ob_root
+    if not isinstance(ob, dict):
+        return None, None
+
+    def _best_bid_cents(levels: Any) -> Optional[float]:
+        if not isinstance(levels, list) or not levels:
+            return None
+        best: Optional[float] = None
+        for lv in levels:
+            if isinstance(lv, (list, tuple)) and len(lv) >= 1:
+                c = float(lv[0])
+            elif isinstance(lv, dict):
+                c = float(lv.get("price", lv.get("price_cents", 0)) or 0)
+            else:
+                continue
+            if c <= 0:
+                continue
+            if best is None or c > best:
+                best = c
+        return best
+
+    yes_c = _best_bid_cents(ob.get("yes"))
+    no_c = _best_bid_cents(ob.get("no"))
+    yes_p = yes_c / 100.0 if yes_c is not None else None
+    no_p = no_c / 100.0 if no_c is not None else None
+    if yes_p is not None and yes_p > 1.0:
+        yes_p = yes_p / 100.0
+    if no_p is not None and no_p > 1.0:
+        no_p = no_p / 100.0
+    if yes_p is not None and no_p is None:
+        no_p = max(0.01, min(0.99, 1.0 - yes_p))
+    elif no_p is not None and yes_p is None:
+        yes_p = max(0.01, min(0.99, 1.0 - no_p))
+    return yes_p, no_p
+
+
+def fetch_kalshi_market_price(
+    ticker: str,
+    client: Optional["KalshiClient"] = None,
+) -> Tuple[Optional[float], Optional[float]]:
+    """YES/NO probabilities from ``GET /markets/{{ticker}}/orderbook`` best bids (cents → 0–1)."""
+    c = client or KalshiClient()
+    try:
+        data = c._request("GET", f"/markets/{urllib.parse.quote(ticker.strip(), safe='')}/orderbook")
+        return _parse_orderbook_yes_no_probs(data)
+    except Exception:
+        return None, None
+
+
 class KalshiClient:
     """HTTP client with retries, RSA-PSS or Bearer auth, health + orders."""
 
@@ -274,13 +333,48 @@ class KalshiClient:
     def fetch_markets_for_series(self, series_ticker: str, *, limit: int = 80) -> List[Dict[str, Any]]:
         """GET /markets with ``series_ticker`` (single-event series). Returns [] on error."""
         lim = max(1, min(int(limit), 200))
-        params: Dict[str, Any] = {"series_ticker": series_ticker, "status": "open", "limit": lim}
+        bases = (
+            {"series_ticker": series_ticker, "status": "open", "limit": lim, "include_prices": "true"},
+            {"series_ticker": series_ticker, "status": "open", "limit": lim, "with_nested_markets": "true"},
+            {"series_ticker": series_ticker, "status": "open", "limit": lim},
+        )
+        for params in bases:
+            try:
+                j = self._request("GET", "/markets", params=params)
+            except Exception:
+                continue
+            batch = j.get("markets") or j.get("data") or []
+            if isinstance(batch, list):
+                return batch
+        return []
+
+    def enrich_market_with_detail_and_orderbook(self, m: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge GET /markets/{{ticker}} then, if still no quotes, GET …/orderbook into a shallow copy."""
+        out = dict(m)
+        tid = str(out.get("ticker") or out.get("market_id") or "").strip()
+        if not tid:
+            return out
         try:
-            j = self._request("GET", "/markets", params=params)
+            detail = self._request("GET", f"/markets/{urllib.parse.quote(tid, safe='')}")
+            inner = detail.get("market") if isinstance(detail.get("market"), dict) else detail
+            if isinstance(inner, dict):
+                for k, v in inner.items():
+                    if v is not None and (k not in out or out.get(k) is None):
+                        out[k] = v
         except Exception:
-            return []
-        batch = j.get("markets") or j.get("data") or []
-        return batch if isinstance(batch, list) else []
+            pass
+        if _kalshi_row_has_explicit_quotes(out):
+            return out
+        try:
+            ob = self._request("GET", f"/markets/{urllib.parse.quote(tid, safe='')}/orderbook")
+            yp, np = _parse_orderbook_yes_no_probs(ob)
+            if yp is not None:
+                out["yes_bid"] = int(round(yp * 100.0))
+            if np is not None:
+                out["no_bid"] = int(round(np * 100.0))
+        except Exception:
+            pass
+        return out
 
     def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
         """
@@ -304,6 +398,14 @@ class KalshiClient:
                     merged[tid] = row
 
         all_markets = list(merged.values())
+        if all_markets:
+            try:
+                raw0 = json.dumps(all_markets[0], indent=2, default=str)
+                if len(raw0) > 16000:
+                    raw0 = raw0[:16000] + "\n…(truncated)"
+                logger.info("Kalshi first market raw: %s", raw0)
+            except Exception as exc:
+                logger.info("Kalshi first market raw: (unserializable) %s", exc)
         tickers = [str(m.get("ticker", ""))[:12] for m in all_markets[:20]]
         logger.info("Kalshi daily series raw count=%s ticker samples: %s", len(all_markets), tickers)
 
@@ -342,11 +444,20 @@ class KalshiClient:
             if not _kalshi_daily_volume_ok(m, now):
                 rejected_volume += 1
                 continue
-            ya, na, _, _ = _kalshi_yes_no_from_market_row(m)
+            m_row = m
+            if not _kalshi_row_has_explicit_quotes(m_row):
+                try:
+                    m_row = self.enrich_market_with_detail_and_orderbook(m_row)
+                except Exception as exc:
+                    logger.debug("Kalshi price enrich failed %s: %s", m.get("ticker"), exc)
+            ya, na, y_src, n_src = _kalshi_yes_no_from_market_row(m_row)
+            if y_src is None and n_src is None:
+                rejected_price += 1
+                continue
             if ya <= 0 or na <= 0:
                 rejected_price += 1
                 continue
-            candidates.append(m)
+            candidates.append(m_row)
 
         logger.info(
             "Kalshi filter breakdown: total=%s rejected_tradeable=%s rejected_48h_window=%s "
@@ -710,12 +821,23 @@ def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
     return True
 
 
-def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapshot:
+def map_kalshi_market_to_snapshot(
+    m: Dict[str, Any],
+    now: float,
+    *,
+    client: Optional[KalshiClient] = None,
+) -> MarketSnapshot:
     ticker = str(m.get("ticker") or m.get("market_id") or "")
-    yes_p, no_p, y_src, n_src = _kalshi_yes_no_from_market_row(m)
-    vol = float(m.get("volume_24h") or m.get("volume") or 0)
-    title = str(m.get("title") or m.get("subtitle") or "")
-    end_ts = _parse_close_timestamp_unix(m)
+    row = m
+    if client is not None and not _kalshi_row_has_explicit_quotes(m):
+        try:
+            row = client.enrich_market_with_detail_and_orderbook(dict(m))
+        except Exception:
+            row = m
+    yes_p, no_p, y_src, n_src = _kalshi_yes_no_from_market_row(row)
+    vol = float(row.get("volume_24h") or row.get("volume") or 0)
+    title = str(row.get("title") or row.get("subtitle") or "")
+    end_ts = _parse_close_timestamp_unix(row)
     if y_src:
         logger.debug(
             "Kalshi price source: %s=%.4f no_src=%s=%.4f market=%s",
@@ -735,7 +857,7 @@ def map_kalshi_market_to_snapshot(m: Dict[str, Any], now: float) -> MarketSnapsh
         resolution_criteria=title,
         last_price_update_timestamp=now,
         underlying_data_if_available={
-            "kalshi_raw": m,
+            "kalshi_raw": row,
             "kalshi_yes_price_field": y_src,
             "kalshi_no_price_field": n_src,
         },
@@ -776,7 +898,7 @@ class KalshiFetcher(BaseOutletFetcher):
                 "Kalshi: %s active-pool markets (near-resolution / volume / price band)",
                 len(raw_list),
             )
-            return [map_kalshi_market_to_snapshot(m, now) for m in raw_list]
+            return [map_kalshi_market_to_snapshot(m, now, client=self._client) for m in raw_list]
         except KalshiAuthError:
             return []
         except Exception as exc:
