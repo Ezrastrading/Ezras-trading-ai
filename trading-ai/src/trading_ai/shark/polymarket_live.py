@@ -1,4 +1,4 @@
-"""Polymarket CLOB live order + EIP-712 signing."""
+"""Polymarket CLOB live orders via py-clob-client (L1 sign + L2 API creds)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,11 @@ import logging
 import os
 import random
 import time
-import urllib.error
-import urllib.request
 from typing import Any, Dict
 
 from trading_ai.shark.models import ExecutionIntent, OrderResult
 
 logger = logging.getLogger(__name__)
-
-CLOB_ORDER_URL = os.environ.get("POLY_CLOB_ORDER_URL", "https://clob.polymarket.com/order")
 
 
 def sign_polymarket_order_eip712(
@@ -85,85 +81,59 @@ def sign_polymarket_order_eip712(
 
 
 def submit_polymarket_order(intent: ExecutionIntent) -> OrderResult:
+    """Sign and post a limit order using ``ClobClient`` + ``create_or_derive_api_creds()`` (POLY_WALLET_KEY)."""
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import OrderArgs
+
     key = (os.environ.get("POLY_WALLET_KEY") or "").strip()
-    api_key = (os.environ.get("POLY_API_KEY") or "").strip()
     if not key:
         raise RuntimeError(
             "Polymarket execution unavailable: POLY_WALLET_KEY unset (set wallet key for CLOB orders)."
         )
-    if not api_key:
-        logger.warning("POLY_API_KEY empty — submitting order with public CLOB headers only")
-    from eth_account import Account
+    raw_key = key if key.startswith("0x") else ("0x" + key)
+    host = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
+    client = ClobClient(host=host, chain_id=137, key=raw_key)
+    creds = client.create_or_derive_api_creds()
+    if creds is None:
+        raise RuntimeError("Polymarket: create_or_derive_api_creds returned None")
+    client = ClobClient(host=host, chain_id=137, key=raw_key, creds=creds)
 
-    pk = key[2:] if key.startswith("0x") else key
-    acct = Account.from_key("0x" + pk)
-    maker = acct.address
-    token_id = str(intent.meta.get("token_id") or intent.market_id.replace("poly:", "").replace("demo-", "1"))
-    notional = max(1, int(intent.notional_usd * 1_000_000))
-    shares = max(1, int(intent.shares))
-    sig = sign_polymarket_order_eip712(
-        private_key_hex=key,
-        maker=maker,
+    u = intent.meta or {}
+    token_id = u.get("token_id")
+    if not token_id:
+        token_id = str(intent.market_id).replace("poly:", "").replace("demo-", "")
+    token_id = str(token_id)
+
+    price = float(max(1e-6, min(1.0 - 1e-6, float(intent.expected_price))))
+    size = max(1.0, float(intent.shares))
+
+    order_args = OrderArgs(
         token_id=token_id,
-        maker_amount=notional,
-        taker_amount=shares,
-        side_buy=(intent.side.lower() == "yes"),
-    )
-    body = {
-        "order": {
-            "salt": random.randint(1, 2**32),
-            "maker": maker,
-            "signer": maker,
-            "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": token_id,
-            "makerAmount": notional,
-            "takerAmount": shares,
-            "expiration": int(time.time()) + 300,
-            "nonce": 0,
-            "feeRateBps": 0,
-            "side": "BUY",
-            "signatureType": 0,
-            "signature": sig,
-        }
-    }
-    from trading_ai.shark.outlets.polymarket import CLOB_SIGN_PATH_ORDER, build_polymarket_l2_headers
-
-    body_str = json.dumps(body, separators=(",", ":"))
-    hdrs: Dict[str, str] = {"User-Agent": "EzrasShark/1.0"}
-    if (os.environ.get("POLY_API_SECRET") or "").strip() and (os.environ.get("POLY_WALLET_KEY") or "").strip():
-        hdrs.update(
-            build_polymarket_l2_headers(
-                "POST",
-                CLOB_SIGN_PATH_ORDER,
-                serialized_body=body_str,
-            )
-        )
-    else:
-        hdrs["Content-Type"] = "application/json"
-        if api_key:
-            hdrs["POLY_API_KEY"] = api_key
-    req = urllib.request.Request(
-        CLOB_ORDER_URL,
-        data=body_str.encode("utf-8"),
-        method="POST",
-        headers=hdrs,
+        price=price,
+        size=size,
+        side="BUY",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            j = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            j = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            j = {"error": str(e)}
-        raise RuntimeError(f"Polymarket order failed: {j}") from e
-    oid = str(j.get("orderID") or j.get("id") or j.get("order_id") or "")
+        resp = client.create_and_post_order(order_args)
+    except Exception as exc:
+        logger.exception("Polymarket create_and_post_order failed")
+        raise RuntimeError(f"Polymarket order failed: {exc}") from exc
+
+    if isinstance(resp, dict):
+        oid = str(resp.get("orderID") or resp.get("order_id") or resp.get("id") or "")
+        status = str(resp.get("status") or "submitted")
+        raw: Any = resp
+    else:
+        oid = str(getattr(resp, "orderID", None) or getattr(resp, "order_id", "") or "")
+        status = "submitted"
+        raw = {"response": repr(resp)}
+
     return OrderResult(
         order_id=oid or "unknown",
         filled_price=float(intent.expected_price),
         filled_size=float(intent.shares),
         timestamp=time.time(),
-        status=str(j.get("status") or "submitted"),
+        status=status,
         outlet="polymarket",
-        raw=j,
+        raw=raw if isinstance(raw, dict) else {"raw": raw},
     )

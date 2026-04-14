@@ -46,6 +46,7 @@ def run_scan_execution_cycle(
         _post_scan_balance_sync()
         return 0, 0
 
+    logger.info("Processing %s markets through hunt engine", len(markets))
     cross = group_markets_by_event(markets)
     now = time.time()
     rec = load_capital()

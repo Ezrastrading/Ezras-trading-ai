@@ -355,7 +355,7 @@ class KalshiFetcher(BaseOutletFetcher):
             return []
         try:
             now = time.time()
-            raw_list = self._client.fetch_markets_open(limit=1000)
+            raw_list = self._client.fetch_markets_open(limit=50_000)
             return [map_kalshi_market_to_snapshot(m, now) for m in raw_list if isinstance(m, dict)]
         except KalshiAuthError:
             return []

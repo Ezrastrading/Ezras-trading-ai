@@ -602,37 +602,96 @@ class PolymarketFetcher(BaseOutletFetcher):
         return self.fetch_binary_markets()
 
     def fetch_binary_markets(self) -> List[MarketSnapshot]:
-        """Active markets via CLOB; authenticated requests unlock restricted markets when configured."""
+        """All CLOB markets via paginated ``/markets`` (``next_cursor`` until ``END_CURSOR``).
+
+        Optional env ``EZRAS_POLY_CLOB_MAX_PAGES`` (integer) caps pages for tests; unset = full sweep.
+        """
         try:
-            raw = self.http_get_json(f"{self.CLOB_BASE.rstrip('/')}/markets?limit=50")
+            from py_clob_client.constants import END_CURSOR
+        except ImportError:
+            END_CURSOR = "LTE="
+        max_pages: Optional[int] = None
+        raw_cap = (os.environ.get("EZRAS_POLY_CLOB_MAX_PAGES") or "").strip()
+        if raw_cap.isdigit():
+            max_pages = max(1, int(raw_cap))
+        base = self.CLOB_BASE.rstrip("/")
+        cursor = "MA=="
+        rows: List[Dict[str, Any]] = []
+        pages = 0
+        try:
+            while cursor != END_CURSOR:
+                if max_pages is not None and pages >= max_pages:
+                    break
+                url = f"{base}/markets?next_cursor={urllib.parse.quote(cursor, safe='')}"
+                raw = self.http_get_json(url)
+                batch = raw.get("data") if isinstance(raw, dict) else raw
+                if not isinstance(batch, list):
+                    break
+                rows.extend([r for r in batch if isinstance(r, dict)])
+                pages += 1
+                nxt = raw.get("next_cursor") if isinstance(raw, dict) else None
+                if not nxt or nxt == END_CURSOR:
+                    break
+                cursor = str(nxt)
         except Exception:
             return []
         now = time.time()
         out: List[MarketSnapshot] = []
-        rows = raw if isinstance(raw, list) else raw.get("data") if isinstance(raw, dict) else []
-        if not isinstance(rows, list):
-            return []
-        for row in rows[:30]:
-            if not isinstance(row, dict):
+        for row in rows:
+            cid = str(row.get("condition_id") or row.get("id") or "")
+            if not cid:
                 continue
-            tid = str(row.get("condition_id") or row.get("id") or "")
-            if not tid:
-                continue
-            try:
-                yes = float(row.get("yes_price") or row.get("price") or 0.5)
-                no = float(row.get("no_price") or (1.0 - yes))
-            except (TypeError, ValueError):
-                continue
+            tokens = row.get("tokens") if isinstance(row.get("tokens"), list) else []
+            yes_tid, no_tid = None, None
+            yes, no = 0.5, 0.5
+            if len(tokens) >= 2 and all(isinstance(t, dict) for t in tokens[:2]):
+                try:
+                    yes = float(tokens[0].get("price") if tokens[0].get("price") is not None else 0.5)
+                    no = float(tokens[1].get("price") if tokens[1].get("price") is not None else (1.0 - yes))
+                except (TypeError, ValueError):
+                    continue
+                yes_tid = str(tokens[0].get("token_id") or "")
+                no_tid = str(tokens[1].get("token_id") or "")
+            elif len(tokens) == 1 and isinstance(tokens[0], dict):
+                try:
+                    yes = float(tokens[0].get("price") or 0.5)
+                    no = 1.0 - yes
+                except (TypeError, ValueError):
+                    continue
+                yes_tid = str(tokens[0].get("token_id") or "")
+            else:
+                try:
+                    yes = float(row.get("yes_price") or row.get("price") or 0.5)
+                    no = float(row.get("no_price") or (1.0 - yes))
+                except (TypeError, ValueError):
+                    continue
+            end_iso = row.get("end_date_iso") or row.get("endDateIso")
+            ttr = 86400.0
+            if isinstance(end_iso, str):
+                try:
+                    dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+                    ttr = max(60.0, dt.timestamp() - now)
+                except ValueError:
+                    pass
+            u: Dict[str, Any] = {
+                "condition_id": cid,
+                "yes_token_id": yes_tid,
+                "no_token_id": no_tid,
+                "token_id": yes_tid or no_tid,
+                "poly_clob_row": row,
+            }
             out.append(
                 MarketSnapshot(
-                    market_id=f"poly:{tid}",
+                    market_id=f"poly:{cid}",
                     outlet=self.outlet_name,
                     yes_price=yes,
                     no_price=no,
-                    volume_24h=float(row.get("volume") or row.get("volume_24h") or 0),
-                    time_to_resolution_seconds=float(row.get("time_to_resolution") or 86400.0),
+                    volume_24h=float(row.get("volume") or row.get("volume_24h") or row.get("volumeNum") or 0),
+                    time_to_resolution_seconds=ttr,
                     resolution_criteria=str(row.get("description") or row.get("question") or ""),
                     last_price_update_timestamp=now,
+                    underlying_data_if_available=u,
+                    canonical_event_key=str(row.get("question_id") or cid),
                 )
             )
         return out

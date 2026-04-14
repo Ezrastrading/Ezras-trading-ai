@@ -155,10 +155,15 @@ def build_execution_intent(
                 shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
         margin_borrowed = max(0.0, notional - capital)
     u = m.underlying_data_if_available or {}
+    yes_tid = u.get("yes_token_id") or u.get("token_id")
+    no_tid = u.get("no_token_id")
+    tok = no_tid if side == "no" else yes_tid
     meta = {
         "phase": phase.value,
         "tier": scored.tier.value,
-        "token_id": u.get("token_id"),
+        "token_id": tok,
+        "yes_token_id": yes_tid,
+        "no_token_id": no_tid,
         "condition_id": u.get("condition_id"),
         "market_category": market_category,
         "margin_borrowed": margin_borrowed,

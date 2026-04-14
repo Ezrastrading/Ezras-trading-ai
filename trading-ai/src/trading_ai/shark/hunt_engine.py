@@ -46,7 +46,7 @@ def hunt_dead_market_convergence(m: MarketSnapshot) -> Optional[HuntSignal]:
     if not _volume_ok(m.volume_24h):
         return None
     edge = abs(p_true - price)  # simplified edge after fees assumed folded into threshold
-    if edge < 0.06:
+    if edge < 0.04:
         return None
     conf = min(1.0, edge / 0.15)
     return HuntSignal(
@@ -66,7 +66,7 @@ def hunt_structural_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
     if not (_volume_ok(m.volume_24h / 2) and _volume_ok(m.volume_24h / 2)):
         return None
     edge = 1.0 - s  # before fees; assume fees embedded in 0.97 threshold
-    if edge < 0.03:
+    if edge < 0.02:
         return None
     return HuntSignal(
         HuntType.STRUCTURAL_ARBITRAGE,
@@ -86,12 +86,12 @@ def hunt_cross_platform_mispricing(markets: Sequence[MarketSnapshot]) -> Dict[st
         return out
     prices_yes = [m.yes_price for m in markets]
     diff = max(prices_yes) - min(prices_yes)
-    if diff <= 0.08:
+    if diff <= 0.06:
         return out
     if any(not _volume_ok(m.volume_24h) for m in markets):
         return out
     edge = diff * 0.5  # conservative after fees
-    if edge < 0.05:
+    if edge < 0.03:
         return out
     sig = HuntSignal(
         HuntType.CROSS_PLATFORM_MISPRICING,
@@ -119,7 +119,7 @@ def hunt_statistical_window(m: MarketSnapshot) -> Optional[HuntSignal]:
     if m.scheduled_event_in_seconds is not None and m.scheduled_event_in_seconds < 30 * 60:
         return None
     edge = dev * 0.6
-    if edge < 0.08:
+    if edge < 0.05:
         return None
     return HuntSignal(
         HuntType.STATISTICAL_WINDOW,
@@ -158,7 +158,7 @@ def hunt_near_zero_accumulation(
     if base <= 0.20:
         return None
     ev = base - m.yes_price
-    if ev < 0.08:
+    if ev < 0.05:
         return None
     tracked = bool(u.get("tracked_wallet_match", False))
     conf = 0.72 if tracked else 0.58
@@ -187,8 +187,8 @@ def hunt_liquidity_imbalance_fade(m: MarketSnapshot, now: Optional[float] = None
         return None
     if m.time_to_resolution_seconds <= 3600:
         return None
-    edge = 0.06 + 0.015 * min(2.0, math.log(ratio) / math.log(3.0))
-    if edge < 0.06:
+    edge = 0.04 + 0.015 * min(2.0, math.log(ratio) / math.log(3.0))
+    if edge < 0.04:
         return None
     return HuntSignal(
         HuntType.LIQUIDITY_IMBALANCE_FADE,

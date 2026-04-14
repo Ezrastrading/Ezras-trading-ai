@@ -63,6 +63,8 @@ def run_execution_chain(
 ) -> ChainResult:
     audit: List[Dict[str, Any]] = []
     run_live = _resolve_execute_live(execute_live)
+    if run_live:
+        logging.getLogger(__name__).info("execute_live=True (dry_run=false)")
     now = now_unix or time.time()
     pk = peak_capital if peak_capital is not None else capital
     phase = detect_phase(capital)
