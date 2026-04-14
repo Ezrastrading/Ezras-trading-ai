@@ -378,26 +378,42 @@ class KalshiClient:
 
     def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
         """
-        Daily-resolution pool only: markets whose ``close_time`` is within the next **48 hours**,
-        fetched per ``KALSHI_DAILY_SERIES`` (INXD, HIGHTEMP, crypto dailies, same-day sports, etc.).
-        No generic open-market augmentation — avoids NBA championship and other long-dated contracts.
+        Active pool: single-event binaries (not parlays), ``status=open`` via core tradeable checks,
+        minimal activity (``max(volume, volume_24h, open_interest) >= 1``). Includes long-dated
+        futures (e.g. NBA championship); **no** close-time horizon — hunts decide timing.
 
-        Volume: if close is within **4 hours**, require ``volume >= 0``; if within 48h but not 4h,
-        require ``volume >= 1`` (uses max of lifetime volume, 24h volume, open interest).
+        Fetches each root in ``KALSHI_GOOD_SERIES`` via ``series_ticker=…``, then augments from the
+        generic open feed if the merge is sparse.
         """
         now = time.time()
         far_future = now + 3650 * 86400
-        merged: Dict[str, Dict[str, Any]] = {}
+        merge_cap = 120
+        merge: Dict[str, Dict[str, Any]] = {}
 
-        for ser in KALSHI_DAILY_SERIES:
-            for row in self.fetch_markets_for_series(ser, limit=120):
+        for ser in KALSHI_GOOD_SERIES:
+            for row in self.fetch_markets_for_series(ser, limit=merge_cap):
                 if not isinstance(row, dict):
                     continue
                 tid = str(row.get("ticker") or "").strip()
                 if tid:
-                    merged[tid] = row
+                    merge[tid] = row
 
-        all_markets = list(merged.values())
+        if len(merge) < 40:
+            params: Dict[str, Any] = {"status": "open", "limit": 200}
+            try:
+                j = self._request("GET", "/markets", params=params)
+            except Exception:
+                j = self._request("GET", "/markets", params={"limit": 200})
+            batch = j.get("markets") or j.get("data") or []
+            if isinstance(batch, list):
+                for m in batch:
+                    if not isinstance(m, dict):
+                        continue
+                    tid = str(m.get("ticker") or "").strip()
+                    if tid:
+                        merge.setdefault(tid, m)
+
+        all_markets = list(merge.values())
         if all_markets:
             try:
                 raw0 = json.dumps(all_markets[0], indent=2, default=str)
@@ -407,7 +423,7 @@ class KalshiClient:
             except Exception as exc:
                 logger.info("Kalshi first market raw: (unserializable) %s", exc)
         tickers = [str(m.get("ticker", ""))[:12] for m in all_markets[:20]]
-        logger.info("Kalshi daily series raw count=%s ticker samples: %s", len(all_markets), tickers)
+        logger.info("Kalshi series merge raw count=%s ticker samples: %s", len(all_markets), tickers)
 
         for m in all_markets[:5]:
             if not isinstance(m, dict):
@@ -427,9 +443,9 @@ class KalshiClient:
             )
 
         rejected_tradeable = 0
-        rejected_48h = 0
         rejected_volume = 0
         rejected_price = 0
+        rejected_time = 0
         candidates: List[Dict[str, Any]] = []
 
         for m in all_markets:
@@ -438,10 +454,7 @@ class KalshiClient:
             if not _kalshi_market_tradeable_core(m, now):
                 rejected_tradeable += 1
                 continue
-            if not _closes_within_48h(m, now):
-                rejected_48h += 1
-                continue
-            if not _kalshi_daily_volume_ok(m, now):
+            if _kalshi_market_volume(m) < 1.0:
                 rejected_volume += 1
                 continue
             m_row = m
@@ -460,24 +473,24 @@ class KalshiClient:
             candidates.append(m_row)
 
         logger.info(
-            "Kalshi filter breakdown: total=%s rejected_tradeable=%s rejected_48h_window=%s "
-            "rejected_volume=%s rejected_price=%s passed=%s",
+            "Kalshi filter breakdown: total=%s rejected_tradeable=%s rejected_volume=%s "
+            "rejected_price=%s rejected_time=%s passed=%s",
             len(all_markets),
             rejected_tradeable,
-            rejected_48h,
             rejected_volume,
             rejected_price,
+            rejected_time,
             len(candidates),
         )
 
-        _log_kalshi_daily_market_counts(candidates, now)
+        _log_kalshi_active_market_counts(candidates, now)
 
         def _sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
             y, _, _, _ = _kalshi_yes_no_from_market_row(row)
             close = _parse_close_timestamp_unix(row)
             imbalance = -abs(y - 0.5)
             close_key = close if close is not None else far_future
-            return (close_key, imbalance)
+            return (imbalance, close_key)
 
         candidates.sort(key=_sort_key)
         return candidates[:top_n]
@@ -632,38 +645,8 @@ def _parse_close_time_seconds(m: Dict[str, Any], now: float) -> float:
     return 86400.0
 
 
-def _closes_within_48h(m: Dict[str, Any], now: float) -> bool:
-    """True if market close is after ``now`` and within the next 48 hours."""
-    close_ts = _parse_close_timestamp_unix(m)
-    if close_ts is None:
-        return False
-    cutoff = now + 48 * 3600
-    return now < close_ts <= cutoff
-
-
-def _closes_within_4h(m: Dict[str, Any], now: float) -> bool:
-    """True if close is at or before ``now`` + 4 hours (still requires future close via core filter)."""
-    close_ts = _parse_close_timestamp_unix(m)
-    if close_ts is None:
-        return False
-    return close_ts <= now + 4 * 3600
-
-
 _KALSHI_TERMINAL_STATUSES = frozenset(
     {"closed", "settled", "finalized", "determined", "expired", "cancelled", "canceled"}
-)
-
-# Daily / short-horizon series only (no championship-year futures). Fetched via ``series_ticker``.
-KALSHI_DAILY_SERIES: Tuple[str, ...] = (
-    "INXD",
-    "HIGHTEMP",
-    "KXBTCD",
-    "KXETHD",
-    "BTCZ",
-    "NASDAQ",
-    "KXNFLTODAY",
-    "KXNBATODAY",
-    "KXMLBTODAY",
 )
 
 # Multi-leg / parlay tickers — not single-event binaries.
@@ -674,15 +657,20 @@ KALSHI_SKIP_PREFIXES: Tuple[str, ...] = (
 )
 
 # Prefer these single-event roots (prefix match on ``ticker`` or ``series_ticker``).
-# Includes liquid sports (KXNBA, …), indices (INXD), Bitcoin targets (BTCZ), weather (HIGHTEMP).
+# Sports season/championship (KXNBA, …), same-day game lines (KX* TODAY), indices, BTCZ, weather.
 KALSHI_GOOD_SERIES: Tuple[str, ...] = (
     "KXNBA",
     "KXNFL",
     "KXMLB",
     "KXNHL",
+    "KXNBATODAY",
+    "KXNFLTODAY",
+    "KXMLBTODAY",
     "INXD",
     "BTCZ",
     "HIGHTEMP",
+    "KXBTCD",
+    "KXETHD",
     "NASDAQ",
     "BTC",
     "ETH",
@@ -718,14 +706,6 @@ def _kalshi_market_volume(m: Dict[str, Any]) -> float:
     return max(_f("volume"), _f("volume_24h"), _f("open_interest"))
 
 
-def _kalshi_daily_volume_ok(m: Dict[str, Any], now: float) -> bool:
-    """Within 4h of close: allow zero volume; within 48h but beyond 4h: require minimal activity."""
-    vol = _kalshi_market_volume(m)
-    if _closes_within_4h(m, now):
-        return vol >= 0.0
-    return vol >= 1.0
-
-
 def _kalshi_series_key(m: Dict[str, Any]) -> str:
     st = str(m.get("series_ticker") or "").strip().upper()
     if st:
@@ -736,7 +716,7 @@ def _kalshi_series_key(m: Dict[str, Any]) -> str:
     return tick.upper() or "UNKNOWN"
 
 
-def _log_kalshi_daily_market_counts(markets: List[Dict[str, Any]], now: float) -> None:
+def _log_kalshi_active_market_counts(markets: List[Dict[str, Any]], now: float) -> None:
     n = len(markets)
     breakdown: Dict[str, int] = {}
     for row in markets:
@@ -744,7 +724,7 @@ def _log_kalshi_daily_market_counts(markets: List[Dict[str, Any]], now: float) -
         breakdown[k] = breakdown.get(k, 0) + 1
     if _KALSHI_ET is None:
         logger.info(
-            "Kalshi daily markets found: %s — Resolving today: (n/a) — Resolving tomorrow: (n/a) — Series breakdown: %s",
+            "Kalshi active markets found: %s — Resolving today: (n/a) — Resolving tomorrow: (n/a) — Series breakdown: %s",
             n,
             breakdown,
         )
@@ -763,7 +743,7 @@ def _log_kalshi_daily_market_counts(markets: List[Dict[str, Any]], now: float) -
         elif d == tomorrow_d:
             n_tomorrow += 1
     logger.info(
-        "Kalshi daily markets found: %s — Resolving today: %s — Resolving tomorrow: %s — Series breakdown: %s",
+        "Kalshi active markets found: %s — Resolving today: %s — Resolving tomorrow: %s — Series breakdown: %s",
         n,
         n_today,
         n_tomorrow,
@@ -811,12 +791,10 @@ def _kalshi_market_tradeable_core(m: Dict[str, Any], now: float) -> bool:
 
 
 def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
-    """Same filters as the daily active pool: core checks, 48h close window, tiered volume."""
+    """Core tradeable checks plus minimal liquidity (lifetime volume, 24h, or open interest)."""
     if not _kalshi_market_tradeable_core(m, now):
         return False
-    if not _closes_within_48h(m, now):
-        return False
-    if not _kalshi_daily_volume_ok(m, now):
+    if _kalshi_market_volume(m) < 1.0:
         return False
     return True
 

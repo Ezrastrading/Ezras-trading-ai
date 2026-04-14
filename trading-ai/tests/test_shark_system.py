@@ -582,7 +582,6 @@ def test_31b2_kalshi_tradeable_rejects_parlays_and_low_volume():
     assert not _kalshi_market_tradeable({**base, "ticker": "KXMVSPORT-1"}, now)
     assert not _kalshi_market_tradeable({**base, "ticker": "KXMVCROSS-1"}, now)
     assert not _kalshi_market_tradeable({**base, "ticker": "KXMVOTHER-1"}, now)
-    # Close in ~10h (outside 4h volume waiver): need volume >= 1
     assert not _kalshi_market_tradeable(
         {
             **base,
@@ -594,8 +593,7 @@ def test_31b2_kalshi_tradeable_rejects_parlays_and_low_volume():
         },
         now,
     )
-    # Close in ~1h: volume may be 0
-    assert _kalshi_market_tradeable(
+    assert not _kalshi_market_tradeable(
         {**base, "ticker": "KX-2b", "close_time": now + 3600, "volume": 0, "volume_24h": 0, "open_interest": 0},
         now,
     )
