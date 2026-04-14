@@ -1734,6 +1734,26 @@ def test_121_is_crypto_short_market_true_for_btc_above_short_window():
     assert _is_crypto_short_market(m) is True
 
 
+def test_121b_is_short_resolution_market_true_within_60_min():
+    import time
+
+    from trading_ai.shark.crypto_polymarket_hunts import _is_short_resolution_market
+
+    end = time.time() + 45 * 60
+    m = MarketSnapshot(
+        market_id="poly:sr",
+        outlet="polymarket",
+        yes_price=0.5,
+        no_price=0.5,
+        volume_24h=1000.0,
+        time_to_resolution_seconds=99999.0,
+        resolution_criteria="",
+        last_price_update_timestamp=time.time(),
+        end_timestamp_unix=end,
+    )
+    assert _is_short_resolution_market(m) is True
+
+
 def test_122_calc_crypto_prob_returns_probability_in_zero_one():
     pytest.importorskip("scipy")
     from trading_ai.shark.crypto_polymarket_hunts import calc_crypto_prob
@@ -1802,6 +1822,25 @@ def test_125_hunt_order_book_imbalance_fires_when_yes_side_thin():
     assert r.details.get("side") == "yes"
 
 
+def test_125b_hunt_volume_spike_fires_on_high_volume_contested():
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_volume_spike
+
+    m = MarketSnapshot(
+        market_id="poly:v",
+        outlet="kalshi",
+        yes_price=0.48,
+        no_price=0.52,
+        volume_24h=6000.0,
+        time_to_resolution_seconds=86400.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+    )
+    r = hunt_volume_spike(m)
+    assert r is not None
+    assert r.hunt_type == HuntType.VOLUME_SPIKE
+    assert r.details.get("side") in ("yes", "no")
+
+
 def test_126_crypto_scalp_scan_interval_job_registered():
     from trading_ai.shark.scheduler import build_shark_scheduler
 
@@ -1818,9 +1857,14 @@ def test_126_crypto_scalp_scan_interval_job_registered():
         hot_window_active=lambda: False,
         gap_active=lambda: False,
         crypto_scalp_scan=lambda: None,
+        near_resolution_sweep=lambda: None,
+        arb_sweep=lambda: None,
     )
     assert sched is not None
-    assert "crypto_scalp_scan" in [j.id for j in sched.get_jobs()]
+    ids = [j.id for j in sched.get_jobs()]
+    assert "crypto_scalp_scan" in ids
+    assert "near_resolution_sweep" in ids
+    assert "arb_sweep" in ids
 
 
 def test_127_polymarket_uses_limit_slippage_not_market_order_api():

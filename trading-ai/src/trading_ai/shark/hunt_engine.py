@@ -233,8 +233,8 @@ def run_hunts_on_market(
 ) -> List[HuntSignal]:
     """Run Hunts 1–2 only when volume is low; full suite (3–7 + cross) when volume > $1k / 24h.
 
-    When ``hunt_types_filter`` is set (e.g. 30s crypto scan), only those Polymarket hunts run;
-    non-Polymarket markets return no signals.
+    When ``hunt_types_filter`` is set (e.g. 30s crypto scan), only those fast hunts run;
+    Polymarket + Kalshi for arb / near-resolution / volume (crypto scalp + order book are Polymarket-only).
     """
     if hunt_types_filter:
         return run_filtered_polymarket_hunts(m, hunt_types_filter, now=now)
@@ -244,7 +244,7 @@ def run_hunts_on_market(
             r = fn(m)
             if r:
                 sigs.append(r)
-        if (m.outlet or "").lower() == "polymarket":
+        if (m.outlet or "").lower() in ("polymarket", "kalshi"):
             sigs.extend(append_polymarket_strategy_hunts(m, now=now))
         return sigs
     for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
@@ -262,7 +262,7 @@ def run_hunts_on_market(
         xm = hunt_cross_platform_mispricing(group)
         if m.market_id in xm:
             sigs.append(xm[m.market_id])
-    if (m.outlet or "").lower() == "polymarket":
+    if (m.outlet or "").lower() in ("polymarket", "kalshi"):
         sigs.extend(append_polymarket_strategy_hunts(m, now=now))
     return sigs
 

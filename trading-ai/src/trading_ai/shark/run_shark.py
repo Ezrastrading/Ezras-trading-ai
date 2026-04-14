@@ -161,13 +161,27 @@ def main() -> None:
         from trading_ai.shark.outlets.polymarket import PolymarketFetcher
 
         fetchers = (PolymarketFetcher(),)
-        hunt_filter = {
-            HuntType.CRYPTO_SCALP,
-            HuntType.PURE_ARBITRAGE,
-            HuntType.NEAR_RESOLUTION,
-        }
+        hunt_filter = {HuntType.CRYPTO_SCALP}
         n, att = run_scan_execution_cycle(fetchers, tag="crypto_scalp", hunt_types_filter=hunt_filter)
         log.info("crypto_scalp_scan: markets=%s execution_attempts=%s", n, att)
+
+    def near_resolution_sweep() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.outlets import default_fetchers
+
+        fetchers = tuple(default_fetchers())
+        hunt_filter = {HuntType.NEAR_RESOLUTION}
+        n, att = run_scan_execution_cycle(fetchers, tag="near_resolution_sweep", hunt_types_filter=hunt_filter)
+        log.info("near_resolution_sweep: markets=%s execution_attempts=%s", n, att)
+
+    def arb_sweep() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.outlets import default_fetchers
+
+        fetchers = tuple(default_fetchers())
+        hunt_filter = {HuntType.PURE_ARBITRAGE}
+        n, att = run_scan_execution_cycle(fetchers, tag="arb_sweep", hunt_types_filter=hunt_filter)
+        log.info("arb_sweep: markets=%s execution_attempts=%s", n, att)
 
     def resolution_monitor() -> None:
         try:
@@ -262,6 +276,8 @@ def main() -> None:
         heartbeat=_heartbeat,
         eod_force_trade=eod_force_scan,
         crypto_scalp_scan=crypto_scalp_scan,
+        near_resolution_sweep=near_resolution_sweep,
+        arb_sweep=arb_sweep,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

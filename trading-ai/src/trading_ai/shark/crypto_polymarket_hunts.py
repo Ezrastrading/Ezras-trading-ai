@@ -1,5 +1,5 @@
 """
-Polymarket-focused hunts (8–11): crypto scalp, pure arb, near resolution, order-book imbalance.
+Polymarket-focused hunts (8–12): crypto scalp, pure arb, near resolution, order-book imbalance, volume spike.
 
 BTC spot from Binance public API (10s cache). Uses ``scipy.stats`` for short-horizon log-normal CDF.
 """
@@ -36,7 +36,29 @@ def _end_timestamp(m: MarketSnapshot) -> Optional[float]:
     return None
 
 
+def _end_seconds(m: MarketSnapshot) -> Optional[float]:
+    """Absolute resolution time (unix seconds), if known."""
+    ed = getattr(m, "end_date_seconds", None)
+    if ed is not None and float(ed) > 0:
+        return float(ed)
+    return _end_timestamp(m)
+
+
+def _is_short_resolution_market(snapshot: MarketSnapshot) -> bool:
+    """True when the market resolves within ~60 minutes (any category / outlet)."""
+    now = time.time()
+    end = _end_seconds(snapshot)
+    if end is not None:
+        minutes_left = (end - now) / 60.0
+        return 0 <= minutes_left <= 60
+    ttr = float(snapshot.time_to_resolution_seconds or 0.0)
+    if ttr <= 0:
+        return False
+    return (ttr / 60.0) <= 60.0
+
+
 def _is_crypto_short_market(snapshot: MarketSnapshot) -> bool:
+    """Polymarket BTC/ETH strike markets resolving within ~30 minutes (crypto scalp only)."""
     if (snapshot.outlet or "").lower() != "polymarket":
         return False
     q = _market_question(snapshot).lower()
@@ -49,7 +71,7 @@ def _is_crypto_short_market(snapshot: MarketSnapshot) -> bool:
         or bool(re.search(r"\beth\b", q))
     )
     strike_q = "above" in q or "below" in q
-    end = _end_timestamp(snapshot)
+    end = _end_seconds(snapshot)
     now = time.time()
     if end is not None:
         return crypto and strike_q and (end - now) < 1800
@@ -84,7 +106,6 @@ def parse_strike_from_question(question: str) -> Optional[float]:
     """Extract dollar strike e.g. ``Will BTC be above $85,000`` → 85000.0."""
     if not question:
         return None
-    # $85,000 or $85000 or 85,000 USD
     m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", question)
     if m:
         raw = m.group(1).replace(",", "")
@@ -132,7 +153,7 @@ def hunt_crypto_scalp(m: MarketSnapshot) -> Optional[HuntSignal]:
     strike = parse_strike_from_question(q)
     if strike is None:
         return None
-    end = _end_timestamp(m)
+    end = _end_seconds(m)
     now = time.time()
     if end is not None:
         minutes_left = max((end - now) / 60.0, 0.25)
@@ -164,12 +185,10 @@ def hunt_crypto_scalp(m: MarketSnapshot) -> Optional[HuntSignal]:
 
 
 def hunt_pure_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
-    if (m.outlet or "").lower() != "polymarket":
-        return None
     yes = m.yes_price
     no = m.no_price
     total_cost = yes + no
-    if total_cost >= 0.985:
+    if total_cost > 0.99:
         return None
     edge = 1.0 - total_cost
     return HuntSignal(
@@ -187,19 +206,17 @@ def hunt_pure_arbitrage(m: MarketSnapshot) -> Optional[HuntSignal]:
 
 
 def hunt_near_resolution(m: MarketSnapshot) -> Optional[HuntSignal]:
-    if (m.outlet or "").lower() != "polymarket":
+    if not _is_short_resolution_market(m):
         return None
     yes = m.yes_price
     no = m.no_price
     now = time.time()
-    end = _end_timestamp(m)
+    end = _end_seconds(m)
     if end is None:
         minutes_left = m.time_to_resolution_seconds / 60.0
     else:
         minutes_left = (end - now) / 60.0
-    if minutes_left > 30:
-        return None
-    if yes >= 0.97:
+    if yes >= 0.93:
         edge = 1.0 - yes
         return HuntSignal(
             HuntType.NEAR_RESOLUTION,
@@ -207,7 +224,7 @@ def hunt_near_resolution(m: MarketSnapshot) -> Optional[HuntSignal]:
             confidence=0.95,
             details={"side": "yes", "minutes_left": minutes_left, "reasoning": f"YES={yes} resolves_in={minutes_left:.1f}min"},
         )
-    if no >= 0.97:
+    if no >= 0.93:
         edge = 1.0 - no
         return HuntSignal(
             HuntType.NEAR_RESOLUTION,
@@ -248,16 +265,40 @@ def hunt_order_book_imbalance(m: MarketSnapshot) -> Optional[HuntSignal]:
     return None
 
 
+def hunt_volume_spike(m: MarketSnapshot) -> Optional[HuntSignal]:
+    volume = float(getattr(m, "volume_24h", 0) or 0)
+    if volume < 5000:
+        return None
+    yes = m.yes_price
+    no = m.no_price
+    if yes is None or no is None:
+        return None
+    if 0.35 <= yes <= 0.65:
+        edge = abs(yes - 0.50) + 0.03
+        side = "yes" if yes < 0.50 else "no"
+        return HuntSignal(
+            HuntType.VOLUME_SPIKE,
+            edge_after_fees=edge,
+            confidence=0.60,
+            details={
+                "side": side,
+                "reasoning": f"High volume ${volume:.0f} contested market",
+            },
+        )
+    return None
+
+
 _POLY_STRATEGY_FUNCS = (
     hunt_pure_arbitrage,
     hunt_near_resolution,
     hunt_order_book_imbalance,
+    hunt_volume_spike,
     hunt_crypto_scalp,
 )
 
 
 def append_polymarket_strategy_hunts(m: MarketSnapshot, *, now: Optional[float] = None) -> List[HuntSignal]:
-    """Runs hunts 8–11 (Polymarket). Caller merges into ``sigs``."""
+    """Runs hunts 8–12 (Polymarket + cross-outlet arb/near/volume). Caller merges into ``sigs``."""
     out: List[HuntSignal] = []
     for fn in _POLY_STRATEGY_FUNCS:
         try:
@@ -276,17 +317,22 @@ def run_filtered_polymarket_hunts(
     *,
     now: Optional[float] = None,
 ) -> List[HuntSignal]:
-    """Run only selected :class:`HuntType` runners (for 30s crypto scan)."""
+    """Run only selected :class:`HuntType` runners (fast scans). Polymarket + Kalshi where applicable."""
+    o = (m.outlet or "").lower()
+    if o not in ("polymarket", "kalshi"):
+        return []
     mapping = {
         HuntType.CRYPTO_SCALP: hunt_crypto_scalp,
         HuntType.PURE_ARBITRAGE: hunt_pure_arbitrage,
         HuntType.NEAR_RESOLUTION: hunt_near_resolution,
         HuntType.ORDER_BOOK_IMBALANCE: hunt_order_book_imbalance,
+        HuntType.VOLUME_SPIKE: hunt_volume_spike,
     }
+    poly_only = {HuntType.CRYPTO_SCALP, HuntType.ORDER_BOOK_IMBALANCE}
     sigs: List[HuntSignal] = []
-    if (m.outlet or "").lower() != "polymarket":
-        return sigs
     for ht in hunt_types:
+        if ht in poly_only and o != "polymarket":
+            continue
         fn = mapping.get(ht)
         if not fn:
             continue

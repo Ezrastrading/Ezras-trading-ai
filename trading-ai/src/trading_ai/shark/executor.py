@@ -74,6 +74,7 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
         HuntType.CRYPTO_SCALP,
         HuntType.NEAR_RESOLUTION,
         HuntType.ORDER_BOOK_IMBALANCE,
+        HuntType.VOLUME_SPIKE,
     ):
         return str(d.get("side", "yes")), 0.0
     return "yes", 0.0
@@ -92,8 +93,11 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
     if h.hunt_type == HuntType.NEAR_RESOLUTION:
         side = str(d.get("side", "yes"))
         px = m.yes_price if side == "yes" else m.no_price
-        return max(0.97, min(0.995, px + 0.01))
+        return max(0.93, min(0.995, px + 0.01))
     if h.hunt_type == HuntType.ORDER_BOOK_IMBALANCE:
+        side = str(d.get("side", "yes"))
+        return m.yes_price if side == "yes" else m.no_price
+    if h.hunt_type == HuntType.VOLUME_SPIKE:
         side = str(d.get("side", "yes"))
         return m.yes_price if side == "yes" else m.no_price
     if h.hunt_type == HuntType.PURE_ARBITRAGE:
@@ -110,7 +114,12 @@ def _price_for_kelly(m: MarketSnapshot, scored: ScoredOpportunity) -> float:
     d = h.details or {}
     if _has_near_zero(scored.hunts):
         return m.yes_price
-    if h.hunt_type in (HuntType.CRYPTO_SCALP, HuntType.NEAR_RESOLUTION, HuntType.ORDER_BOOK_IMBALANCE):
+    if h.hunt_type in (
+        HuntType.CRYPTO_SCALP,
+        HuntType.NEAR_RESOLUTION,
+        HuntType.ORDER_BOOK_IMBALANCE,
+        HuntType.VOLUME_SPIKE,
+    ):
         return m.no_price if str(d.get("side", "yes")) == "no" else m.yes_price
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE and str((h.details or {}).get("side")) == "no":
         return m.no_price
@@ -137,7 +146,12 @@ def _hf_poly_notional(phase: CapitalPhase, capital: float, notional: float) -> f
 def _has_hf_poly_hunt(hunts: List) -> bool:
     return any(
         getattr(h, "hunt_type", None)
-        in (HuntType.CRYPTO_SCALP, HuntType.NEAR_RESOLUTION, HuntType.ORDER_BOOK_IMBALANCE)
+        in (
+            HuntType.CRYPTO_SCALP,
+            HuntType.NEAR_RESOLUTION,
+            HuntType.ORDER_BOOK_IMBALANCE,
+            HuntType.VOLUME_SPIKE,
+        )
         for h in hunts
     )
 

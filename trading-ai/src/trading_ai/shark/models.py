@@ -19,6 +19,7 @@ class HuntType(str, Enum):
     PURE_ARBITRAGE = "pure_arbitrage"
     NEAR_RESOLUTION = "near_resolution"
     ORDER_BOOK_IMBALANCE = "order_book_imbalance"
+    VOLUME_SPIKE = "volume_spike"
 
 
 class OpportunityTier(str, Enum):
@@ -61,6 +62,7 @@ class MarketSnapshot:
     # Polymarket short-horizon / microstructure (optional)
     question_text: Optional[str] = None
     end_timestamp_unix: Optional[float] = None
+    end_date_seconds: Optional[float] = None  # alias epoch for resolution (optional; same role as end_timestamp_unix)
     best_ask_yes: Optional[float] = None
     best_ask_no: Optional[float] = None
 
