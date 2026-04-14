@@ -54,7 +54,10 @@ def main() -> int:
     for p in pos_data:
         ticker = str(p.get("ticker") or p.get("market_id") or "").strip().upper()
         if any(ticker.startswith(pfx) for pfx in prefixes):
-            target_positions.append(p)
+            # Only include if there are actual contracts held (position_fp != 0)
+            pos_fp = float(p.get("position_fp") or 0)
+            if pos_fp != 0.0:
+                target_positions.append(p)
 
     if not target_positions:
         print(f"No open positions found matching {prefixes}. Nothing to close.")
@@ -62,8 +65,10 @@ def main() -> int:
     else:
         print(f"Found {len(target_positions)} position(s) to close:")
         for p in target_positions:
-            print(f"  ticker={p.get('ticker')}  side={p.get('side')}  "
-                  f"position={p.get('position')}  value={p.get('value')}")
+            pos_fp = float(p.get("position_fp") or 0)
+            side = "yes" if pos_fp > 0 else "no"
+            print(f"  ticker={p.get('ticker')}  side={side}  "
+                  f"position_fp={pos_fp}  exposure=${p.get('market_exposure_dollars')}")
 
     # ── 2. Cancel resting orders for matching tickers ─────────────────────────
     try:
@@ -94,16 +99,13 @@ def main() -> int:
     errors = 0
     for p in target_positions:
         ticker = str(p.get("ticker") or "").strip()
-        side = str(p.get("side") or "yes").lower()
-        # Kalshi API returns position size in "position" field (integer contracts held).
-        raw_pos = p.get("position") or p.get("quantity") or p.get("contracts") or 0
-        try:
-            contracts = int(float(str(raw_pos)))
-        except (TypeError, ValueError):
-            contracts = 0
+        # position_fp: positive = YES contracts, negative = NO contracts
+        pos_fp = float(p.get("position_fp") or 0)
+        side = "yes" if pos_fp > 0 else "no"
+        contracts = int(abs(pos_fp) + 0.5)
 
         if contracts <= 0:
-            print(f"  {ticker}: no contracts to sell (position={raw_pos}), skipping sell.")
+            print(f"  {ticker}: no contracts to sell (position_fp={pos_fp}), skipping sell.")
             continue
 
         print(f"  Selling {contracts} {side.upper()} contracts of {ticker} at market …")

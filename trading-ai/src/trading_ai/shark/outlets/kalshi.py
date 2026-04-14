@@ -828,6 +828,25 @@ class KalshiClient:
         """DELETE ``/portfolio/orders/{{order_id}}`` — cancels a resting (or open) order by id."""
         return self._request("DELETE", f"/portfolio/orders/{urllib.parse.quote(order_id, safe='')}")
 
+    def list_portfolio_positions(self, *, limit_per_page: int = 200) -> List[Dict[str, Any]]:
+        """GET ``/portfolio/positions`` — all open positions, following cursor until exhausted."""
+        out: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        cap = max(1, min(1000, int(limit_per_page)))
+        for _ in range(100):
+            params: Dict[str, Any] = {"limit": cap}
+            if cursor:
+                params["cursor"] = cursor
+            j = self._request("GET", "/portfolio/positions", params=params)
+            batch = j.get("market_positions") or j.get("positions") or []
+            if isinstance(batch, list):
+                out.extend(p for p in batch if isinstance(p, dict))
+            nxt = j.get("cursor")
+            cursor = nxt if isinstance(nxt, str) and nxt.strip() else None
+            if not cursor or not batch:
+                break
+        return out
+
 
 def fetch_kalshi_active_markets(client: Optional[KalshiClient] = None, *, top_n: Optional[int] = None) -> List[Dict[str, Any]]:
     """Module helper — same as :meth:`KalshiClient.fetch_kalshi_active_markets`."""
