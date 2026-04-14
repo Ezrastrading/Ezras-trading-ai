@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 
 def kalshi_max_open_positions_from_env() -> int:
@@ -62,19 +61,6 @@ def kalshi_open_positions_deployed_usd() -> float:
         for p in (data.get("open_positions") or [])
         if str(p.get("outlet") or "").lower() == "kalshi"
     )
-
-
-def should_apply_kalshi_actual_balance_override(kalshi_api_usd: Optional[float]) -> bool:
-    """
-    ``KALSHI_ACTUAL_BALANCE`` is only applied when the portfolio API reports ~$0 available cash
-    but we still have open Kalshi positions (some API responses omit usable semantics until flat).
-    If the API returns any positive balance, always trust it.
-    """
-    if kalshi_api_usd is None:
-        return False
-    if abs(float(kalshi_api_usd)) > 1e-9:
-        return False
-    return count_kalshi_open_positions() > 0
 
 
 def kalshi_hv_max_open_positions() -> int:

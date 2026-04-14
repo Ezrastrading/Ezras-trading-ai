@@ -98,7 +98,7 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 yes_price_cents=base_yes_cents,
             )
 
-        hv_mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "aggressive_limit").strip().lower()
+        hv_mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "market").strip().lower()
         try:
             bump = int((os.environ.get("KALSHI_HV_LIMIT_BUMP_CENTS") or "2").strip() or "2")
         except ValueError:

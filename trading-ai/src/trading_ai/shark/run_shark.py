@@ -412,6 +412,25 @@ def main() -> None:
     def avenue_pulse() -> None:
         scan_and_alert_transitions()
 
+    def kalshi_stale_order_sweep() -> None:
+        try:
+            from trading_ai.shark.kalshi_stale_orders import run_kalshi_stale_resting_order_sweep
+
+            run_kalshi_stale_resting_order_sweep()
+        except Exception as exc:
+            log.warning("kalshi stale order sweep failed: %s", exc)
+
+    def kalshi_blitz() -> None:
+        """Final-5-minute blitz on hourly Kalshi crypto markets. Fires at :54:30 via CronTrigger."""
+        try:
+            from trading_ai.shark.kalshi_blitz import run_kalshi_blitz
+
+            n = run_kalshi_blitz()
+            if n:
+                log.info("kalshi_blitz: placed=%s trades", n)
+        except Exception as exc:
+            log.warning("kalshi_blitz failed (non-blocking): %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -438,6 +457,8 @@ def main() -> None:
         kalshi_full_scan=kalshi_full_scan,
         avenue_pulse=avenue_pulse,
         live_sports_scan=live_sports_hv_scan,
+        kalshi_stale_order_sweep=kalshi_stale_order_sweep,
+        kalshi_blitz=kalshi_blitz,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

@@ -56,6 +56,8 @@ def build_shark_scheduler(
     kalshi_full_scan: Optional[Callable[[], None]] = None,
     avenue_pulse: Optional[Callable[[], None]] = None,
     live_sports_scan: Optional[Callable[[], None]] = None,
+    kalshi_stale_order_sweep: Optional[Callable[[], None]] = None,
+    kalshi_blitz: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -162,4 +164,20 @@ def build_shark_scheduler(
         )
     if avenue_pulse is not None:
         sched.add_job(avenue_pulse, IntervalTrigger(hours=2), id="avenue_pulse", replace_existing=True)
+    if kalshi_stale_order_sweep is not None:
+        sched.add_job(
+            kalshi_stale_order_sweep,
+            IntervalTrigger(minutes=2),
+            id="kalshi_stale_orders",
+            replace_existing=True,
+        )
+    if kalshi_blitz is not None and CronTrigger is not None:
+        # Fires at HH:54:30 every hour — 5 min 30 sec before each hourly Kalshi crypto close (:00:00).
+        # 30s head-start accounts for fetch + concurrent order submission latency.
+        sched.add_job(
+            kalshi_blitz,
+            CronTrigger(minute=54, second=30),
+            id="kalshi_blitz",
+            replace_existing=True,
+        )
     return sched

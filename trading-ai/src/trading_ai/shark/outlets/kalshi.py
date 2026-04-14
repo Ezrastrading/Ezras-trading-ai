@@ -648,10 +648,35 @@ class KalshiClient:
     def get_order(self, order_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/portfolio/orders/{urllib.parse.quote(order_id, safe='')}")
 
+    def list_resting_orders(self, *, limit_per_page: int = 200) -> List[Dict[str, Any]]:
+        """GET ``/portfolio/orders`` with ``status=resting``, following ``cursor`` until exhausted.
+
+        Used by the stale-order sweeper; cancellation of a single order is :meth:`cancel_order`.
+        """
+        out: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        cap = max(1, min(1000, int(limit_per_page)))
+        for _ in range(100):
+            params: Dict[str, Any] = {"status": "resting", "limit": cap}
+            if cursor:
+                params["cursor"] = cursor
+            j = self._request("GET", "/portfolio/orders", params=params)
+            batch = j.get("orders")
+            if isinstance(batch, list):
+                out.extend(o for o in batch if isinstance(o, dict))
+            nxt = j.get("cursor")
+            cursor = nxt if isinstance(nxt, str) and nxt.strip() else None
+            if not cursor:
+                break
+            if not batch:
+                break
+        return out
+
     def get_market(self, ticker: str) -> Dict[str, Any]:
         return self._request("GET", f"/markets/{urllib.parse.quote(ticker, safe='')}")
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """DELETE ``/portfolio/orders/{{order_id}}`` — cancels a resting (or open) order by id."""
         return self._request("DELETE", f"/portfolio/orders/{urllib.parse.quote(order_id, safe='')}")
 
 

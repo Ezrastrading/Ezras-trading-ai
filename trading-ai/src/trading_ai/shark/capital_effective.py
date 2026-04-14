@@ -36,19 +36,21 @@ def _apply_kalshi_reserve(balance: float) -> float:
 
 def effective_capital_for_outlet(outlet: str, book_capital: float) -> float:
     """
-    Kalshi: use live API ``available`` balance when it is > 0, then deduct cash reserve.
+    Kalshi: same rules as ``sync_all_platforms`` — API cash above ``KALSHI_BALANCE_TRUST_MIN_USD``
+    (default $1) is authoritative; exact API $0 falls back to ``KALSHI_ACTUAL_BALANCE`` when set;
+    then apply cash reserve (``KALSHI_CASH_RESERVE_PCT``).
 
-    ``KALSHI_ACTUAL_BALANCE`` applies only when the API reports about $0 available **and** there are
-    open Kalshi positions (legacy workaround). Otherwise the API value is trusted.
-
-    A 20% cash reserve (``KALSHI_CASH_RESERVE_PCT``) is always held back so the bot never
-    deploys more than 80% of available cash in a single cycle.
+    Detailed cash sync messages are logged from ``balance_sync`` on startup and every 5 minutes.
     """
     o = (outlet or "").strip().lower()
     if o != "kalshi":
         return float(book_capital)
     try:
-        from trading_ai.shark.balance_sync import fetch_kalshi_balance_usd
+        from trading_ai.shark.balance_sync import (
+            fetch_kalshi_balance_usd,
+            kalshi_api_reports_zero_balance,
+            kalshi_balance_trust_min_usd,
+        )
 
         api = fetch_kalshi_balance_usd()
     except Exception as exc:
@@ -59,14 +61,10 @@ def effective_capital_for_outlet(outlet: str, book_capital: float) -> float:
         env_alt = float(env_raw) if env_raw else 0.0
     except ValueError:
         env_alt = 0.0
-    if api is not None and api > 1e-6:
+    trust_min = kalshi_balance_trust_min_usd()
+    if api is not None and api > trust_min:
         return _apply_kalshi_reserve(float(api))
-    if env_alt > 1e-6 and (api is None or api <= 1e-6):
-        logger.info(
-            "Kalshi effective capital: API available=$%.2f → using KALSHI_ACTUAL_BALANCE=$%.2f",
-            api if api is not None else 0.0,
-            env_alt,
-        )
+    if api is not None and kalshi_api_reports_zero_balance(api) and env_alt > 1e-6:
         return _apply_kalshi_reserve(env_alt)
     if api is not None:
         return _apply_kalshi_reserve(float(api))
