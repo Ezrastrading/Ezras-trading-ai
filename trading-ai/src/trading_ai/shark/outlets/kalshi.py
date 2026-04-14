@@ -392,7 +392,7 @@ class KalshiClient:
             pass
         return out
 
-    def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
+    def fetch_kalshi_active_markets(self, *, top_n: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Active pool: single-event binaries (not parlays), ``status=open`` via core tradeable checks,
         minimal activity (``max(volume, volume_24h, open_interest) >= 1``). Includes long-dated
@@ -400,10 +400,16 @@ class KalshiClient:
 
         Fetches each root in ``KALSHI_GOOD_SERIES`` via ``series_ticker=…``, then augments from the
         generic open feed if the merge is sparse.
+
+        ``top_n`` defaults to ``KALSHI_FETCH_TOP_N``; per-series merge cap from ``KALSHI_SERIES_MERGE_CAP``.
         """
+        from trading_ai.shark import kalshi_limits
+
+        tn = top_n if top_n is not None else kalshi_limits.kalshi_fetch_top_n()
         now = time.time()
         far_future = now + 3650 * 86400
-        merge_cap = 120
+        merge_cap = kalshi_limits.kalshi_series_merge_cap()
+        batch_lim = kalshi_limits.kalshi_markets_api_batch_limit()
         merge: Dict[str, Dict[str, Any]] = {}
 
         for ser in KALSHI_GOOD_SERIES:
@@ -415,11 +421,11 @@ class KalshiClient:
                     merge[tid] = row
 
         if len(merge) < 40:
-            params: Dict[str, Any] = {"status": "open", "limit": 200}
+            params: Dict[str, Any] = {"status": "open", "limit": batch_lim}
             try:
                 j = self._request("GET", "/markets", params=params)
             except Exception:
-                j = self._request("GET", "/markets", params={"limit": 200})
+                j = self._request("GET", "/markets", params={"limit": batch_lim})
             batch = j.get("markets") or j.get("data") or []
             if isinstance(batch, list):
                 for m in batch:
@@ -512,7 +518,7 @@ class KalshiClient:
             return (imbalance, close_key)
 
         candidates.sort(key=_sort_key)
-        return candidates[:top_n]
+        return candidates[:tn]
 
     def fetch_orderbook_depth(self, ticker: str) -> Tuple[float, float]:
         j = self._request("GET", f"/markets/{urllib.parse.quote(ticker, safe='')}/orderbook")
@@ -580,7 +586,7 @@ class KalshiClient:
         return self._request("DELETE", f"/portfolio/orders/{urllib.parse.quote(order_id, safe='')}")
 
 
-def fetch_kalshi_active_markets(client: Optional[KalshiClient] = None, *, top_n: int = 200) -> List[Dict[str, Any]]:
+def fetch_kalshi_active_markets(client: Optional[KalshiClient] = None, *, top_n: Optional[int] = None) -> List[Dict[str, Any]]:
     """Module helper — same as :meth:`KalshiClient.fetch_kalshi_active_markets`."""
     c = client or KalshiClient()
     return c.fetch_kalshi_active_markets(top_n=top_n)
@@ -1017,14 +1023,16 @@ class KalshiFetcher(BaseOutletFetcher):
                 logger.warning("KALSHI_API_KEY not set — Kalshi fetcher returns empty")
             return []
         try:
+            from trading_ai.shark import kalshi_limits
+
             now = time.time()
-            raw_list = self._client.fetch_kalshi_active_markets(top_n=200)
+            raw_list = self._client.fetch_kalshi_active_markets(top_n=kalshi_limits.kalshi_fetch_top_n())
             if not raw_list:
-                raw_list = self._client.fetch_markets_open(limit=500)
+                raw_list = self._client.fetch_markets_open(limit=kalshi_limits.kalshi_fetch_markets_open_limit())
                 active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
                 fb_ticks = [str(m.get("ticker", ""))[:12] for m in active_rows[:20]]
                 logger.info("Kalshi ticker samples (open fallback): %s", fb_ticks)
-                raw_list = active_rows[:200]
+                raw_list = active_rows[: kalshi_limits.kalshi_open_fallback_slice()]
             sample_statuses = [str(m.get("status", "unknown")) for m in raw_list[:20] if isinstance(m, dict)]
             logger.info("Kalshi sample statuses (first %s): %s", len(sample_statuses), sample_statuses)
             logger.info(

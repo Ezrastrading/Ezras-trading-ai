@@ -381,6 +381,10 @@ def handle_resolution(
     roi = (pnl / notional * 100.0) if notional > 1e-9 else 0.0
     ps = str(position.side or "yes").lower()
     pos_lbl = "YES" if ps == "yes" else "NO"
+    payout_dollars = notional + pnl
+    tick = str(position.market_id or "").strip()
+    if ":" in tick:
+        tick = tick.split(":")[-1]
     try:
         maybe_notify_trade_closed(
             None,
@@ -388,13 +392,14 @@ def handle_resolution(
                 "trade_id": jid,
                 "result": "win" if win else "loss",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "market": f"{position.outlet} {position.market_id}",
-                "ticker": position.market_id,
+                "market": f"{position.outlet}: {tick}",
+                "ticker": tick,
                 "position": pos_lbl,
                 "gross_pnl_dollars": pnl,
                 "net_pnl_dollars": pnl,
                 "capital_allocated": notional,
                 "roi_percent": roi,
+                "payout_dollars": payout_dollars,
             },
         )
     except Exception:

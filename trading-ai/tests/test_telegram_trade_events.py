@@ -87,14 +87,15 @@ def test_closed_full_payload(isolated_runtime) -> None:
         "risk_bucket_at_open": "NORMAL",
     }
     msg = format_trade_closed_message(t)
-    assert "Ezras — TRADE CLOSED" in msg
+    assert "Ezras — TRADE CLOSED / PAYOUT" in msg
     assert "Market: Fed decision before June" in msg
     assert "Ticker: FED-JUNE-25" in msg
     assert "Side: BUY_NO" in msg
     assert "Risk Mode After Close:" in msg
     assert "Exit: 0.88" in msg
-    assert "Gross P&L: $125.00" in msg
-    assert "Net P&L: $120.50" in msg
+    assert "P&L (net): $120.50" in msg
+    assert "P&L (gross): $125.00" in msg
+    assert "Payout amount: $2,120.50" in msg
     assert "ROI:" in msg and "%" in msg
     assert "Execution Cost: $4.50" in msg
     assert "Strategy: macro" in msg

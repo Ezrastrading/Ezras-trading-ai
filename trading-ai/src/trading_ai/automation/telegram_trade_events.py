@@ -414,9 +414,32 @@ def format_trade_placed_message(trade: Dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _payout_amount_dollars(trade: Dict[str, Any]) -> Optional[float]:
+    """Total settlement / cash back (stake + net P&L) when not explicit."""
+    raw = trade.get("payout_dollars")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    cap = float(trade.get("capital_allocated") or 0.0)
+    net = trade.get("net_pnl_dollars")
+    if net is None:
+        net = trade.get("gross_pnl_dollars")
+    if net is not None:
+        try:
+            return cap + float(net)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def format_trade_closed_message(trade: Dict[str, Any]) -> str:
-    """Hedge-fund style CLOSED alert; omits empty optional fields."""
-    lines: List[str] = ["Ezras — TRADE CLOSED", ""]
+    """
+    Settlement / payout alert — same headline block order as :func:`format_trade_placed_message`
+    (Market → Ticker → Side), then P&L and payout, optional risk/exit details, Trade ID + Time.
+    """
+    lines: List[str] = ["Ezras — TRADE CLOSED / PAYOUT", ""]
 
     m = _nonempty_str(trade.get("market"))
     if m:
@@ -430,22 +453,6 @@ def format_trade_closed_message(trade: Dict[str, Any]) -> str:
     if side and side != "—":
         lines.append(f"Side: {side}")
 
-    try:
-        from trading_ai.automation.risk_bucket import get_account_risk_bucket
-
-        bucket_after = get_account_risk_bucket({"phase": "closed", "trade": trade})
-    except Exception:
-        bucket_after = "REDUCED"
-
-    lines.append(f"Risk Mode After Close: {bucket_after}")
-    bucket_before = trade.get("risk_bucket_at_open")
-    if bucket_before and str(bucket_before) != str(bucket_after):
-        lines.append(f"Bucket Change: {bucket_before} → {bucket_after}")
-
-    xp = _fmt_entry_exit_price(trade.get("exit_price"))
-    if xp:
-        lines.append(f"Exit: {xp}")
-
     cap = float(trade.get("capital_allocated") or 0.0)
     roi = float(trade.get("roi_percent") or 0.0)
 
@@ -456,13 +463,25 @@ def format_trade_closed_message(trade: Dict[str, Any]) -> str:
     if net is None and cap:
         net = cap * (roi / 100.0)
 
-    g = _fmt_dollars(gross)
-    if g:
-        lines.append(f"Gross P&L: {g}")
+    if n := _fmt_dollars(net):
+        lines.append(f"P&L (net): {n}")
 
-    n = _fmt_dollars(net)
-    if n:
-        lines.append(f"Net P&L: {n}")
+    if gross is not None:
+        try:
+            gn = float(net) if net is not None else None
+            show_gross = gn is None or abs(float(gross) - gn) > 1e-6
+        except (TypeError, ValueError):
+            show_gross = True
+        if show_gross and (g := _fmt_dollars(gross)):
+            lines.append(f"P&L (gross): {g}")
+
+    pay = _fmt_dollars(_payout_amount_dollars(trade))
+    if pay:
+        lines.append(f"Payout amount: {pay}")
+
+    xp = _fmt_entry_exit_price(trade.get("exit_price"))
+    if xp:
+        lines.append(f"Exit: {xp}")
 
     roi_s = _fmt_percent(trade.get("roi_percent"), decimals=2)
     if roi_s:
@@ -478,6 +497,18 @@ def format_trade_closed_message(trade: Dict[str, Any]) -> str:
     strat = _strategy_line(trade)
     if strat:
         lines.append(f"Strategy: {strat}")
+
+    try:
+        from trading_ai.automation.risk_bucket import get_account_risk_bucket
+
+        bucket_after = get_account_risk_bucket({"phase": "closed", "trade": trade})
+    except Exception:
+        bucket_after = "REDUCED"
+
+    lines.append(f"Risk Mode After Close: {bucket_after}")
+    bucket_before = trade.get("risk_bucket_at_open")
+    if bucket_before and str(bucket_before) != str(bucket_after):
+        lines.append(f"Bucket Change: {bucket_before} → {bucket_after}")
 
     creason = _one_line_close_reason(trade)
     if creason:

@@ -38,9 +38,9 @@ _BATCH_SIZE = 50
 
 def _top_per_batch() -> int:
     try:
-        return max(5, min(20, int((os.environ.get("SCAN_TOP_PER_BATCH") or "10").strip() or "10")))
+        return max(5, min(40, int((os.environ.get("SCAN_TOP_PER_BATCH") or "15").strip() or "15")))
     except ValueError:
-        return 10
+        return 15
 
 
 def _norm_title(s: str) -> str:
