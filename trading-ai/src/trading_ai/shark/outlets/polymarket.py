@@ -101,12 +101,17 @@ def _coerce_boolish(val: Any, default: bool) -> bool:
 
 
 def _is_tradeable_market_dict(row: Dict[str, Any], now: float) -> bool:
-    """CLOB row must be active, not closed/archived, and not past resolution."""
-    if not _coerce_boolish(row.get("active"), True):
+    """CLOB row must be active, not closed/archived, and not past resolution.
+
+    Only reject ``active``/``closed``/``archived`` on *explicit* API values so
+    ``None``/missing (common on CLOB payloads) does not drop otherwise-open markets.
+    """
+    active_val = row.get("active")
+    if active_val is False:
         return False
-    if _coerce_boolish(row.get("closed"), False):
+    if row.get("closed") is True:
         return False
-    if _coerce_boolish(row.get("archived"), False):
+    if row.get("archived") is True:
         return False
     end_ts, _ = _poly_end_timestamp_seconds(row, now)
     if end_ts is not None and end_ts < now:
@@ -865,7 +870,41 @@ class PolymarketFetcher(BaseOutletFetcher):
             return []
         now = time.time()
         raw_fetched = len(rows)
-        tradeable_rows = [r for r in rows if isinstance(r, dict) and _is_tradeable_market_dict(r, now)]
+        rejected_active = 0
+        rejected_closed = 0
+        rejected_archived = 0
+        rejected_expired = 0
+        rejected_no_price = 0
+        tradeable_rows: List[Dict[str, Any]] = []
+        for m in rows:
+            if not isinstance(m, dict):
+                continue
+            active_val = m.get("active")
+            if active_val is False:
+                rejected_active += 1
+                continue
+            if m.get("closed") is True:
+                rejected_closed += 1
+                continue
+            if m.get("archived") is True:
+                rejected_archived += 1
+                continue
+            end_ts, _ = _poly_end_timestamp_seconds(m, now)
+            if end_ts is not None and end_ts < now:
+                rejected_expired += 1
+                continue
+            tradeable_rows.append(m)
+        logger.info(
+            "Polymarket filter: total=%s rejected_active=%s rejected_closed=%s "
+            "rejected_archived=%s rejected_expired=%s rejected_no_price=%s passed=%s",
+            raw_fetched,
+            rejected_active,
+            rejected_closed,
+            rejected_archived,
+            rejected_expired,
+            rejected_no_price,
+            len(tradeable_rows),
+        )
         out: List[MarketSnapshot] = []
         for row in tradeable_rows:
             cid = str(row.get("condition_id") or row.get("id") or "")

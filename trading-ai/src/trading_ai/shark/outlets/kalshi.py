@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -160,12 +161,22 @@ class KalshiClient:
             data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=data, method=method, headers=self._auth_headers(method, url))
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                raw = resp.read().decode("utf-8")
-                if not raw.strip():
-                    return {}
-                out = json.loads(raw)
-                return out if isinstance(out, dict) else {"_data": out}
+            raw = ""
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(req, timeout=45) as resp:
+                        raw = resp.read().decode("utf-8")
+                    break
+                except ssl.SSLError as e:
+                    if attempt == 0:
+                        logger.warning("Kalshi SSL error (retry in 1s): %s", e)
+                        time.sleep(1)
+                        continue
+                    raise
+            if not raw.strip():
+                return {}
+            out = json.loads(raw)
+            return out if isinstance(out, dict) else {"_data": out}
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 logger.warning(

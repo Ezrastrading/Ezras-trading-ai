@@ -53,9 +53,9 @@ def main() -> None:
     try:
         import resource
 
-        _lim = 400 * 1024 * 1024
+        _lim = 512 * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (_lim, _lim))
-        log.info("Memory limit set: 400MB (RLIMIT_AS)")
+        log.info("Memory limit set: 512MB (RLIMIT_AS)")
     except (ValueError, OSError) as exc:
         log.warning("Memory limit not applied: %s", exc)
     boot_unix = time.time()
