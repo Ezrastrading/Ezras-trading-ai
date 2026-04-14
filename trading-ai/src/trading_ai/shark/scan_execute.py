@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Sequence, Tuple
 
-from trading_ai.shark.execution import run_execution_chain
+from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
 from trading_ai.shark.gap_hunter import confirm_pattern, gap_score, scan_for_gaps_stub
 from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_market
 from trading_ai.shark.models import MarketSnapshot, OpportunityTier
@@ -41,6 +41,10 @@ def run_scan_execution_cycle(
     Returns ``(markets_seen, execution_attempts)`` where attempts counts chains entered
     (tier above threshold), not necessarily filled.
     """
+    logger.info(
+        f"scan cycle: execute_live="
+        f"{_resolve_execute_live(None)}"
+    )
     markets = scan_markets(tuple(fetchers), fallback_demo=False)
     if not markets:
         _post_scan_balance_sync()

@@ -121,27 +121,31 @@ def main() -> None:
     def standard_scan() -> None:
         from trading_ai.shark.outlets import default_fetchers
 
-        n, att = run_scan_execution_cycle(tuple(default_fetchers()), tag="standard")
+        fetchers = tuple(default_fetchers())
+        n, att = run_scan_execution_cycle(fetchers, tag="standard_scan")
         log.info("standard_scan: markets=%s execution_attempts=%s", n, att)
 
     def hot_scan() -> None:
         from trading_ai.shark.outlets import default_fetchers
 
-        n, att = run_scan_execution_cycle(tuple(default_fetchers()), tag="hot")
+        fetchers = tuple(default_fetchers())
+        n, att = run_scan_execution_cycle(fetchers, tag="hot")
         log.info("hot_scan: markets=%s execution_attempts=%s", n, att)
 
     def gap_passive() -> None:
         from trading_ai.shark.outlets import default_fetchers
 
         run_gap_confirmed_hook()
-        n, att = run_scan_execution_cycle(tuple(default_fetchers()), tag="gap_passive")
+        fetchers = tuple(default_fetchers())
+        n, att = run_scan_execution_cycle(fetchers, tag="gap_passive")
         log.info("gap_passive: markets=%s execution_attempts=%s", n, att)
 
     def gap_active() -> None:
         from trading_ai.shark.outlets import default_fetchers
 
         run_gap_confirmed_hook()
-        n, att = run_scan_execution_cycle(tuple(default_fetchers()), tag="gap_active")
+        fetchers = tuple(default_fetchers())
+        n, att = run_scan_execution_cycle(fetchers, tag="gap_active")
         log.info("gap_active: markets=%s execution_attempts=%s", n, att)
 
     def resolution_monitor() -> None:
