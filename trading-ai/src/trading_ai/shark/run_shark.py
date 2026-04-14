@@ -428,7 +428,7 @@ def main() -> None:
             log.warning("kalshi stale order sweep failed: %s", exc)
 
     def kalshi_blitz() -> None:
-        """Final-5-minute blitz on hourly Kalshi crypto markets. Fires at :54:30 via CronTrigger."""
+        """Crypto blitz: runs every 2 minutes with a rolling close window (15m + hourly BTC markets)."""
         if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
             return
         try:

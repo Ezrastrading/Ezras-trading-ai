@@ -172,12 +172,11 @@ def build_shark_scheduler(
             id="kalshi_stale_orders",
             replace_existing=True,
         )
-    if kalshi_blitz is not None and CronTrigger is not None:
-        # Fires at HH:54:30 every hour — 5 min 30 sec before each hourly Kalshi crypto close (:00:00).
-        # 30s head-start accounts for fetch + concurrent order submission latency.
+    if kalshi_blitz is not None:
+        # Every 2 minutes — covers 15-minute BTC/crypto closes (:00/:15/:30/:45) with a rolling 6m window.
         sched.add_job(
             kalshi_blitz,
-            CronTrigger(minute=54, second=30),
+            IntervalTrigger(seconds=120),
             id="kalshi_blitz",
             replace_existing=True,
         )

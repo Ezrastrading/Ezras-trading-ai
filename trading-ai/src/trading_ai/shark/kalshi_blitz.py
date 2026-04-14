@@ -1,4 +1,4 @@
-"""Kalshi crypto blitz: last minutes before hourly (and 30m) closes — high-conviction market orders."""
+"""Kalshi crypto blitz: rolling window before crypto closes — hourly, 15-minute BTC, and range markets."""
 
 from __future__ import annotations
 
@@ -8,14 +8,18 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Kalshi crypto / BTC-ETH hourly & range roots (prefix match via series_ticker).
+# Kalshi crypto roots — include 15-minute BTC (KXBTC15, …); longest series roots first where relevant.
 _DEFAULT_BLITZ_SERIES: Tuple[str, ...] = (
+    "KXBTC15",
+    "KXBTCUSD",
     "KXBTCD",
     "KXETHD",
+    "BTC15",
+    "BTCUSD",
     "BTCZ",
     "KXBTC",
     "KXBTCZ",
@@ -33,7 +37,7 @@ def _blitz_series_list() -> List[str]:
 
 
 def _close_window_seconds() -> float:
-    """Default 360s (6 min) — :54:30 trigger + 6m window targets the :00 hourly close."""
+    """Default 360s (6 min) rolling window — aligns with :00 / :15 / :30 / :45 closes when job runs every 2 min."""
     raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "360").strip() or "360"
     try:
         return max(60.0, float(raw))
@@ -61,6 +65,41 @@ def _parse_env_int(name: str, default: int) -> int:
         return default
 
 
+def _fetch_open_markets_blitz(client: Any, *, max_rows: int = 2000) -> List[Dict[str, Any]]:
+    """Paginated GET /markets ``status=open`` — used to discover ``15`` series and merge extra crypto rows."""
+    out: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    while len(out) < max_rows:
+        lim = min(1000, max_rows - len(out))
+        if lim <= 0:
+            break
+        params: Dict[str, Any] = {"status": "open", "limit": lim}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            j = client._request("GET", "/markets", params=params)
+        except Exception:
+            break
+        batch = j.get("markets") or j.get("data") or []
+        if not isinstance(batch, list):
+            break
+        out.extend(m for m in batch if isinstance(m, dict))
+        cur = j.get("cursor") or j.get("next_cursor")
+        if not cur or len(batch) == 0:
+            break
+        cursor = str(cur)
+    return out[:max_rows]
+
+
+def _discovered_series_with_substring(open_rows: List[Dict[str, Any]], needle: str, *, cap: int = 40) -> List[str]:
+    roots: Set[str] = set()
+    for m in open_rows:
+        st = str(m.get("series_ticker") or "").strip().upper()
+        if needle in st and st:
+            roots.add(st)
+    return sorted(roots)[:cap]
+
+
 def run_kalshi_blitz() -> int:
     """Fetch crypto markets closing soon, filter by edge prob, split budget, fire market orders.
 
@@ -77,6 +116,7 @@ def run_kalshi_blitz() -> int:
         kalshi_min_position_usd,
     )
     from trading_ai.shark.models import HuntType, OpenPosition
+    from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
     from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
@@ -115,8 +155,20 @@ def run_kalshi_blitz() -> int:
         return 0
 
     now = time.time()
+    scan_lim = max(200, _parse_env_int("KALSHI_BLITZ_OPEN_SCAN_LIMIT", 2000))
+    open_rows = _fetch_open_markets_blitz(client, max_rows=scan_lim)
+    discovered_15 = _discovered_series_with_substring(open_rows, "15", cap=40)
+    base_series = _blitz_series_list()
+    series_union: List[str] = []
+    seen_series: Set[str] = set()
+    for s in list(base_series) + discovered_15:
+        u = s.strip().upper()
+        if u and u not in seen_series:
+            seen_series.add(u)
+            series_union.append(u)
+
     merged: Dict[str, Dict[str, Any]] = {}
-    for ser in _blitz_series_list():
+    for ser in series_union:
         try:
             rows = client.fetch_markets_for_series(ser, limit=120)
         except Exception as exc:
@@ -128,6 +180,25 @@ def run_kalshi_blitz() -> int:
             tid = str(row.get("ticker") or "").strip()
             if tid:
                 merged[tid] = row
+
+    # Extra crypto rows from open feed: TTR 1–10 min (15m cadence), not already in series merge.
+    open_feed_tickers: Set[str] = set()
+    for m in open_rows:
+        if not isinstance(m, dict):
+            continue
+        tid = str(m.get("ticker") or "").strip()
+        if not tid or tid in merged:
+            continue
+        if not kalshi_ticker_is_crypto(tid):
+            continue
+        end = _parse_close_timestamp_unix(m)
+        if end is None:
+            continue
+        ttr = end - now
+        if not (60.0 <= ttr <= 600.0):
+            continue
+        merged[tid] = m
+        open_feed_tickers.add(tid)
 
     n_total = len(merged)
     n_crypto = 0
@@ -142,12 +213,17 @@ def run_kalshi_blitz() -> int:
         if _kalshi_market_volume(m) < 1.0:
             continue
         n_crypto += 1
+        tid = str(m.get("ticker") or "").strip()
         end = _parse_close_timestamp_unix(m)
         if end is None:
             continue
         ttr = end - now
-        if ttr <= 0 or ttr > max_ttr or ttr > window_sec:
-            continue
+        if tid in open_feed_tickers:
+            if not (60.0 <= ttr <= 600.0):
+                continue
+        else:
+            if ttr <= 0 or ttr > max_ttr or ttr > window_sec:
+                continue
         n_in_window += 1
         try:
             row = client.enrich_market_with_detail_and_orderbook(dict(m))

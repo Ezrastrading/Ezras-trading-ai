@@ -7,11 +7,15 @@ from typing import Tuple
 
 # Longest-first matching avoids KXBTCD being swallowed by prefix "KXBTC".
 _DEFAULT_CRYPTO_ROOT_PREFIXES: Tuple[str, ...] = (
+    "KXBTC15",
+    "KXBTCUSD",
     "KXBTCZ",
     "KXBTCD",
     "KXETHD",
     "KXBTC",
     "KXETH",
+    "BTCUSD",
+    "BTC15",
     "BTCZ",
     "BTC",
     "ETH",
