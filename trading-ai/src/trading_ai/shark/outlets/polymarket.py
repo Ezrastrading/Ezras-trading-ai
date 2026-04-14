@@ -604,16 +604,20 @@ class PolymarketFetcher(BaseOutletFetcher):
     def fetch_binary_markets(self) -> List[MarketSnapshot]:
         """All CLOB markets via paginated ``/markets`` (``next_cursor`` until ``END_CURSOR``).
 
-        Optional env ``EZRAS_POLY_CLOB_MAX_PAGES`` (integer) caps pages for tests; unset = full sweep.
+        Env ``EZRAS_POLY_CLOB_MAX_PAGES`` overrides page count; default **2** pages to limit memory.
+        Set a higher integer or ``0`` (treated as no cap in env handling) only if you need full sweep.
         """
         try:
             from py_clob_client.constants import END_CURSOR
         except ImportError:
             END_CURSOR = "LTE="
-        max_pages: Optional[int] = None
         raw_cap = (os.environ.get("EZRAS_POLY_CLOB_MAX_PAGES") or "").strip()
-        if raw_cap.isdigit():
+        if raw_cap.isdigit() and int(raw_cap) == 0:
+            max_pages: Optional[int] = None
+        elif raw_cap.isdigit():
             max_pages = max(1, int(raw_cap))
+        else:
+            max_pages = 2
         base = self.CLOB_BASE.rstrip("/")
         cursor = "MA=="
         rows: List[Dict[str, Any]] = []
@@ -678,7 +682,6 @@ class PolymarketFetcher(BaseOutletFetcher):
                 "yes_token_id": yes_tid,
                 "no_token_id": no_tid,
                 "token_id": yes_tid or no_tid,
-                "poly_clob_row": row,
             }
             out.append(
                 MarketSnapshot(

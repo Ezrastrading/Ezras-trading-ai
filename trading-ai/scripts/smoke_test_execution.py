@@ -5,7 +5,7 @@ Does not submit real orders: ``run_execution_chain(..., execute_live=False)``.
 
 Prints ``execute_live`` = ``_resolve_execute_live(None)`` from the current env (true when
 ``EZRAS_DRY_RUN`` is unset/false). For a quick Polymarket sample, ``EZRAS_POLY_CLOB_MAX_PAGES``
-defaults to 15 pages (~15k rows) unless set.
+defaults to 2 pages unless set (memory-friendly).
 
 Run from trading-ai repo root:
   PYTHONPATH=src python3.11 scripts/smoke_test_execution.py
@@ -27,7 +27,7 @@ if str(_REPO / "src") not in os.environ.get("PYTHONPATH", ""):
 
 os.environ.setdefault("EZRAS_DRY_RUN", "true")
 os.environ.setdefault("EZRAS_RUNTIME_ROOT", str(Path.home() / "ezras-runtime"))
-os.environ.setdefault("EZRAS_POLY_CLOB_MAX_PAGES", "15")
+os.environ.setdefault("EZRAS_POLY_CLOB_MAX_PAGES", "2")
 
 
 def _load_env() -> None:

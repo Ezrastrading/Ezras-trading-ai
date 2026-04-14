@@ -12,6 +12,8 @@ from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 _MIN_VOLUME_24H_DEFAULT = 500.0
 _HUNT6_MIN_VOLUME_24H = 300.0
 _DEPTH_MIN = 50.0
+# Full hunt suite (1–7 + cross) only when 24h volume exceeds this; else Hunts 1–2 only (memory/CPU).
+_FULL_HUNT_MIN_VOLUME_24H = 1000.0
 
 
 def _volume_ok(vol: float, minimum: float = _MIN_VOLUME_24H_DEFAULT) -> bool:
@@ -224,8 +226,14 @@ def run_hunts_on_market(
     now: Optional[float] = None,
     macro_feed: Optional[Dict[str, Any]] = None,
 ) -> List[HuntSignal]:
-    """Run hunt types 1–7; cross-platform uses cross_context map event_key -> markets."""
+    """Run Hunts 1–2 only when volume is low; full suite (3–7 + cross) when volume > $1k / 24h."""
     sigs: List[HuntSignal] = []
+    if m.volume_24h <= _FULL_HUNT_MIN_VOLUME_24H:
+        for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage):
+            r = fn(m)
+            if r:
+                sigs.append(r)
+        return sigs
     for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
         r = fn(m)
         if r:

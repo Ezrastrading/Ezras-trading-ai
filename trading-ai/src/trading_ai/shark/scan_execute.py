@@ -5,6 +5,7 @@ Manifold routes to mana sandbox (silent learning); Kalshi/Polymarket use real ch
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import time
@@ -14,12 +15,15 @@ from trading_ai.shark.capital_effective import effective_capital_for_outlet
 from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
 from trading_ai.shark.gap_hunter import confirm_pattern, gap_score, scan_for_gaps_stub
 from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_market
-from trading_ai.shark.models import MarketSnapshot, OpportunityTier
+from trading_ai.shark.models import OpportunityTier
 from trading_ai.shark.scanner import OutletFetcher, record_opportunity_for_burst, scan_markets
 from trading_ai.shark.scorer import score_opportunity
 from trading_ai.shark.state_store import load_capital
 
 logger = logging.getLogger(__name__)
+
+_BATCH_SIZE = 50
+_TOP_PER_BATCH = 5
 
 
 def _post_scan_balance_sync() -> None:
@@ -39,6 +43,9 @@ def run_scan_execution_cycle(
     """
     Fetch markets, run hunts + scoring, execute chain per qualifying market.
 
+    Markets are processed in batches of ``_BATCH_SIZE``; only the top ``_TOP_PER_BATCH``
+    by score in each batch are considered for execution (memory bound).
+
     Returns ``(markets_seen, execution_attempts)`` where attempts counts chains entered
     (tier above threshold), not necessarily filled.
     """
@@ -51,89 +58,99 @@ def run_scan_execution_cycle(
         _post_scan_balance_sync()
         return 0, 0
 
-    logger.info("Processing %s markets through hunt engine", len(markets))
+    logger.info("Processing %s markets through hunt engine (batched)", len(markets))
     cross = group_markets_by_event(markets)
     now = time.time()
     rec = load_capital()
     capital = float(rec.current_capital)
     attempts = 0
-    hunt_results: list = []
-    for m in markets:
-        hunts = run_hunts_on_market(m, cross_context=cross, now=now)
-        hunt_results.append(hunts)
-        if not hunts:
-            continue
-        scored = score_opportunity(m, hunts)
-        if scored.tier == OpportunityTier.BELOW_THRESHOLD:
-            continue
-        record_opportunity_for_burst(now)
-        attempts += 1
-        outlet = (m.outlet or "").strip() or "unknown"
-        if outlet.lower() == "manifold":
-            from trading_ai.shark.capital_phase import detect_phase, phase_params
-            from trading_ai.shark.executor import build_execution_intent
-            from trading_ai.shark.mana_sandbox import execute_mana_trade, load_mana_state
-            from trading_ai.shark.risk_context import build_risk_context
+    hunt_nonempty = 0
 
-            ms = load_mana_state()
-            mana_cap = float(ms.get("mana_balance", 0) or 0)
-            mana_peak = float(ms.get("mana_peak", mana_cap) or mana_cap)
-            phase = detect_phase(mana_cap)
-            pp = phase_params(phase)
-            risk = build_risk_context(
-                current_capital=mana_cap,
-                peak_capital=mana_peak,
-                base_min_edge=pp.min_edge,
-                last_trade_unix=rec.last_trade_unix,
-                now_unix=now,
-            )
-            intent = build_execution_intent(
-                scored,
-                capital=mana_cap,
-                outlet="manifold",
-                gap_exploitation_mode=False,
-                current_gap_exposure_fraction=0.0,
-                min_edge_effective=risk.effective_min_edge,
-                risk_position_multiplier=risk.position_size_multiplier,
-                market_category=m.market_category,
-                is_mana=True,
-                current_drawdown_pct=risk.drawdown_from_peak,
-            )
-            if intent is not None:
-                try:
-                    execute_mana_trade(intent, scored=scored)
-                except Exception:
-                    logger.exception("%s: mana sandbox failed for %s", tag, m.market_id)
-            logger.info(
-                "%s mana_sandbox: market=%s ok=intent=%s",
-                tag,
-                m.market_id,
-                intent is not None,
-            )
-            continue
+    for i in range(0, len(markets), _BATCH_SIZE):
+        batch = markets[i : i + _BATCH_SIZE]
+        batch_rows: list[tuple] = []
+        for m in batch:
+            hunts = run_hunts_on_market(m, cross_context=cross, now=now)
+            if not hunts:
+                continue
+            hunt_nonempty += 1
+            batch_rows.append((score_opportunity(m, hunts), m))
+        batch_rows.sort(key=lambda t: -t[0].score)
+        for scored, m in batch_rows[:_TOP_PER_BATCH]:
+            if scored.tier == OpportunityTier.BELOW_THRESHOLD:
+                continue
+            record_opportunity_for_burst(now)
+            attempts += 1
+            outlet = (m.outlet or "").strip() or "unknown"
+            if outlet.lower() == "manifold":
+                from trading_ai.shark.capital_phase import detect_phase, phase_params
+                from trading_ai.shark.executor import build_execution_intent
+                from trading_ai.shark.mana_sandbox import execute_mana_trade, load_mana_state
+                from trading_ai.shark.risk_context import build_risk_context
 
-        cap_for = effective_capital_for_outlet(outlet, capital)
-        try:
-            res = run_execution_chain(
-                scored,
-                capital=cap_for,
-                outlet=outlet,
-                strategy_key="shark_default",
-            )
-            logger.info(
-                "%s chain: market=%s outlet=%s ok=%s halted=%s",
-                tag,
-                m.market_id,
-                outlet,
-                res.ok,
-                res.halted_at,
-            )
-        except Exception:
-            logger.exception("%s: run_execution_chain failed for %s", tag, m.market_id)
+                ms = load_mana_state()
+                mana_cap = float(ms.get("mana_balance", 0) or 0)
+                mana_peak = float(ms.get("mana_peak", mana_cap) or mana_cap)
+                phase = detect_phase(mana_cap)
+                pp = phase_params(phase)
+                risk = build_risk_context(
+                    current_capital=mana_cap,
+                    peak_capital=mana_peak,
+                    base_min_edge=pp.min_edge,
+                    last_trade_unix=rec.last_trade_unix,
+                    now_unix=now,
+                )
+                intent = build_execution_intent(
+                    scored,
+                    capital=mana_cap,
+                    outlet="manifold",
+                    gap_exploitation_mode=False,
+                    current_gap_exposure_fraction=0.0,
+                    min_edge_effective=risk.effective_min_edge,
+                    risk_position_multiplier=risk.position_size_multiplier,
+                    market_category=m.market_category,
+                    is_mana=True,
+                    current_drawdown_pct=risk.drawdown_from_peak,
+                )
+                if intent is not None:
+                    try:
+                        execute_mana_trade(intent, scored=scored)
+                    except Exception:
+                        logger.exception("%s: mana sandbox failed for %s", tag, m.market_id)
+                logger.info(
+                    "%s mana_sandbox: market=%s ok=intent=%s",
+                    tag,
+                    m.market_id,
+                    intent is not None,
+                )
+                continue
+
+            cap_for = effective_capital_for_outlet(outlet, capital)
+            try:
+                res = run_execution_chain(
+                    scored,
+                    capital=cap_for,
+                    outlet=outlet,
+                    strategy_key="shark_default",
+                )
+                logger.info(
+                    "%s chain: market=%s outlet=%s ok=%s halted=%s",
+                    tag,
+                    m.market_id,
+                    outlet,
+                    res.ok,
+                    res.halted_at,
+                )
+            except Exception:
+                logger.exception("%s: run_execution_chain failed for %s", tag, m.market_id)
+
+        del batch_rows
+        del batch
+        gc.collect()
 
     logger.info(
         "Hunt results: %s markets with qualifying hunts",
-        len([h for h in hunt_results if h]),
+        hunt_nonempty,
     )
     _touch_last_scan_unix(time.time())
     _post_scan_balance_sync()
