@@ -453,6 +453,11 @@ class KalshiClient:
         ``top_n`` defaults to ``KALSHI_FETCH_TOP_N``; per-series merge cap from ``KALSHI_SERIES_MERGE_CAP``.
         """
         from trading_ai.shark import kalshi_limits
+        from trading_ai.shark.kalshi_crypto import (
+            kalshi_exclude_crypto_from_hv,
+            kalshi_non_crypto_series_for_active_pool,
+            kalshi_ticker_is_crypto,
+        )
 
         tn = top_n if top_n is not None else kalshi_limits.kalshi_fetch_top_n()
         now = time.time()
@@ -461,7 +466,8 @@ class KalshiClient:
         batch_lim = kalshi_limits.kalshi_markets_api_batch_limit()
         merge: Dict[str, Dict[str, Any]] = {}
 
-        for ser in KALSHI_GOOD_SERIES:
+        series_roots = kalshi_non_crypto_series_for_active_pool()
+        for ser in series_roots:
             for row in self.fetch_markets_for_series(ser, limit=merge_cap):
                 if not isinstance(row, dict):
                     continue
@@ -514,6 +520,7 @@ class KalshiClient:
             )
 
         rejected_tradeable = 0
+        rejected_crypto = 0
         rejected_volume = 0
         rejected_price = 0
         rejected_time = 0
@@ -521,6 +528,10 @@ class KalshiClient:
 
         for m in all_markets:
             if not isinstance(m, dict):
+                continue
+            tid_f = str(m.get("ticker") or "").strip()
+            if kalshi_exclude_crypto_from_hv() and tid_f and kalshi_ticker_is_crypto(tid_f):
+                rejected_crypto += 1
                 continue
             if not _kalshi_market_tradeable_core(m, now):
                 rejected_tradeable += 1
@@ -547,9 +558,10 @@ class KalshiClient:
             candidates.append(m_row)
 
         logger.info(
-            "Kalshi filter breakdown: total=%s rejected_tradeable=%s rejected_volume=%s "
+            "Kalshi filter breakdown: total=%s rejected_crypto=%s rejected_tradeable=%s rejected_volume=%s "
             "rejected_price=%s rejected_time=%s passed=%s",
             len(all_markets),
+            rejected_crypto,
             rejected_tradeable,
             rejected_volume,
             rejected_price,
@@ -601,11 +613,14 @@ class KalshiClient:
         ticker: str,
         side: str,
         count: int,
+        action: str = "buy",
         yes_price_cents: Optional[int] = None,
         order_type: str = "limit",
         time_in_force: Optional[str] = None,
     ) -> OrderResult:
         """
+        ``action``: ``buy`` (default) or ``sell`` (exit / take profit).
+
         ``order_type``: ``limit`` (default) requires ``yes_price_cents``; ``market`` crosses at best available.
 
         ``time_in_force``: optional Kalshi values e.g. ``immediate_or_cancel``, ``good_till_canceled``.
@@ -617,9 +632,12 @@ class KalshiClient:
         ot = (order_type or "limit").strip().lower()
         if ot not in ("limit", "market"):
             ot = "limit"
+        act = (action or "buy").strip().lower()
+        if act not in ("buy", "sell"):
+            act = "buy"
         body: Dict[str, Any] = {
             "ticker": ticker,
-            "action": "buy",
+            "action": act,
             "side": side,
             "type": ot,
             "count": count,
@@ -797,6 +815,7 @@ KALSHI_SKIP_PREFIXES: Tuple[str, ...] = (
 # Prefer these single-event roots (prefix match on ``ticker`` or ``series_ticker``).
 # Sports season/championship (KXNBA, …), same-day game lines (KX* TODAY), indices, BTCZ, weather.
 KALSHI_GOOD_SERIES: Tuple[str, ...] = (
+    # --- Sports ---
     "KXNBA",
     "KXNFL",
     "KXMLB",
@@ -805,36 +824,63 @@ KALSHI_GOOD_SERIES: Tuple[str, ...] = (
     "KXESPORTS",
     "KXCSGO",
     "KXSOCCER",
+    "KXSOC",        # alternate soccer series prefix
     "KXMMA",
     "KXNBATODAY",
     "KXNFLTODAY",
     "KXMLBTODAY",
-    "INXD",
-    "BTCZ",
-    "HIGHTEMP",
-    "KXBTCD",
-    "KXETHD",
-    "NASDAQ",
-    "BTC",
-    "ETH",
-    "FED",
-    "CPI",
-    "JOBS",
+    # --- News / Politics ---
+    "KXPOL",
+    "KXNWS",
     "TRUMP",
     "CONGRESS",
-    "KXBTC",
-    "KXBTCZ",
-    "KXETH",
+    "KXTRUMP",
+    "KXCONGRESS",
+    # --- Economic ---
     "KXFED",
     "KXCPI",
     "KXJOBS",
+    "KXECON",
+    "FED",
+    "CPI",
+    "JOBS",
+    # --- Indices / Weather ---
+    "INXD",
+    "HIGHTEMP",
+    "NASDAQ",
     "KXHIGHTEMP",
     "KXINX",
     "KXNDX",
     "KXNASDAQ",
-    "KXTRUMP",
-    "KXCONGRESS",
+    # --- Crypto (blitz-only; kept here so the generic feed fetches them,
+    #     but hunt_near_resolution_hv skips them via kalshi_ticker_is_crypto) ---
+    "BTCZ",
+    "KXBTCD",
+    "KXETHD",
+    "BTC",
+    "ETH",
+    "KXBTC",
+    "KXBTCZ",
+    "KXETH",
 )
+
+
+def _effective_kalshi_good_series() -> Tuple[str, ...]:
+    """``KALSHI_GOOD_SERIES`` extended by ``KALSHI_NON_CRYPTO_SERIES`` env var (comma-separated).
+
+    Operators can inject additional series without redeploying code.
+    Example: ``KALSHI_NON_CRYPTO_SERIES=KXPGA,KXNASCAR``
+    """
+    extra_raw = (os.environ.get("KALSHI_NON_CRYPTO_SERIES") or "").strip()
+    if not extra_raw:
+        return KALSHI_GOOD_SERIES
+    existing = set(KALSHI_GOOD_SERIES)
+    new = tuple(
+        s.strip().upper()
+        for s in extra_raw.split(",")
+        if s.strip() and s.strip().upper() not in existing
+    )
+    return KALSHI_GOOD_SERIES + new
 
 # Live / same-session sports — polled aggressively for HV near-resolution.
 KALSHI_LIVE_SERIES: Tuple[str, ...] = (

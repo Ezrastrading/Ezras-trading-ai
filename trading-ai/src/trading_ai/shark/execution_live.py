@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 SleepFn = Callable[[float], None]
 
 
+def _log_kalshi_hv_order_mode_startup() -> None:
+    mode = (os.environ.get("KALSHI_HV_ORDER_MODE") or "market").strip().lower()
+    logger.info("Kalshi HV order mode: %s", mode)
+
+
+_log_kalshi_hv_order_mode_startup()
+
+
 def ezras_dry_run_from_env() -> bool:
     """True when ``EZRAS_DRY_RUN`` is set to a truthy value (1, true, yes). Default: false → live execution."""
     v = (os.environ.get("EZRAS_DRY_RUN") or "").strip().lower()

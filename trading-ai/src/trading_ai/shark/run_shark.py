@@ -275,6 +275,12 @@ def main() -> None:
 
     def resolution_monitor() -> None:
         try:
+            from trading_ai.shark.kalshi_profit_exit import run_kalshi_profit_exit_scan
+
+            run_kalshi_profit_exit_scan()
+        except Exception as exc:
+            log.warning("kalshi profit exit scan failed (non-blocking): %s", exc)
+        try:
             from trading_ai.shark.mana_sandbox import tick_mana_resolutions
 
             n = tick_mana_resolutions()
@@ -422,14 +428,24 @@ def main() -> None:
 
     def kalshi_blitz() -> None:
         """Final-5-minute blitz on hourly Kalshi crypto markets. Fires at :54:30 via CronTrigger."""
+        if (os.environ.get("KALSHI_BLITZ_ENABLED") or "false").strip().lower() not in ("1", "true", "yes"):
+            return
         try:
             from trading_ai.shark.kalshi_blitz import run_kalshi_blitz
 
-            n = run_kalshi_blitz()
-            if n:
-                log.info("kalshi_blitz: placed=%s trades", n)
+            run_kalshi_blitz()
         except Exception as exc:
             log.warning("kalshi_blitz failed (non-blocking): %s", exc)
+
+    def kalshi_non_crypto_hf() -> None:
+        if (os.environ.get("KALSHI_NC_HF_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from trading_ai.shark.kalshi_non_crypto_hf import run_kalshi_non_crypto_hf
+
+            run_kalshi_non_crypto_hf()
+        except Exception as exc:
+            log.warning("kalshi non-crypto HF failed (non-blocking): %s", exc)
 
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
@@ -459,6 +475,7 @@ def main() -> None:
         live_sports_scan=live_sports_hv_scan,
         kalshi_stale_order_sweep=kalshi_stale_order_sweep,
         kalshi_blitz=kalshi_blitz,
+        kalshi_non_crypto_hf=kalshi_non_crypto_hf,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

@@ -58,6 +58,7 @@ def build_shark_scheduler(
     live_sports_scan: Optional[Callable[[], None]] = None,
     kalshi_stale_order_sweep: Optional[Callable[[], None]] = None,
     kalshi_blitz: Optional[Callable[[], None]] = None,
+    kalshi_non_crypto_hf: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -178,6 +179,13 @@ def build_shark_scheduler(
             kalshi_blitz,
             CronTrigger(minute=54, second=30),
             id="kalshi_blitz",
+            replace_existing=True,
+        )
+    if kalshi_non_crypto_hf is not None:
+        sched.add_job(
+            kalshi_non_crypto_hf,
+            IntervalTrigger(seconds=30),
+            id="kalshi_nc_hf",
             replace_existing=True,
         )
     return sched

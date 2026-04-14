@@ -2324,6 +2324,28 @@ def test_126c_kalshi_blitz_job_registered():
     assert "kalshi_blitz" in ids
 
 
+def test_126d_kalshi_non_crypto_hf_job_registered():
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        kalshi_non_crypto_hf=lambda: None,
+    )
+    assert sched is not None
+    ids = [j.id for j in sched.get_jobs()]
+    assert "kalshi_nc_hf" in ids
+
+
 def test_127_polymarket_uses_limit_slippage_not_market_order_api():
     from pathlib import Path
 

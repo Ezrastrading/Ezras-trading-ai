@@ -16,6 +16,8 @@ _HV_TIERS: Tuple[Tuple[float, float, str], ...] = (
     (0.90, 0.30, "T3"),
 )
 
+# Never emit HV on a side below this (guards range / feed quirks vs tier math alone).
+_MIN_HV_TRADABLE_PROB = 0.88
 
 def _hv_metaculus_agrees_yes(m: MarketSnapshot, yes: float) -> bool:
     u = m.underlying_data_if_available or {}
@@ -59,10 +61,17 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
         return None
     fy = float(yes)
     fn = float(no)
+    if max(fy, fn) < _MIN_HV_TRADABLE_PROB:
+        return None
     is_kalshi = (m.outlet or "").lower() == "kalshi"
     ttr = float(m.time_to_resolution_seconds or 0.0)
     kalshi_expiry_tier: Optional[str] = None
     if is_kalshi:
+        from trading_ai.shark.kalshi_crypto import kalshi_exclude_crypto_from_hv, kalshi_ticker_is_crypto
+
+        if kalshi_exclude_crypto_from_hv() and kalshi_ticker_is_crypto(str(m.market_id or "")):
+            return None
+
         from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
 
         kalshi_expiry_tier = classify_kalshi_expiry_tier(ttr)
@@ -70,7 +79,8 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
             return None
 
     for thr, frac, tier in _HV_TIERS:
-        if fy >= thr:
+        floor = max(thr, _MIN_HV_TRADABLE_PROB)
+        if fy >= floor:
             if is_kalshi and kalshi_expiry_tier == "A" and tier == "T3":
                 return None
             boost = 1.25 if _hv_metaculus_agrees_yes(m, fy) else 1.0
@@ -93,7 +103,8 @@ def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
                 details=details,
             )
     for thr, frac, tier in _HV_TIERS:
-        if fn >= thr:
+        floor = max(thr, _MIN_HV_TRADABLE_PROB)
+        if fn >= floor:
             if is_kalshi and kalshi_expiry_tier == "A" and tier == "T3":
                 return None
             boost = 1.25 if _hv_metaculus_agrees_no(m, fn) else 1.0
