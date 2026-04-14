@@ -73,6 +73,14 @@ def main() -> None:
     load_bayesian_into_memory()
 
     try:
+        from trading_ai.shark.mana_sandbox import maybe_run_mana_loss_learning_on_startup
+
+        loss_rep = maybe_run_mana_loss_learning_on_startup()
+        log.info("Mana loss learning startup: %s", loss_rep)
+    except Exception as exc:
+        log.warning("Mana loss learning startup failed (non-blocking): %s", exc)
+
+    try:
         from trading_ai.shark.health_server import start_health_server
 
         hp = int(os.environ.get("PORT") or 8080)

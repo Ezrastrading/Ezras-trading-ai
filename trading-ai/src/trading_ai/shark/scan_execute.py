@@ -97,11 +97,16 @@ def run_scan_execution_cycle(
         batch_rows: list[tuple] = []
         for j, m in enumerate(batch):
             global_idx = i + j
+            htf = hunt_types_filter
+            if (m.outlet or "").strip().lower() == "manifold":
+                from trading_ai.shark.mana_sandbox import mana_effective_hunt_filter
+
+                htf = mana_effective_hunt_filter(hunt_types_filter)
             hunts = run_hunts_on_market(
                 m,
                 cross_context=cross,
                 now=now,
-                hunt_types_filter=hunt_types_filter,
+                hunt_types_filter=htf,
                 hunt_diag_index=global_idx if global_idx < 10 else None,
             )
             if not hunts:
@@ -118,9 +123,18 @@ def run_scan_execution_cycle(
             if outlet.lower() == "manifold":
                 from trading_ai.shark.capital_phase import detect_phase, phase_params
                 from trading_ai.shark.executor import build_execution_intent
-                from trading_ai.shark.mana_sandbox import execute_mana_trade, load_mana_state
+                from trading_ai.shark.mana_sandbox import (
+                    MANA_RECOVERY_MAX_STAKE_FRACTION,
+                    MANA_RECOVERY_MIN_CERTAINTY,
+                    execute_mana_trade,
+                    is_btc_five_min_market,
+                    is_mana_recovery_mode,
+                    load_mana_state,
+                    mana_effective_min_edge_for_intent,
+                )
                 from trading_ai.shark.risk_context import build_risk_context
 
+                intent = None
                 ms = load_mana_state()
                 mana_cap = float(ms.get("mana_balance", 0) or 0)
                 mana_peak = float(ms.get("mana_peak", mana_cap) or mana_cap)
@@ -133,19 +147,45 @@ def run_scan_execution_cycle(
                     last_trade_unix=rec.last_trade_unix,
                     now_unix=now,
                 )
+                if is_mana_recovery_mode():
+                    mxp = max(float(m.yes_price), float(m.no_price))
+                    if mxp < MANA_RECOVERY_MIN_CERTAINTY:
+                        logger.info(
+                            "%s mana recovery: skip (certainty %.3f < %.2f) %s",
+                            tag,
+                            mxp,
+                            MANA_RECOVERY_MIN_CERTAINTY,
+                            m.market_id,
+                        )
+                        continue
+                    if not is_btc_five_min_market(m):
+                        logger.info("%s mana recovery: skip (not BTC 5m) %s", tag, m.market_id)
+                        continue
+                hunt_labels = [h.hunt_type.value for h in scored.hunts]
+                min_e = mana_effective_min_edge_for_intent(risk.effective_min_edge, hunt_labels)
                 intent = build_execution_intent(
                     scored,
                     capital=mana_cap,
                     outlet="manifold",
                     gap_exploitation_mode=False,
                     current_gap_exposure_fraction=0.0,
-                    min_edge_effective=risk.effective_min_edge,
+                    min_edge_effective=min_e,
                     risk_position_multiplier=risk.position_size_multiplier,
                     market_category=m.market_category,
                     is_mana=True,
                     current_drawdown_pct=risk.drawdown_from_peak,
                 )
                 if intent is not None:
+                    intent.meta["question_text"] = (
+                        m.question_text or m.resolution_criteria or str(m.market_id)
+                    )[:500]
+                    if is_mana_recovery_mode():
+                        cap_st = MANA_RECOVERY_MAX_STAKE_FRACTION
+                        if intent.stake_fraction_of_capital > cap_st:
+                            intent.stake_fraction_of_capital = cap_st
+                            intent.notional_usd = max(0.0, mana_cap * cap_st)
+                            px = max(intent.expected_price, 1e-6)
+                            intent.shares = max(1, int(intent.notional_usd / px))
                     from trading_ai.shark.claude_eval import apply_claude_evaluator_gate
 
                     ok_m, halt_m = apply_claude_evaluator_gate(scored, intent, capital=mana_cap)

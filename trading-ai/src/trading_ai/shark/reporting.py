@@ -186,6 +186,52 @@ def format_loss_resolved(*, pnl: float, capital: float, cluster_status: str) -> 
     )
 
 
+def send_loss_postmortem_alert(postmortem: Dict[str, Any], analysis: Dict[str, Any]) -> bool:
+    """Telegram summary after mana loss post-mortem + Claude adaptation (HTML-safe)."""
+    import html
+
+    mana = float(postmortem.get("total_mana_lost", 0) or 0)
+    n = int(postmortem.get("total_losses", 0) or 0)
+    root = html.escape(str(analysis.get("root_cause", ""))[:500])
+    patterns = analysis.get("patterns") or []
+    if not isinstance(patterns, list):
+        patterns = []
+    pat_lines = "\n".join(f"- {html.escape(str(p)[:200])}" for p in patterns[:6]) or "- (none listed)"
+    recovery = html.escape(str(analysis.get("recovery_strategy", ""))[:500])
+    pc = analysis.get("parameter_changes") or {}
+    if not isinstance(pc, dict):
+        pc = {}
+    hunts = pc.get("hunt_type_to_disable") or []
+    if not isinstance(hunts, list):
+        hunts = []
+    edge_adj = pc.get("min_edge_adjustment") or {}
+    if not isinstance(edge_adj, dict):
+        edge_adj = {}
+    edge_lines = "\n".join(
+        f"- {html.escape(str(k))}: {html.escape(str(v))}" for k, v in list(edge_adj.items())[:8]
+    )
+    if not edge_lines:
+        edge_lines = "- (none)"
+    hunts_txt = ", ".join(html.escape(str(h)) for h in hunts) if hunts else "(none)"
+    body = (
+        "📉 MANA LOSS ANALYSIS\n"
+        f" Lost: {mana:.0f} mana\n"
+        f" Trades: {n} losing trades\n\n"
+        "🤖 Claude Analysis:\n"
+        f"Root cause: {root}\n\n"
+        "Key patterns:\n"
+        f"{pat_lines}\n\n"
+        "Recovery strategy:\n"
+        f"{recovery}\n\n"
+        "Changes applied:\n"
+        f"- Hunts disabled: {hunts_txt}\n"
+        f"- Edge adjustments:\n{edge_lines}\n\n"
+        "System is adapting. 🦈"
+    )
+    _remember("mana_loss_postmortem", {"text": body})
+    return bool(send_telegram(body))
+
+
 def format_gap_closed(*, duration: str, total_captured: float) -> str:
     return (
         "🔒 GAP CLOSED\n"

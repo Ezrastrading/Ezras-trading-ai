@@ -1539,6 +1539,59 @@ def test_100_mana_summary_returns_expected_structure(tmp_path, monkeypatch):
         assert key in s
 
 
+def test_100a_mana_loss_postmortem_and_learning_skip(tmp_path, monkeypatch):
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    from trading_ai.governance.storage_architecture import shark_state_path
+    from trading_ai.shark import mana_sandbox as ms
+
+    st = ms.load_mana_state()
+    st["mana_resolution_history"] = [
+        {
+            "resolved_at": 1000.0,
+            "market_id": "manifold:x",
+            "outcome": "loss",
+            "hunt_type_used": "near_resolution",
+            "hunt_types": ["near_resolution"],
+            "edge_detected": 0.04,
+            "side_taken": "YES",
+            "mana_staked": 10.0,
+            "mana_lost": 10.0,
+            "mana_pnl": -10.0,
+            "claude_reasoning": "test",
+            "actual_resolution": "NO",
+        }
+    ]
+    st["last_claude_loss_analysis_max_resolved_at"] = 0.0
+    ms.save_mana_state(st)
+    pm = ms.get_loss_postmortem()
+    assert pm["total_losses"] == 1
+    assert pm["total_mana_lost"] == 10.0
+    assert "near_resolution" in pm["losing_hunt_types"]
+
+    monkeypatch.setattr(
+        "trading_ai.shark.claude_eval.claude_analyze_losses",
+        lambda _p: {
+            "root_cause": "test",
+            "patterns": ["p1"],
+            "parameter_changes": {"hunt_type_to_disable": [], "min_edge_adjustment": {}},
+            "recovery_strategy": "wait",
+            "confidence_in_analysis": 0.5,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "trading_ai.shark.reporting.send_loss_postmortem_alert",
+        lambda *_a, **_k: True,
+        raising=False,
+    )
+    rep = ms.maybe_run_mana_loss_learning_on_startup()
+    assert rep.get("ran") is True
+    rep2 = ms.maybe_run_mana_loss_learning_on_startup()
+    assert rep2.get("ran") is False
+    lf = shark_state_path("claude_learnings.json")
+    assert lf.is_file()
+
+
 def test_101_kalshi_still_routes_to_run_execution_chain(tmp_path, monkeypatch):
     from trading_ai.shark import scan_execute as se
     from trading_ai.shark.execution import ChainResult
