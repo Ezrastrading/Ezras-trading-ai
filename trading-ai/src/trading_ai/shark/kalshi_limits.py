@@ -45,3 +45,23 @@ def count_kalshi_open_positions() -> int:
         for p in (data.get("open_positions") or [])
         if str(p.get("outlet") or "").lower() == "kalshi"
     )
+
+
+def kalshi_hv_max_open_positions() -> int:
+    """HV near-resolution: max simultaneous Kalshi opens (default 3, capped by general env)."""
+    raw = (os.environ.get("KALSHI_HV_MAX_OPEN_POSITIONS") or "3").strip() or "3"
+    try:
+        hv = max(1, min(10, int(float(raw))))
+    except (TypeError, ValueError):
+        hv = 3
+    return min(hv, kalshi_max_open_positions_from_env())
+
+
+def kalshi_open_notional_usd() -> float:
+    from trading_ai.shark.state_store import load_positions
+
+    return sum(
+        float(p.get("notional_usd", 0) or 0)
+        for p in (load_positions().get("open_positions") or [])
+        if str(p.get("outlet") or "").lower() == "kalshi"
+    )

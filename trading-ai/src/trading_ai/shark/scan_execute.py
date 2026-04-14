@@ -23,7 +23,13 @@ from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_ma
 from trading_ai.shark.models import HuntType, OpportunityTier
 from trading_ai.shark.scanner import OutletFetcher, record_opportunity_for_burst, scan_markets
 from trading_ai.shark.scorer import score_opportunity
-from trading_ai.shark.state_store import load_capital, load_kalshi_price_history, merge_kalshi_prices_from_scan
+from trading_ai.shark.state_store import (
+    count_kalshi_trades_opened_today_et,
+    get_daily_trade_limit_for_capital,
+    load_capital,
+    load_kalshi_price_history,
+    merge_kalshi_prices_from_scan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,8 +293,15 @@ def run_scan_execution_cycle(
                             px = max(intent.expected_price, 1e-6)
                             intent.shares = max(1, int(intent.notional_usd / px))
                     from trading_ai.shark.claude_eval import apply_claude_evaluator_gate
+                    from trading_ai.shark.models import HuntType
 
-                    ok_m, halt_m = apply_claude_evaluator_gate(scored, intent, capital=mana_cap)
+                    skip_claude = HuntType.NEAR_RESOLUTION_HV in (intent.hunt_types or []) and float(
+                        intent.estimated_win_probability or 0
+                    ) >= 0.949
+                    if skip_claude:
+                        ok_m, halt_m = True, ""
+                    else:
+                        ok_m, halt_m = apply_claude_evaluator_gate(scored, intent, capital=mana_cap)
                     if not ok_m:
                         logger.info("%s mana_sandbox: Claude gate blocked (%s) %s", tag, halt_m, m.market_id)
                     else:
@@ -312,6 +325,20 @@ def run_scan_execution_cycle(
                     tag,
                     outlet,
                     m.market_id,
+                )
+                continue
+
+            if (os.environ.get("EZRAS_KALSHI_DAILY_CAP_DISABLED") or "").strip().lower() in ("1", "true", "yes"):
+                n_k_today, daily_cap = 0, 10**9
+            else:
+                daily_cap = get_daily_trade_limit_for_capital(capital)
+                n_k_today = count_kalshi_trades_opened_today_et()
+            if n_k_today >= daily_cap:
+                logger.info(
+                    "%s: Kalshi daily trade limit reached %s/%s — skipping execution",
+                    tag,
+                    n_k_today,
+                    daily_cap,
                 )
                 continue
 

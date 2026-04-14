@@ -55,6 +55,7 @@ def build_shark_scheduler(
     kalshi_convergence_scan: Optional[Callable[[], None]] = None,
     kalshi_full_scan: Optional[Callable[[], None]] = None,
     avenue_pulse: Optional[Callable[[], None]] = None,
+    live_sports_scan: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -74,6 +75,31 @@ def build_shark_scheduler(
         sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
     if kalshi_near_resolution is not None:
         sched.add_job(kalshi_near_resolution, IntervalTrigger(seconds=60), id="kalshi_near_resolution", replace_existing=True)
+
+    def _live_sports_hv_wrapper() -> None:
+        if live_sports_scan is None:
+            return
+        try:
+            from datetime import datetime
+
+            from zoneinfo import ZoneInfo
+
+            h = datetime.now(ZoneInfo("America/New_York")).hour
+        except Exception:
+            from datetime import datetime
+
+            h = datetime.utcnow().hour
+        if not (10 <= h < 24):
+            return
+        live_sports_scan()
+
+    if live_sports_scan is not None:
+        sched.add_job(
+            _live_sports_hv_wrapper,
+            IntervalTrigger(seconds=60),
+            id="live_sports_hv",
+            replace_existing=True,
+        )
 
     def _kalshi_hf_wrapper() -> None:
         if (os.environ.get("KALSHI_HF_ENABLED") or "true").strip().lower() != "true":

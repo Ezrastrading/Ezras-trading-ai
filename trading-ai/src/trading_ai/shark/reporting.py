@@ -142,6 +142,68 @@ def format_gap_detection_alert(
     )
 
 
+def format_hv_trade_fired_message(
+    *,
+    question: str,
+    side: str,
+    price_cents: float,
+    confidence_pct: float,
+    stake_usd: float,
+    stake_pct_capital: float,
+    expected_profit_usd: float,
+    capital_after_win_usd: float,
+    week8_target_usd: float,
+    progress_pct: float,
+) -> str:
+    return (
+        "⚡ TRADE FIRED (HV near-resolution)\n"
+        f"📊 {question}\n"
+        f"Side: {side.upper()} at {price_cents:.0f}¢\n"
+        f"Confidence: {confidence_pct:.1f}%\n"
+        f"Stake: ${stake_usd:.2f} ({stake_pct_capital*100:.1f}% of capital)\n"
+        f"Expected profit (if win): ~${expected_profit_usd:.2f}\n"
+        f"\n💰 Capital after win (projected): ${capital_after_win_usd:.2f}\n"
+        f"📈 Week-8 reference target: ${week8_target_usd:,.0f}\n"
+        f"📍 Progress vs week-8 ref: {progress_pct*100:.1f}%"
+    )
+
+
+def alert_hv_trade_fired(
+    *,
+    scored: Any,
+    intent: Any,
+    capital: float,
+    settings: Optional[Settings] = None,
+) -> Dict[str, Any]:
+    """Rich Telegram for Kalshi HV near-resolution live trades."""
+    m = scored.market
+    q = str(getattr(m, "question_text", None) or m.resolution_criteria or m.market_id)[:200]
+    side = str(intent.side or "yes")
+    px = float(intent.expected_price or 0.0) * 100.0
+    conf = float(intent.estimated_win_probability) * 100.0
+    stake = float(intent.notional_usd or 0.0)
+    st_pct = float(intent.stake_fraction_of_capital or 0.0)
+    entry = max(float(intent.expected_price or 0.01), 0.01)
+    exp_profit = max(0.0, stake * (1.0 - entry) / entry)
+    cap_win = capital + exp_profit
+    week8 = 60_000.0
+    prog = min(1.5, capital / week8) if week8 > 0 else 0.0
+    text = format_hv_trade_fired_message(
+        question=q,
+        side=side,
+        price_cents=px,
+        confidence_pct=conf,
+        stake_usd=stake,
+        stake_pct_capital=st_pct,
+        expected_profit_usd=exp_profit,
+        capital_after_win_usd=cap_win,
+        week8_target_usd=week8,
+        progress_pct=prog,
+    )
+    _remember("trade_fired", {"text": text})
+    return send_telegram_text(settings, text, dedupe_key=f"shark:hv:{intent.market_id}:{stake:.0f}", event_label="shark_hv_trade")
+
+
 def format_trade_fired(
     *,
     hunt: str,

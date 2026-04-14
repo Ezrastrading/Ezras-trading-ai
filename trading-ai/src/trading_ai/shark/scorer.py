@@ -84,6 +84,7 @@ def _tier_from_hunts_and_score(hunts: Sequence[HuntSignal], score: float) -> tup
         in (
             HuntType.CRYPTO_SCALP,
             HuntType.NEAR_RESOLUTION,
+            HuntType.NEAR_RESOLUTION_HV,
             HuntType.ORDER_BOOK_IMBALANCE,
             HuntType.VOLUME_SPIKE,
         )

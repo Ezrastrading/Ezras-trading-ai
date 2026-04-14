@@ -663,6 +663,11 @@ KALSHI_GOOD_SERIES: Tuple[str, ...] = (
     "KXNFL",
     "KXMLB",
     "KXNHL",
+    "KXTENNIS",
+    "KXESPORTS",
+    "KXCSGO",
+    "KXSOCCER",
+    "KXMMA",
     "KXNBATODAY",
     "KXNFLTODAY",
     "KXMLBTODAY",
@@ -692,6 +697,77 @@ KALSHI_GOOD_SERIES: Tuple[str, ...] = (
     "KXTRUMP",
     "KXCONGRESS",
 )
+
+# Live / same-session sports — polled aggressively for HV near-resolution.
+KALSHI_LIVE_SERIES: Tuple[str, ...] = (
+    "KXTENNIS",
+    "KXESPORTS",
+    "KXCSGO",
+    "KXNBATODAY",
+    "KXMLBTODAY",
+    "KXNHLTODAY",
+    "KXSOCCER",
+    "KXNFLTODAY",
+    "KXMMA",
+)
+
+
+def fetch_kalshi_live_sports(client: Optional[KalshiClient] = None) -> List[MarketSnapshot]:
+    """
+    Open markets in ``KALSHI_LIVE_SERIES`` resolving within ~6 hours, enriched with order book.
+    Sorted: highest max(yes,no) first (especially >=95%%), then soonest close.
+    """
+    c = client or KalshiClient()
+    if not c.has_kalshi_credentials():
+        return []
+    now = time.time()
+    horizon = now + 6 * 3600
+    merged: Dict[str, Dict[str, Any]] = {}
+    for ser in KALSHI_LIVE_SERIES:
+        try:
+            rows = c.fetch_markets_for_series(ser, limit=100)
+        except Exception as exc:
+            logger.debug("Kalshi live series %s fetch failed: %s", ser, exc)
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not _kalshi_market_tradeable_core(row, now):
+                continue
+            end = _parse_close_timestamp_unix(row)
+            if end is None or end > horizon or end < now:
+                continue
+            tid = str(row.get("ticker") or "").strip()
+            if tid:
+                merged[tid] = row
+    snaps: List[MarketSnapshot] = []
+    for row in merged.values():
+        try:
+            snaps.append(map_kalshi_market_to_snapshot(row, now, client=c))
+        except Exception:
+            continue
+
+    def _sort_key(s: MarketSnapshot) -> Tuple[int, float, float]:
+        mx = max(float(s.yes_price), float(s.no_price))
+        pri = 0 if mx >= 0.95 else 1
+        end = float(getattr(s, "end_date_seconds", None) or 1e12)
+        return (pri, -mx, end)
+
+    snaps.sort(key=_sort_key)
+    logger.info("Kalshi live sports snapshots: %s", len(snaps))
+    return snaps
+
+
+class KalshiLiveSportsFetcher(BaseOutletFetcher):
+    """Narrow Kalshi pool for 60s live scan — tennis / esports / same-day pro sports."""
+
+    outlet_name = "kalshi"
+
+    def __init__(self) -> None:
+        self._client = KalshiClient()
+
+    def fetch_binary_markets(self) -> List[MarketSnapshot]:
+        return fetch_kalshi_live_sports(self._client)
 
 
 def _kalshi_market_volume(m: Dict[str, Any]) -> float:

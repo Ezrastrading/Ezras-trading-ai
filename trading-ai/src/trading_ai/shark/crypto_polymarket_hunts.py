@@ -230,22 +230,37 @@ def hunt_near_resolution(m: MarketSnapshot) -> Optional[HuntSignal]:
         minutes_left = (end - now) / 60.0
     if minutes_left > 30 or minutes_left < 0:
         return None
-    if yes >= 0.93:
-        edge = 1.0 - yes
-        return HuntSignal(
-            HuntType.NEAR_RESOLUTION,
-            edge_after_fees=max(edge, 1e-6),
-            confidence=0.95,
-            details={"side": "yes", "minutes_left": minutes_left, "reasoning": f"YES={yes} resolves_in={minutes_left:.1f}min"},
-        )
-    if no >= 0.93:
-        edge = 1.0 - no
-        return HuntSignal(
-            HuntType.NEAR_RESOLUTION,
-            edge_after_fees=max(edge, 1e-6),
-            confidence=0.95,
-            details={"side": "no", "minutes_left": minutes_left, "reasoning": f"NO={no} resolves_in={minutes_left:.1f}min"},
-        )
+    _nr_tiers = ((0.97, 0.75, "T1"), (0.93, 0.50, "T2"), (0.90, 0.30, "T3"))
+    for thr, stake_frac, tier in _nr_tiers:
+        if yes >= thr:
+            edge = 1.0 - yes
+            return HuntSignal(
+                HuntType.NEAR_RESOLUTION,
+                edge_after_fees=max(edge, 1e-6),
+                confidence=float(yes),
+                details={
+                    "side": "yes",
+                    "minutes_left": minutes_left,
+                    "stake_fraction": stake_frac,
+                    "tier": tier,
+                    "reasoning": f"{tier} YES={yes:.2f} resolves_in={minutes_left:.1f}min stake={stake_frac:.0%}",
+                },
+            )
+    for thr, stake_frac, tier in _nr_tiers:
+        if no >= thr:
+            edge = 1.0 - no
+            return HuntSignal(
+                HuntType.NEAR_RESOLUTION,
+                edge_after_fees=max(edge, 1e-6),
+                confidence=float(no),
+                details={
+                    "side": "no",
+                    "minutes_left": minutes_left,
+                    "stake_fraction": stake_frac,
+                    "tier": tier,
+                    "reasoning": f"{tier} NO={no:.2f} resolves_in={minutes_left:.1f}min stake={stake_frac:.0%}",
+                },
+            )
     return None
 
 
@@ -339,6 +354,7 @@ def run_filtered_polymarket_hunts(
         hunt_kalshi_momentum,
         hunt_kalshi_near_close,
         hunt_kalshi_polymarket_divergence,
+        hunt_near_resolution_hv,
     )
 
     o = (m.outlet or "").lower()
@@ -348,6 +364,7 @@ def run_filtered_polymarket_hunts(
         HuntType.CRYPTO_SCALP: hunt_crypto_scalp,
         HuntType.PURE_ARBITRAGE: hunt_pure_arbitrage,
         HuntType.NEAR_RESOLUTION: hunt_near_resolution,
+        HuntType.NEAR_RESOLUTION_HV: hunt_near_resolution_hv,
         HuntType.ORDER_BOOK_IMBALANCE: hunt_order_book_imbalance,
         HuntType.VOLUME_SPIKE: hunt_volume_spike,
         HuntType.KALSHI_NEAR_CLOSE: hunt_kalshi_near_close,
@@ -373,6 +390,8 @@ def run_filtered_polymarket_hunts(
             continue
         fn = mapping.get(ht)
         if not fn:
+            continue
+        if ht == HuntType.NEAR_RESOLUTION_HV and o not in ("kalshi", "manifold"):
             continue
         if ht in (
             HuntType.KALSHI_NEAR_CLOSE,

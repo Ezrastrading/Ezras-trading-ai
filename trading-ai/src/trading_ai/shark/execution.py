@@ -126,7 +126,10 @@ def run_execution_chain(
         from trading_ai.shark import kalshi_limits
 
         n_kalshi_open = kalshi_limits.count_kalshi_open_positions()
-        max_k = kalshi_limits.kalshi_max_open_positions_from_env()
+        if HuntType.NEAR_RESOLUTION_HV in intent.hunt_types:
+            max_k = kalshi_limits.kalshi_hv_max_open_positions()
+        else:
+            max_k = kalshi_limits.kalshi_max_open_positions_from_env()
         if n_kalshi_open >= max_k:
             _append(
                 audit,
@@ -218,12 +221,16 @@ def run_execution_chain(
     # Gate 5b — Claude AI (optional; ANTHROPIC_API_KEY + score > 0.25)
     from trading_ai.shark.claude_eval import apply_claude_evaluator_gate
 
-    proceed, claude_halt = apply_claude_evaluator_gate(scored, intent, capital=capital)
-    if not proceed:
-        _append(audit, "5b_claude", decision="SKIP", reason=claude_halt)
-        log.info("Gate 5b Claude: FAIL reason=%s", claude_halt)
-        return ChainResult(False, claude_halt, audit, intent)
-    _append(audit, "5b_claude", ok=True)
+    if HuntType.NEAR_RESOLUTION_HV in intent.hunt_types and float(intent.estimated_win_probability) >= 0.949:
+        _append(audit, "5b_claude", ok=True, skipped="hv_high_confidence")
+        log.info("HV trade — skipping Claude gate (confidence >= 95%%)")
+    else:
+        proceed, claude_halt = apply_claude_evaluator_gate(scored, intent, capital=capital)
+        if not proceed:
+            _append(audit, "5b_claude", decision="SKIP", reason=claude_halt)
+            log.info("Gate 5b Claude: FAIL reason=%s", claude_halt)
+            return ChainResult(False, claude_halt, audit, intent)
+        _append(audit, "5b_claude", ok=True)
 
     # Step 6 — Fee-adjusted profitability
     if edge > 0 and fee_to_edge_ratio > 0.80:
@@ -246,18 +253,23 @@ def run_execution_chain(
 
     if not getattr(intent, "is_mana", False):
         try:
-            alert_trade_fired(
-                hunt_types=[h.value for h in intent.hunt_types],
-                edge=intent.edge_after_fees,
-                position_fraction=intent.stake_fraction_of_capital,
-                capital=capital,
-                tier=str(intent.meta.get("tier", "B")),
-                outlet=intent.outlet,
-                market_desc=str(intent.market_id),
-                resolves_in="TBD",
-                claude_reasoning=intent.meta.get("claude_reasoning"),
-                claude_confidence=intent.meta.get("claude_confidence"),
-            )
+            if HuntType.NEAR_RESOLUTION_HV in intent.hunt_types:
+                from trading_ai.shark.reporting import alert_hv_trade_fired
+
+                alert_hv_trade_fired(scored=scored, intent=intent, capital=capital)
+            else:
+                alert_trade_fired(
+                    hunt_types=[h.value for h in intent.hunt_types],
+                    edge=intent.edge_after_fees,
+                    position_fraction=intent.stake_fraction_of_capital,
+                    capital=capital,
+                    tier=str(intent.meta.get("tier", "B")),
+                    outlet=intent.outlet,
+                    market_desc=str(intent.market_id),
+                    resolves_in="TBD",
+                    claude_reasoning=intent.meta.get("claude_reasoning"),
+                    claude_confidence=intent.meta.get("claude_confidence"),
+                )
         except Exception:
             logging.getLogger(__name__).debug("alert_trade_fired failed", exc_info=True)
 

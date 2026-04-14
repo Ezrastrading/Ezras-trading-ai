@@ -4,11 +4,94 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 
 logger = logging.getLogger(__name__)
+
+_HV_TIERS: Tuple[Tuple[float, float, str], ...] = (
+    (0.97, 0.75, "T1"),
+    (0.93, 0.50, "T2"),
+    (0.90, 0.30, "T3"),
+)
+
+
+def _hv_metaculus_agrees_yes(m: MarketSnapshot, yes: float) -> bool:
+    u = m.underlying_data_if_available or {}
+    meta = u.get("metaculus_yes_reference")
+    if meta is None:
+        return False
+    try:
+        my = float(meta)
+    except (TypeError, ValueError):
+        return False
+    return yes >= 0.90 and my >= 0.90 and abs(yes - my) <= 0.10
+
+
+def _hv_metaculus_agrees_no(m: MarketSnapshot, no: float) -> bool:
+    u = m.underlying_data_if_available or {}
+    meta = u.get("metaculus_yes_reference")
+    if meta is None:
+        return False
+    try:
+        my = float(meta)
+        m_no = 1.0 - my
+    except (TypeError, ValueError):
+        return False
+    return no >= 0.90 and m_no >= 0.90 and abs(no - m_no) <= 0.10
+
+
+def hunt_near_resolution_hv(m: MarketSnapshot) -> Optional[HuntSignal]:
+    """
+    High-confidence near-resolution / live sports: YES or NO side at 90%+.
+    Tiers: 97%+ → 75% stake fraction, 93–97% → 50%, 90–93% → 30% (of capital subject to executor caps).
+    Metaculus agreement (both venues 90%+) scales stake fraction by 1.25× capped at 0.80.
+    """
+    if (m.outlet or "").lower() not in ("kalshi", "manifold"):
+        return None
+    yes = m.yes_price
+    no = m.no_price
+    if yes is None or no is None:
+        return None
+    fy = float(yes)
+    fn = float(no)
+
+    for thr, frac, tier in _HV_TIERS:
+        if fy >= thr:
+            boost = 1.25 if _hv_metaculus_agrees_yes(m, fy) else 1.0
+            stake = min(0.80, frac * boost)
+            edge = max(1.0 - fy, 1e-6)
+            return HuntSignal(
+                HuntType.NEAR_RESOLUTION_HV,
+                edge_after_fees=edge,
+                confidence=fy,
+                details={
+                    "side": "yes",
+                    "stake_fraction": stake,
+                    "tier": tier,
+                    "reasoning": f"{tier} YES={fy:.2f} stake={stake:.0%} edge={edge:.3f}",
+                    "metaculus_agreement_boost": boost > 1.0,
+                },
+            )
+    for thr, frac, tier in _HV_TIERS:
+        if fn >= thr:
+            boost = 1.25 if _hv_metaculus_agrees_no(m, fn) else 1.0
+            stake = min(0.80, frac * boost)
+            edge = max(1.0 - fn, 1e-6)
+            return HuntSignal(
+                HuntType.NEAR_RESOLUTION_HV,
+                edge_after_fees=edge,
+                confidence=fn,
+                details={
+                    "side": "no",
+                    "stake_fraction": stake,
+                    "tier": tier,
+                    "reasoning": f"{tier} NO={fn:.2f} stake={stake:.0%} edge={edge:.3f}",
+                    "metaculus_agreement_boost": boost > 1.0,
+                },
+            )
+    return None
 
 
 def hunt_kalshi_near_close(m: MarketSnapshot) -> Optional[HuntSignal]:

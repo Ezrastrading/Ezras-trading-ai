@@ -25,6 +25,7 @@ class HuntType(str, Enum):
     KALSHI_MOMENTUM = "kalshi_momentum"
     KALSHI_METACULUS_AGREE = "kalshi_metaculus_agree"
     KALSHI_METACULUS_DIVERGE = "kalshi_metaculus_diverge"
+    NEAR_RESOLUTION_HV = "near_resolution_hv"
 
 
 class OpportunityTier(str, Enum):

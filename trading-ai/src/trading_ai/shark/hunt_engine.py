@@ -17,6 +17,7 @@ from trading_ai.shark.kalshi_hunts import (
     hunt_kalshi_momentum,
     hunt_kalshi_near_close,
     hunt_kalshi_polymarket_divergence,
+    hunt_near_resolution_hv,
 )
 from trading_ai.shark.master_strategies import filter_hunt_signals_by_strategy
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
@@ -269,9 +270,19 @@ def run_hunts_on_market(
                     sigs.append(r)
             if (m.outlet or "").lower() in ("polymarket", "kalshi"):
                 sigs.extend(append_polymarket_strategy_hunts(m, now=now))
+            if (m.outlet or "").lower() == "manifold":
+                r_hv_m = hunt_near_resolution_hv(m)
+                if r_hv_m:
+                    sigs.append(r_hv_m)
             if (m.outlet or "").lower() == "kalshi":
+                r_hv = hunt_near_resolution_hv(m)
+                if r_hv:
+                    sigs.append(r_hv)
+                else:
+                    rk_nc = hunt_kalshi_near_close(m)
+                    if rk_nc:
+                        sigs.append(rk_nc)
                 for fn_k in (
-                    hunt_kalshi_near_close,
                     hunt_kalshi_polymarket_divergence,
                     hunt_kalshi_metaculus_divergence,
                     hunt_kalshi_metaculus_agreement,
@@ -301,9 +312,19 @@ def run_hunts_on_market(
         # Hunts 8–12 (crypto scalp, arb, near resolution, order book, volume spike) — all CLOB/Kalshi categories, no whitelist.
         if (m.outlet or "").lower() in ("polymarket", "kalshi"):
             sigs.extend(append_polymarket_strategy_hunts(m, now=now))
+        if (m.outlet or "").lower() == "manifold":
+            r_hv_m = hunt_near_resolution_hv(m)
+            if r_hv_m:
+                sigs.append(r_hv_m)
         if (m.outlet or "").lower() == "kalshi":
+            r_hv = hunt_near_resolution_hv(m)
+            if r_hv:
+                sigs.append(r_hv)
+            else:
+                rk_nc = hunt_kalshi_near_close(m)
+                if rk_nc:
+                    sigs.append(rk_nc)
             for fn_k in (
-                hunt_kalshi_near_close,
                 hunt_kalshi_polymarket_divergence,
                 hunt_kalshi_metaculus_divergence,
                 hunt_kalshi_metaculus_agreement,

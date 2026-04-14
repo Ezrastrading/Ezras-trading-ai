@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Avoid Kalshi daily journal cap blocking execution-heavy shark tests."""
+    os.environ.setdefault("EZRAS_KALSHI_DAILY_CAP_DISABLED", "true")
 
 
 @pytest.fixture

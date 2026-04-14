@@ -369,6 +369,39 @@ def integrity_check_or_restore() -> bool:
     return False
 
 
+def get_daily_trade_limit_for_capital(capital: float) -> int:
+    """Scaled daily execution cap (Kalshi) — compounding unlocks more attempts."""
+    if capital < 100:
+        return 10
+    if capital < 500:
+        return 20
+    if capital < 2000:
+        return 35
+    return 50
+
+
+def count_kalshi_trades_opened_today_et() -> int:
+    """Journal rows for America/New_York calendar day with avenue ``kalshi`` (any outcome)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        day = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        from trading_ai.shark.trade_journal import get_trades_for_date
+
+        rows = get_trades_for_date(day)
+    except Exception:
+        return 0
+    return sum(1 for t in rows if str(t.get("avenue", "")).lower() == "kalshi")
+
+
+def compound_win(pnl: float) -> CapitalRecord:
+    """Alias for capital updates after wins; same persistence as ``apply_win_loss_to_capital``."""
+    return apply_win_loss_to_capital(pnl)
+
+
 def apply_win_loss_to_capital(pnl_dollars: float) -> CapitalRecord:
     rec = load_capital()
     rec.current_capital = max(0.0, rec.current_capital + pnl_dollars)
@@ -380,4 +413,13 @@ def apply_win_loss_to_capital(pnl_dollars: float) -> CapitalRecord:
         rec.losing_trades += 1
     rec.last_trade_unix = time.time()
     save_capital(rec)
+    if pnl_dollars > 0:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Compounded: +$%.2f → capital=$%.2f | daily_trade_limit_band=%s",
+            pnl_dollars,
+            rec.current_capital,
+            get_daily_trade_limit_for_capital(rec.current_capital),
+        )
     return rec

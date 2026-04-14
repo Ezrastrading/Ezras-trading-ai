@@ -213,9 +213,22 @@ def main() -> None:
         from trading_ai.shark.outlets.kalshi import KalshiFetcher
 
         fetchers = (KalshiFetcher(),)
-        hunt_filter = {HuntType.NEAR_RESOLUTION, HuntType.PURE_ARBITRAGE}
+        hunt_filter = {
+            HuntType.NEAR_RESOLUTION,
+            HuntType.NEAR_RESOLUTION_HV,
+            HuntType.PURE_ARBITRAGE,
+        }
         n, att = run_scan_execution_cycle(fetchers, tag="kalshi_near_resolution", hunt_types_filter=hunt_filter)
         log.info("kalshi_near_resolution: markets=%s execution_attempts=%s", n, att)
+
+    def live_sports_hv_scan() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.outlets.kalshi import KalshiLiveSportsFetcher
+
+        fetchers = (KalshiLiveSportsFetcher(),)
+        hunt_filter = {HuntType.NEAR_RESOLUTION_HV}
+        n, att = run_scan_execution_cycle(fetchers, tag="live_sports_hv", hunt_types_filter=hunt_filter)
+        log.info("live_sports_hv: markets=%s execution_attempts=%s", n, att)
 
     def arb_sweep() -> None:
         from trading_ai.shark.models import HuntType
@@ -240,6 +253,7 @@ def main() -> None:
         fset = {
             HuntType.KALSHI_NEAR_CLOSE,
             HuntType.NEAR_RESOLUTION,
+            HuntType.NEAR_RESOLUTION_HV,
             HuntType.PURE_ARBITRAGE,
             HuntType.KALSHI_MOMENTUM,
         }
@@ -403,6 +417,7 @@ def main() -> None:
         kalshi_convergence_scan=kalshi_convergence_scan,
         kalshi_full_scan=kalshi_full_scan,
         avenue_pulse=avenue_pulse,
+        live_sports_scan=live_sports_hv_scan,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

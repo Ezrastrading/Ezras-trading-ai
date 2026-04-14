@@ -51,9 +51,12 @@ def _has_near_zero(hunts: List) -> bool:
 
 
 def _execution_primary_hunt(hunts: List) -> HuntSignal:
-    """Prefer Hunt 6 if present; else the strongest edge (multiple hunts on one market)."""
+    """Prefer Hunt 6 if present; else HV near-resolution; else strongest edge."""
     for h in hunts:
         if h.hunt_type == HuntType.NEAR_ZERO_ACCUMULATION:
+            return h
+    for h in hunts:
+        if h.hunt_type == HuntType.NEAR_RESOLUTION_HV:
             return h
     return max(hunts, key=lambda h: float(h.edge_after_fees))
 
@@ -81,6 +84,7 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
         HuntType.KALSHI_MOMENTUM,
         HuntType.KALSHI_METACULUS_AGREE,
         HuntType.KALSHI_METACULUS_DIVERGE,
+        HuntType.NEAR_RESOLUTION_HV,
     ):
         return str(d.get("side", "yes")), 0.0
     return "yes", 0.0
@@ -100,6 +104,8 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
         side = str(d.get("side", "yes"))
         px = m.yes_price if side == "yes" else m.no_price
         return max(0.93, min(0.995, px + 0.01))
+    if h.hunt_type == HuntType.NEAR_RESOLUTION_HV:
+        return max(0.01, min(0.995, float(h.confidence)))
     if h.hunt_type == HuntType.ORDER_BOOK_IMBALANCE:
         side = str(d.get("side", "yes"))
         return m.yes_price if side == "yes" else m.no_price
@@ -140,6 +146,7 @@ def _price_for_kelly(m: MarketSnapshot, scored: ScoredOpportunity) -> float:
         HuntType.KALSHI_NEAR_CLOSE,
         HuntType.KALSHI_CONVERGENCE,
         HuntType.KALSHI_MOMENTUM,
+        HuntType.NEAR_RESOLUTION_HV,
     ):
         return m.no_price if str(d.get("side", "yes")) == "no" else m.yes_price
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE and str((h.details or {}).get("side")) == "no":
@@ -338,6 +345,8 @@ def build_execution_intent(
     _floor_main = ceo_sessions.get_ceo_min_edge_floor_for_hunts(_ht_floor_main)
     if _floor_main is not None:
         min_e = max(min_e, _floor_main)
+    if any(h.hunt_type == HuntType.NEAR_RESOLUTION_HV for h in scored.hunts) and phase == CapitalPhase.PHASE_1:
+        min_e = min(min_e, 0.005)
     if scored.edge_size < min_e:
         _log.info(
             "Intent built: False market=%s reason=edge %.4f < min %.4f",
@@ -361,6 +370,129 @@ def build_execution_intent(
             current_drawdown_pct=current_drawdown_pct,
             wallet_copy_trade=wallet_copy_trade,
         )
+    hv_sig = next((h for h in scored.hunts if h.hunt_type == HuntType.NEAR_RESOLUTION_HV), None)
+    if hv_sig is not None:
+        from trading_ai.shark import kalshi_limits
+        from trading_ai.shark.state_store import load_positions
+
+        o_low = (outlet or "").strip().lower()
+        pos = load_positions()
+        if o_low == "kalshi":
+            if kalshi_limits.count_kalshi_open_positions() >= kalshi_limits.kalshi_hv_max_open_positions():
+                _log.info("Intent built: False market=%s reason=hv_max_open_kalshi", m.market_id)
+                return None
+        elif o_low == "manifold":
+            n_man = sum(
+                1
+                for p in (pos.get("open_positions") or [])
+                if str(p.get("outlet") or "").lower() == "manifold"
+            )
+            if n_man >= kalshi_limits.kalshi_hv_max_open_positions():
+                _log.info("Intent built: False market=%s reason=hv_max_open_manifold", m.market_id)
+                return None
+
+        deployed = sum(
+            float(p.get("notional_usd", 0) or 0)
+            for p in (pos.get("open_positions") or [])
+            if str(p.get("outlet") or "").lower() == o_low
+        )
+        d0 = hv_sig.details or {}
+        stake_frac = float(d0.get("stake_fraction") or 0.30)
+        stake_frac = max(0.01, min(0.80, stake_frac))
+        max_deploy = capital * 0.80
+        room = max(0.0, max_deploy - deployed)
+        if room < MIN_POSITION_USD:
+            _log.info("Intent built: False market=%s reason=hv_deploy_cap room=%.2f", m.market_id, room)
+            return None
+        raw_size = min(capital * stake_frac, room * 0.90, capital * 0.80)
+        notional = max(MIN_POSITION_USD, raw_size)
+        notional = min(notional, capital * 0.80, room)
+        loss_mult_hv = LOSS_TRACKER.cluster_multiplier(
+            strategy=strategy_key,
+            hunt_type=HuntType.NEAR_RESOLUTION_HV,
+            outlet=outlet,
+            market_category=market_category,
+        )
+        notional *= loss_mult_hv
+        notional *= risk_position_multiplier
+        notional = max(MIN_POSITION_USD, min(notional, capital * 0.80, room))
+        stake = notional / max(capital, 1e-9)
+        if o_low == "kalshi":
+            lo, hi = kalshi_limits.kalshi_notional_bounds_usd()
+            notional = min(hi, max(lo, notional))
+            stake = min(notional / max(capital, 1e-9), 0.80)
+        side_hv = str(d0.get("side", "yes")).lower()
+        if side_hv not in ("yes", "no"):
+            side_hv = "yes"
+        exp_price = float(m.yes_price if side_hv == "yes" else m.no_price)
+        p_win = estimate_win_probability(m, scored)
+        shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
+        margin_borrowed = 0.0
+        if not is_mana:
+            margin_allowance = get_margin_allowance(
+                capital=capital,
+                confidence=float(hv_sig.confidence),
+                hunt_tier=scored.tier.value,
+                current_drawdown_pct=current_drawdown_pct,
+                near_zero_hunt=False,
+            )
+            if notional > capital + 1e-9:
+                if not check_margin_safety(notional, capital, margin_allowance):
+                    notional = min(notional, capital)
+                    stake = notional / max(capital, 1e-9)
+                    shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
+            margin_borrowed = max(0.0, notional - capital)
+        u = m.underlying_data_if_available or {}
+        yes_tid = getattr(m, "yes_token_id", None) or u.get("yes_token_id") or u.get("token_id")
+        no_tid = getattr(m, "no_token_id", None) or u.get("no_token_id")
+        tok = no_tid if side_hv == "no" else yes_tid
+        meta = {
+            "phase": phase.value,
+            "tier": scored.tier.value,
+            "token_id": tok,
+            "yes_token_id": yes_tid,
+            "no_token_id": no_tid,
+            "condition_id": u.get("condition_id"),
+            "market_category": market_category,
+            "margin_borrowed": margin_borrowed,
+            "margin_cap_pct": effective_margin_pct_cap(capital, scored.confidence) if not is_mana else 0.0,
+            "near_resolution_hv": True,
+            "hv_tier": d0.get("tier"),
+            "hv_reasoning": d0.get("reasoning"),
+        }
+        if wallet_copy_trade:
+            meta["trade_type"] = "wallet_copy"
+        _log.info(
+            "HV sizing: capital=%.2f stake_frac=%.3f notional=%.2f deployed=%.2f room=%.2f",
+            capital,
+            stake_frac,
+            notional,
+            deployed,
+            room,
+        )
+        _log.info(
+            "Intent built: True market=%s notional_usd=%.2f outlet=%s (near_resolution_hv)",
+            m.market_id,
+            notional,
+            outlet,
+        )
+        return ExecutionIntent(
+            market_id=m.market_id,
+            outlet=outlet,
+            side=side_hv,
+            stake_fraction_of_capital=stake,
+            edge_after_fees=scored.edge_size,
+            estimated_win_probability=p_win,
+            hunt_types=[HuntType.NEAR_RESOLUTION_HV],
+            source="shark_gap" if gap_exploitation_mode else "shark_compounding",
+            gap_exploit=gap_exploitation_mode,
+            meta=meta,
+            expected_price=exp_price,
+            notional_usd=notional,
+            shares=shr,
+            is_mana=is_mana,
+        )
+
     p_win = estimate_win_probability(m, scored)
     px = _price_for_kelly(m, scored)
     fk = kelly_full_fraction(p_win, px)
