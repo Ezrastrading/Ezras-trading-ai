@@ -49,7 +49,6 @@ def effective_capital_for_outlet(outlet: str, book_capital: float) -> float:
         return float(book_capital)
     try:
         from trading_ai.shark.balance_sync import fetch_kalshi_balance_usd
-        from trading_ai.shark.kalshi_limits import should_apply_kalshi_actual_balance_override
 
         api = fetch_kalshi_balance_usd()
     except Exception as exc:
@@ -62,11 +61,11 @@ def effective_capital_for_outlet(outlet: str, book_capital: float) -> float:
         env_alt = 0.0
     if api is not None and api > 1e-6:
         return _apply_kalshi_reserve(float(api))
-    if env_alt > 1e-6 and should_apply_kalshi_actual_balance_override(api):
+    if env_alt > 1e-6 and (api is None or api <= 1e-6):
         logger.info(
-            "Kalshi effective capital: KALSHI_ACTUAL_BALANCE=$%.2f (API available was $%.2f, open positions present)",
+            "Kalshi effective capital: API available=$%.2f → using KALSHI_ACTUAL_BALANCE=$%.2f",
+            api if api is not None else 0.0,
             env_alt,
-            api,
         )
         return _apply_kalshi_reserve(env_alt)
     if api is not None:
