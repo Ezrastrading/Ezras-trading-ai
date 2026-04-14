@@ -26,6 +26,15 @@ _BATCH_SIZE = 50
 _TOP_PER_BATCH = 5
 
 
+def _ceo_bump_scan_stats(markets: int, execution_attempts: int) -> None:
+    try:
+        from trading_ai.shark import ceo_sessions
+
+        ceo_sessions.bump_daily_scan_stats(markets, execution_attempts)
+    except Exception:
+        pass
+
+
 def _post_scan_balance_sync() -> None:
     try:
         from trading_ai.shark.balance_sync import sync_all_platforms
@@ -57,6 +66,7 @@ def run_scan_execution_cycle(
     markets = scan_markets(tuple(fetchers), fallback_demo=False)
     if not markets:
         _post_scan_balance_sync()
+        _ceo_bump_scan_stats(0, 0)
         return 0, 0
 
     n_m = len(markets)
@@ -233,6 +243,7 @@ def run_scan_execution_cycle(
     )
     _touch_last_scan_unix(time.time())
     _post_scan_balance_sync()
+    _ceo_bump_scan_stats(len(markets), attempts)
     return len(markets), attempts
 
 

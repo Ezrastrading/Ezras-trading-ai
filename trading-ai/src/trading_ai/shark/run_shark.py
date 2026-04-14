@@ -71,6 +71,12 @@ def main() -> None:
 
     integrity_check_or_restore()
     load_bayesian_into_memory()
+    try:
+        from trading_ai.shark import ceo_sessions
+
+        ceo_sessions.load_ceo_overrides_into_memory()
+    except Exception as exc:
+        log.warning("CEO overrides load skipped (non-blocking): %s", exc)
 
     try:
         from trading_ai.shark.mana_sandbox import maybe_run_mana_loss_learning_on_startup
@@ -277,6 +283,15 @@ def main() -> None:
         except Exception as exc:
             log.warning("eod_force_scan failed: %s", exc)
 
+    def ceo_brief(session_type: str) -> None:
+        try:
+            from trading_ai.shark import ceo_sessions
+
+            ceo_sessions.run_ceo_session_safe(session_type)
+            log.info("CEO session %s completed", session_type)
+        except Exception as exc:
+            log.warning("CEO session wrapper failed: %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -296,6 +311,7 @@ def main() -> None:
         near_resolution_sweep=near_resolution_sweep,
         arb_sweep=arb_sweep,
         kalshi_near_resolution=kalshi_near_resolution,
+        ceo_session=ceo_brief,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

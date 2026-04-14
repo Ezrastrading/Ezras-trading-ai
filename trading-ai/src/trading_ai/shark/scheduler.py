@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ def build_shark_scheduler(
     near_resolution_sweep: Optional[Callable[[], None]] = None,
     arb_sweep: Optional[Callable[[], None]] = None,
     kalshi_near_resolution: Optional[Callable[[], None]] = None,
+    ceo_session: Optional[Callable[[str], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -93,4 +95,17 @@ def build_shark_scheduler(
             id="eod_force_trade",
             replace_existing=True,
         )
+    if ceo_session is not None and CronTrigger is not None:
+        for hour, minute, label in (
+            (8, 0, "MORNING"),
+            (12, 0, "MIDDAY"),
+            (17, 0, "AFTERNOON"),
+            (22, 0, "EOD"),
+        ):
+            sched.add_job(
+                partial(ceo_session, label),
+                CronTrigger(hour=hour, minute=minute, timezone="America/New_York"),
+                id=f"ceo_{label.lower()}",
+                replace_existing=True,
+            )
     return sched

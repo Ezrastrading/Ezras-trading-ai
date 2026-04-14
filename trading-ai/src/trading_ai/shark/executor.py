@@ -12,6 +12,7 @@ from trading_ai.shark.capital_phase import (
     phase_params,
     phase_tier_combined_multiplier,
 )
+from trading_ai.shark import ceo_sessions
 from trading_ai.shark.kelly import apply_kelly_scaling, kelly_full_fraction
 from trading_ai.shark.margin_control import check_margin_safety, effective_margin_pct_cap, get_margin_allowance
 from trading_ai.shark.models import (
@@ -177,6 +178,14 @@ def _build_pure_arbitrage_intent(
     phase = detect_phase(capital)
     pp = phase_params(phase)
     min_e = min_edge_effective if min_edge_effective is not None else pp.min_edge
+    _ht_floor = [
+        getattr(h.hunt_type, "value", str(h.hunt_type))
+        for h in scored.hunts
+        if getattr(h, "hunt_type", None) is not None
+    ]
+    _floor = ceo_sessions.get_ceo_min_edge_floor_for_hunts(_ht_floor)
+    if _floor is not None:
+        min_e = max(min_e, _floor)
     if scored.edge_size < min_e:
         return None
     yes_p = float(m.yes_price)
@@ -301,6 +310,14 @@ def build_execution_intent(
     phase = detect_phase(capital)
     pp = phase_params(phase)
     min_e = min_edge_effective if min_edge_effective is not None else pp.min_edge
+    _ht_floor_main = [
+        getattr(h.hunt_type, "value", str(h.hunt_type))
+        for h in scored.hunts
+        if getattr(h, "hunt_type", None) is not None
+    ]
+    _floor_main = ceo_sessions.get_ceo_min_edge_floor_for_hunts(_ht_floor_main)
+    if _floor_main is not None:
+        min_e = max(min_e, _floor_main)
     if scored.edge_size < min_e:
         _log.info(
             "Intent built: False market=%s reason=edge %.4f < min %.4f",

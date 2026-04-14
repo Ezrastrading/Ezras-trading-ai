@@ -821,6 +821,8 @@ def test_37_resolution_detected_and_capital_updated_correctly(tmp_path, monkeypa
     assert data["open_positions"] == []
     assert len(data["history"]) == 1
     assert data["history"][0]["pnl"] == pnl
+    assert data["history"][0]["hunt_types"] == [HuntType.STRUCTURAL_ARBITRAGE.value]
+    assert data["history"][0]["market_category"] == "default"
 
 
 def test_38_telegram_send_succeeds_and_returns_true(monkeypatch):

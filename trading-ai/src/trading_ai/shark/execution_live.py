@@ -205,6 +205,7 @@ def handle_resolution(
     ops = [p for p in (data.get("open_positions") or []) if p.get("position_id") != position.position_id]
     data["open_positions"] = ops
     hist = list(data.get("history") or [])
+    hunt_vals = [getattr(h, "value", str(h)) for h in (hunt_types or [])]
     hist.append(
         {
             "position_id": position.position_id,
@@ -213,6 +214,8 @@ def handle_resolution(
             "outcome": outcome,
             "pnl": pnl,
             "closed_at": time.time(),
+            "hunt_types": hunt_vals,
+            "market_category": market_category,
         }
     )
     data["history"] = hist
