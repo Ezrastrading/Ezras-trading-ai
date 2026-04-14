@@ -1,50 +1,18 @@
-"""Kalshi crypto blitz: rolling window before crypto closes — 15m BTC/ETH cadence and related series."""
+"""Kalshi crypto blitz — BTC/ETH 15-minute windows only (direct series fetch, minimal logic)."""
 
 from __future__ import annotations
 
 import logging
 import os
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Kalshi crypto roots — 15m BTC/ETH and related; longest series roots first where relevant.
-_DEFAULT_BLITZ_SERIES: Tuple[str, ...] = (
-    "KXBTC15",
-    "KXBTCUSD",
-    "KXBTCD",
-    "KXBTCZ",
-    "KXBTC",
-    "KXETH15",
-    "KXETHD",
-    "KXETH",
-    "BTC15",
-    "BTCUSD",
-    "ETHUSD",
-    "BTCZ",
-    "BTC",
-    "ETH",
-)
-
-
-def _blitz_series_list() -> List[str]:
-    raw = (os.environ.get("KALSHI_BLITZ_SERIES") or "").strip()
-    if raw:
-        return [s.strip().upper() for s in raw.split(",") if s.strip()]
-    return list(_DEFAULT_BLITZ_SERIES)
-
-
-def _close_window_seconds() -> float:
-    """Default 300s (5 min) — targets :00 / :15 / :30 / :45 15m closes when job runs every 2 min."""
-    raw = (os.environ.get("KALSHI_BLITZ_CLOSE_WINDOW_SEC") or "300").strip() or "300"
-    try:
-        return max(60.0, float(raw))
-    except ValueError:
-        return 300.0
+_DEFAULT_SERIES = ("KXBTCD", "KXBTC", "KXETH", "KXETHD")
+_BTC_SERIES = frozenset({"KXBTCD", "KXBTC"})
+_ETH_SERIES = frozenset({"KXETH", "KXETHD"})
 
 
 def _parse_env_float(name: str, default: float) -> float:
@@ -67,62 +35,40 @@ def _parse_env_int(name: str, default: int) -> int:
         return default
 
 
-def _fetch_open_markets_blitz(client: Any, *, max_rows: int = 2000) -> List[Dict[str, Any]]:
-    """Paginated GET /markets ``status=open`` — used to discover ``15`` series and merge extra crypto rows."""
-    out: List[Dict[str, Any]] = []
-    cursor: Optional[str] = None
-    while len(out) < max_rows:
-        lim = min(1000, max_rows - len(out))
-        if lim <= 0:
-            break
-        params: Dict[str, Any] = {"status": "open", "limit": lim}
-        if cursor:
-            params["cursor"] = cursor
-        try:
-            j = client._request("GET", "/markets", params=params)
-        except Exception:
-            break
-        batch = j.get("markets") or j.get("data") or []
-        if not isinstance(batch, list):
-            break
-        out.extend(m for m in batch if isinstance(m, dict))
-        cur = j.get("cursor") or j.get("next_cursor")
-        if not cur or len(batch) == 0:
-            break
-        cursor = str(cur)
-    return out[:max_rows]
+def _blitz_series() -> Tuple[str, ...]:
+    raw = (os.environ.get("KALSHI_BLITZ_SERIES") or "").strip()
+    if raw:
+        return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+    return _DEFAULT_SERIES
 
 
-def _discovered_series_with_substring(open_rows: List[Dict[str, Any]], needle: str, *, cap: int = 40) -> List[str]:
-    roots: Set[str] = set()
-    for m in open_rows:
-        st = str(m.get("series_ticker") or "").strip().upper()
-        if needle in st and st:
-            roots.add(st)
-    return sorted(roots)[:cap]
+def _bucket(row: Dict[str, Any]) -> Optional[str]:
+    st = str(row.get("series_ticker") or "").strip().upper()
+    if st in _BTC_SERIES:
+        return "btc"
+    if st in _ETH_SERIES:
+        return "eth"
+    tid = str(row.get("ticker") or "").strip().upper()
+    if tid.startswith("KXBTC"):
+        return "btc"
+    if tid.startswith("KXETH"):
+        return "eth"
+    return None
 
 
 def run_kalshi_blitz() -> int:
-    """Fetch crypto markets closing soon, filter by edge prob, split budget, fire market orders.
+    """Trade BTC and ETH 15-minute style markets only.
 
-    Returns number of trades placed.  Enabled by default (KALSHI_BLITZ_ENABLED=true).
+    Scheduler runs every 2 minutes. Targets open markets in each series with
+    TTR in [min, max] (default 60–900s), max(yes,no) prob ≥ min (default 90%).
+    Up to ``KALSHI_BLITZ_MAX_BTC`` BTC + ``KALSHI_BLITZ_MAX_ETH`` ETH per run.
     """
     if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
         return 0
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
-    from trading_ai.shark.execution_live import monitor_position
-    from trading_ai.shark.kalshi_limits import (
-        count_kalshi_open_positions,
-        kalshi_max_open_positions_from_env,
-        kalshi_min_position_usd,
-    )
-    from trading_ai.shark.models import HuntType, OpenPosition
-    from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
-        _kalshi_market_tradeable_core,
-        _kalshi_market_volume,
         _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
     )
@@ -130,218 +76,138 @@ def run_kalshi_blitz() -> int:
     from trading_ai.shark.state_store import load_capital
 
     min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.90)
-    max_trades = max(1, _parse_env_int("KALSHI_BLITZ_MAX_TRADES", 50))
+    ttr_min = _parse_env_float("KALSHI_BLITZ_TTR_MIN_SEC", 60.0)
+    ttr_max = _parse_env_float("KALSHI_BLITZ_CLOSE_WINDOW_SEC", 900.0)
+    max_btc = _parse_env_int("KALSHI_BLITZ_MAX_BTC", 30)
+    max_eth = _parse_env_int("KALSHI_BLITZ_MAX_ETH", 30)
+    max_total = _parse_env_int("KALSHI_BLITZ_MAX_TRADES", max_btc + max_eth)
     budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_BLITZ_BUDGET_PCT", 0.60)))
-    # Per-trade size clamps: $1–$4 by default (small, many trades)
-    blitz_trade_min = max(0.50, _parse_env_float("KALSHI_BLITZ_MIN_TRADE_USD", 1.00))
-    blitz_trade_max = max(blitz_trade_min, _parse_env_float("KALSHI_BLITZ_MAX_TRADE_USD", 4.00))
-    window_sec = _close_window_seconds()
+    trade_min = max(0.50, _parse_env_float("KALSHI_BLITZ_MIN_TRADE_USD", 1.00))
+    trade_max = max(trade_min, _parse_env_float("KALSHI_BLITZ_MAX_TRADE_USD", 4.00))
+    api_limit = max(50, min(500, _parse_env_int("KALSHI_BLITZ_SERIES_LIMIT", 200)))
 
     client = KalshiClient()
     if not client.has_kalshi_credentials():
-        logger.info("Kalshi blitz skipped — no credentials")
-        return 0
-
-    book = load_capital()
-    # effective_capital_for_outlet already applies the 20% cash reserve.
-    # Blitz uses KALSHI_BLITZ_BUDGET_PCT (default 60%) of that deployable slice.
-    deployable = effective_capital_for_outlet("kalshi", float(book.current_capital))
-    blitz_budget = deployable * budget_pct
-    if blitz_budget < blitz_trade_min:
-        logger.info(
-            "Kalshi blitz skipped — budget $%.2f below min trade $%.2f",
-            blitz_budget,
-            blitz_trade_min,
-        )
+        logger.info("Crypto blitz skipped — no Kalshi credentials")
         return 0
 
     now = time.time()
-    scan_lim = max(200, _parse_env_int("KALSHI_BLITZ_OPEN_SCAN_LIMIT", 2000))
-    open_rows = _fetch_open_markets_blitz(client, max_rows=scan_lim)
-    discovered_15 = _discovered_series_with_substring(open_rows, "15", cap=40)
-    base_series = _blitz_series_list()
-    series_union: List[str] = []
-    seen_series: Set[str] = set()
-    for s in list(base_series) + discovered_15:
-        u = s.strip().upper()
-        if u and u not in seen_series:
-            seen_series.add(u)
-            series_union.append(u)
-
-    merged: Dict[str, Dict[str, Any]] = {}
-    for ser in series_union:
+    series_list = list(_blitz_series())
+    raw_rows: List[Dict[str, Any]] = []
+    for ser in series_list:
         try:
-            rows = client.fetch_markets_for_series(ser, limit=120)
+            j = client._request(
+                "GET",
+                "/markets",
+                params={"status": "open", "limit": api_limit, "series_ticker": ser},
+            )
+            batch = j.get("markets") or []
+            if isinstance(batch, list):
+                raw_rows.extend(m for m in batch if isinstance(m, dict))
         except Exception as exc:
-            logger.debug("Kalshi blitz series %s: %s", ser, exc)
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
+            logger.warning("Crypto blitz fetch %s failed: %s", ser, exc)
+
+    targets: List[Dict[str, Any]] = []
+    for m in raw_rows:
+        try:
+            ticker = str(m.get("ticker") or "").strip()
+            if not ticker:
                 continue
-            tid = str(row.get("ticker") or "").strip()
-            if tid:
-                merged[tid] = row
-
-    # Extra crypto rows from open feed (any ticker matching crypto prefixes), not already in series merge.
-    for m in open_rows:
-        if not isinstance(m, dict):
-            continue
-        tid = str(m.get("ticker") or "").strip()
-        if not tid or tid in merged:
-            continue
-        if not kalshi_ticker_is_crypto(tid):
-            continue
-        end = _parse_close_timestamp_unix(m)
-        if end is None:
-            continue
-        ttr = end - now
-        if not (60.0 <= ttr <= window_sec):
-            continue
-        merged[tid] = m
-
-    n_total = len(merged)
-    n_crypto = 0
-    n_in_window = 0
-    n_above_prob = 0
-
-    candidates: List[Tuple[Dict[str, Any], float, float, str]] = []
-    for m in merged.values():
-        if not _kalshi_market_tradeable_core(m, now):
-            continue
-        if _kalshi_market_volume(m) < 1.0:
-            continue
-        tid = str(m.get("ticker") or "").strip()
-        if not kalshi_ticker_is_crypto(tid):
-            continue
-        n_crypto += 1
-        end = _parse_close_timestamp_unix(m)
-        if end is None:
-            continue
-        ttr = end - now
-        # All crypto: same band — open-feed discovery (any prefix) + series merge.
-        if not (60.0 <= ttr <= window_sec):
-            continue
-        n_in_window += 1
-        try:
-            row = client.enrich_market_with_detail_and_orderbook(dict(m))
+            row = dict(m)
+            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+            if y <= 0 or n <= 0:
+                try:
+                    row = client.enrich_market_with_detail_and_orderbook(dict(m))
+                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+                except Exception:
+                    continue
+            if y <= 0 or n <= 0:
+                continue
+            close_ts = _parse_close_timestamp_unix(row)
+            if close_ts is None:
+                continue
+            ttr = close_ts - now
+            if not (ttr_min <= ttr <= ttr_max):
+                continue
+            prob = max(y, n)
+            if prob < min_prob:
+                continue
+            bk = _bucket(row)
+            if bk is None:
+                continue
+            side = "yes" if y >= n else "no"
+            targets.append(
+                {
+                    "ticker": ticker,
+                    "ttr": ttr,
+                    "prob": prob,
+                    "side": side,
+                    "price": prob,
+                    "bucket": bk,
+                }
+            )
         except Exception:
-            row = m
-        y, n, _, _ = _kalshi_yes_no_from_market_row(row)
-        mx = max(y, n)
-        if mx < min_prob:
             continue
-        n_above_prob += 1
-        side = "yes" if y >= n else "no"
-        px = y if side == "yes" else n
-        candidates.append((row, float(end), float(px), side))
 
-    candidates.sort(key=lambda x: x[1])
-    max_open = kalshi_max_open_positions_from_env()
-    open_n = count_kalshi_open_positions()
-    slots = max(0, max_open - open_n)
-    n_take = min(len(candidates), max_trades, slots)
+    if not targets:
+        logger.info("CRYPTO BLITZ: 0 markets in %.0f–%.0fs window (1–15m default)", ttr_min, ttr_max)
+        return 0
+
+    btc = sorted([t for t in targets if t["bucket"] == "btc"], key=lambda x: x["ttr"])[:max_btc]
+    eth = sorted([t for t in targets if t["bucket"] == "eth"], key=lambda x: x["ttr"])[:max_eth]
+    selected = (btc + eth)[:max_total]
+
+    book = load_capital()
+    deployable = effective_capital_for_outlet("kalshi", float(book.current_capital))
+    budget = deployable * budget_pct
+    n = max(1, len(selected))
+    per_trade = max(trade_min, min(trade_max, budget / float(n)))
+
+    if per_trade < trade_min or budget < trade_min:
+        logger.info("Crypto blitz skipped — budget $%.2f below min trade $%.2f", budget, trade_min)
+        return 0
+
     logger.info(
-        "Blitz: %s total → %s crypto → %s in window → %s above %.0f%% → %s selected",
-        n_total,
-        n_crypto,
-        n_in_window,
-        n_above_prob,
-        min_prob * 100.0,
-        n_take,
+        "CRYPTO BLITZ: %s markets found, placing %s trades $%.2f each, budget $%.2f (BTC %s + ETH %s)",
+        len(targets),
+        len(selected),
+        per_trade,
+        budget,
+        len([t for t in selected if t["bucket"] == "btc"]),
+        len([t for t in selected if t["bucket"] == "eth"]),
     )
-    if n_take <= 0:
-        return 0
 
-    selected = candidates[:n_take]
-    # Per-trade USD: evenly distribute budget, clamped to blitz-specific [$1, $4] band
-    per_usd = blitz_budget / float(n_take)
-    per_usd = max(blitz_trade_min, min(blitz_trade_max, per_usd))
-    if per_usd < kalshi_min_position_usd():
-        logger.info("Kalshi blitz skipped — per-trade $%.2f below minimum", per_usd)
-        return 0
-
-    earliest_close = min(s[1] for s in selected)
-    close_disp = datetime.fromtimestamp(earliest_close, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    def _place(item: Tuple[Dict[str, Any], float, float, str]) -> Tuple[bool, str, float, Optional[OpenPosition]]:
-        m, _end, px, side = item
-        ticker = str(m.get("ticker") or "").strip()
-        if not ticker:
-            return False, "", 0.0, None
-        yy, nn, _, _ = _kalshi_yes_no_from_market_row(m)
-        edge = max(0.0, max(yy, nn) - min_prob)
-        cnt = max(1, int(per_usd / max(px, 0.01)))
+    def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
+        ticker = str(t["ticker"])
+        px = max(float(t["price"]), 0.01)
+        cnt = max(1, int(per_trade / px))
         try:
-            res = client.place_order(
-                ticker=ticker,
-                side=side,
-                count=cnt,
-            )
+            res = client.place_order(ticker=ticker, side=t["side"], count=cnt, action="buy")
+            fs = float(res.filled_size or 0.0)
+            fp = float(res.filled_price or 0.0)
+            cost = fs * fp if fs > 0 and fp > 0 else 0.0
+            ok = fs > 0 and (res.success is not False)
+            return ok, ticker, cost
         except Exception as exc:
-            logger.warning("Blitz order failed %s: %s", ticker, exc)
-            return False, ticker, 0.0, None
-        fp = float(res.filled_price or 0.0)
-        fs = float(res.filled_size or 0.0)
-        if fs <= 0 and res.raw:
-            o = res.raw.get("order") if isinstance(res.raw.get("order"), dict) else {}
-            fs = float(res.raw.get("filled_count", 0) or o.get("filled_count", 0) or 0)
-        if fp <= 0 and px > 0:
-            fp = px
-        notional = (fp * fs) if fs > 0 else 0.0
-        pos = None
-        if fs > 0:
-            pos = OpenPosition(
-                position_id=f"blitz-{uuid.uuid4().hex[:12]}",
-                outlet="kalshi",
-                market_id=ticker,
-                side=side,
-                entry_price=fp if fp > 0 else px,
-                shares=fs,
-                notional_usd=float(notional),
-                order_id=str(res.order_id or ""),
-                opened_at=time.time(),
-                strategy_key="kalshi_blitz",
-                hunt_types=[HuntType.KALSHI_NEAR_CLOSE.value],
-                market_category="crypto_blitz",
-                expected_edge=edge,
-            )
-        return fs > 0, ticker, float(notional if fs > 0 else 0.0), pos
-
-    total_budget = per_usd * n_take
-    logger.info(
-        "BLITZ MODE ACTIVATED: placing %s trades with budget $%.2f (window=%.0fs)",
-        n_take,
-        total_budget,
-        window_sec,
-    )
+            logger.warning("Crypto blitz order failed %s: %s", ticker, exc)
+            return False, ticker, 0.0
 
     placed = 0
     deployed = 0.0
-    ok_tickers: List[str] = []
-    pending_positions: List[OpenPosition] = []
-    with ThreadPoolExecutor(max_workers=min(16, n_take)) as ex:
-        futs = [ex.submit(_place, s) for s in selected]
-        for fut in as_completed(futs):
-            ok, tick, usd, pos = fut.result()
-            if ok and pos is not None:
+    workers = min(32, max(1, len(selected)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for ok, _tick, cost in ex.map(_place, selected):
+            if ok:
                 placed += 1
-                deployed += usd
-                ok_tickers.append(tick)
-                pending_positions.append(pos)
-    for pos in pending_positions:
-        try:
-            monitor_position(pos, save=True)
-        except Exception as exc:
-            logger.warning("Blitz monitor_position failed %s: %s", pos.market_id, exc)
+                deployed += cost
 
-    uniq_markets = len(set(ok_tickers))
+    logger.info("CRYPTO BLITZ DONE: %s/%s filled, $%.2f deployed", placed, len(selected), deployed)
 
     if placed > 0:
+        earliest = min(t["ttr"] for t in selected)
         send_telegram(
-            f"\U0001f6a8 BLITZ \u2014 placing {placed} trades on {uniq_markets} markets, ${deployed:.2f} deployed"
+            f"\U0001f6a8 CRYPTO BLITZ — {placed} trades (BTC+ETH), ${deployed:.2f} deployed, "
+            f"next close ~{int(earliest / 60)}min"
         )
-        logger.info("BLITZ done: %s/%s filled, $%.2f deployed, close at %s", placed, n_take, deployed, close_disp)
-    else:
-        logger.info("BLITZ done: 0/%s filled (all orders rejected/failed)", n_take)
 
     return placed

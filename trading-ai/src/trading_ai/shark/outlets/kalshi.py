@@ -536,7 +536,10 @@ class KalshiClient:
             if not _kalshi_market_tradeable_core(m, now):
                 rejected_tradeable += 1
                 continue
-            if not _kalshi_market_within_max_ttr(m, now):
+            # Crypto timing is handled by kalshi_blitz; HV pool does not cap crypto TTR here.
+            if (not tid_f or not kalshi_ticker_is_crypto(tid_f)) and not _kalshi_market_within_max_ttr(
+                m, now
+            ):
                 rejected_time += 1
                 continue
             if _kalshi_market_volume(m) < 1.0:
@@ -620,7 +623,8 @@ class KalshiClient:
         ``yes_price`` / ``no_price`` in **cents** (API requirement — not a limit order).
 
         **Buys** (last line of defense): TTR ≤ ``KALSHI_MAX_TTR_SECONDS`` and implied prob ≥
-        ``KALSHI_MIN_ORDER_PROB`` (default 0.85). **Sells** skip (profit exit / unwind).
+        ``KALSHI_MIN_ORDER_PROB`` (default 0.85), except **crypto** tickers skip the TTR gate
+        (blitz controls horizon). **Sells** skip (profit exit / unwind).
 
         After POST, polls GET ``/portfolio/orders/{id}`` for up to 5s; zero fill → cancel.
         """
@@ -649,12 +653,13 @@ class KalshiClient:
             logger.warning("Kalshi pre-trade gate (get_market) failed %s: %s — proceeding", ticker, exc)
 
         if act == "buy" and market_fetch_ok:
+            from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
             from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
 
             end = _parse_close_timestamp_unix(inner)
             if end is not None:
                 ttr = end - time.time()
-                if ttr > kalshi_max_ttr_seconds():
+                if ttr > kalshi_max_ttr_seconds() and not kalshi_ticker_is_crypto(ticker):
                     logger.error(
                         "BLOCKED: TTR %.0fs exceeds max %.0fs — %s",
                         ttr,
