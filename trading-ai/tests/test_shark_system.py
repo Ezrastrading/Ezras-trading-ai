@@ -942,7 +942,17 @@ def test_73_setup_env_exits_zero_with_empty_poly_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("POLY_API_KEY", "")
     with patch.object(se, "test_polymarket", return_value=(True, "ok")), patch.object(
         se, "test_kalshi", return_value=(True, "ok")
-    ), patch.object(se, "test_manifold", return_value=(True, "ok")), patch.object(se, "test_telegram", return_value=(True, "ok")):
+    ), patch.object(se, "test_manifold", return_value=(True, "ok")), patch.object(se, "test_telegram", return_value=(True, "ok")), patch(
+        "trading_ai.shark.outlets.polymarket.test_polymarket_credentials",
+        return_value={
+            "status_code": 200,
+            "error": None,
+            "balance": None,
+            "key_id_used": "",
+            "secret_set": False,
+            "wallet_set": False,
+        },
+    ):
         assert se.main() == 0
 
 
@@ -1167,7 +1177,17 @@ def test_74_kalshi_401_does_not_block_all_systems_go(tmp_path, monkeypatch):
     monkeypatch.setenv("POLY_API_KEY", "")
     with patch.object(se, "test_polymarket", return_value=(True, "ok")), patch.object(
         se, "test_kalshi", return_value=(True, "scan_only_401")
-    ), patch.object(se, "test_manifold", return_value=(True, "ok")), patch.object(se, "test_telegram", return_value=(True, "ok")):
+    ), patch.object(se, "test_manifold", return_value=(True, "ok")), patch.object(se, "test_telegram", return_value=(True, "ok")), patch(
+        "trading_ai.shark.outlets.polymarket.test_polymarket_credentials",
+        return_value={
+            "status_code": 200,
+            "error": None,
+            "balance": None,
+            "key_id_used": "",
+            "secret_set": False,
+            "wallet_set": False,
+        },
+    ):
         assert se.main() == 0
 
 
@@ -1683,3 +1703,8 @@ def test_120_polymarket_api_signing_produces_valid_ed25519_signature():
     sig_b64 = sign_polymarket_request(ts, secret_b64)
     sig = base64.b64decode(sig_b64)
     pk.public_key().verify(sig, str(ts).encode("utf-8"))
+
+    secret_unpadded = secret_b64.rstrip("=")
+    sig_b64_u = sign_polymarket_request(ts, secret_unpadded)
+    sig_u = base64.b64decode(sig_b64_u)
+    pk.public_key().verify(sig_u, str(ts).encode("utf-8"))

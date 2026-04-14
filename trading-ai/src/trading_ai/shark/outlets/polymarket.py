@@ -34,19 +34,84 @@ def sign_polymarket_request(timestamp_ms: int, api_secret: str) -> str:
         logger.warning("cryptography not installed; Polymarket API signing unavailable")
         return ""
     raw = api_secret.strip()
+    secret = raw
+    padding = 4 - len(secret) % 4
+    if padding != 4:
+        secret = secret + "=" * padding
     try:
-        key_bytes = base64.b64decode(raw)
+        key_bytes = base64.b64decode(secret)
     except Exception:
         try:
-            key_bytes = bytes.fromhex(raw.replace("0x", ""))
+            key_bytes = base64.urlsafe_b64decode(secret)
         except Exception:
-            return ""
+            try:
+                key_bytes = bytes.fromhex(raw.replace("0x", ""))
+            except Exception:
+                return ""
     if len(key_bytes) < 32:
         return ""
     private_key = Ed25519PrivateKey.from_private_bytes(key_bytes[:32])
     msg = str(timestamp_ms).encode("utf-8")
     sig = private_key.sign(msg)
     return base64.b64encode(sig).decode("ascii")
+
+
+def test_polymarket_credentials() -> Dict[str, Any]:
+    """
+    GET /balance-allowance with full L2 signed headers (diagnostic for 401 / key–secret mismatch).
+    """
+    import urllib.error
+    import urllib.request
+
+    load_shark_dotenv()
+    key_id = (os.getenv("POLY_API_KEY") or "").strip()
+    secret_set = bool((os.getenv("POLY_API_SECRET") or "").strip())
+    wk = (os.getenv("POLY_WALLET_KEY") or "").strip()
+    wa = (os.getenv("POLY_WALLET_ADDRESS") or "").strip()
+    wallet_set = bool(wk or wa)
+
+    fixed_clob = "https://clob.polymarket.com"
+    ba_params: Dict[str, str] = {"asset_type": "COLLATERAL"}
+    sig_t = (os.environ.get("POLY_SIGNATURE_TYPE") or "").strip()
+    if sig_t.isdigit():
+        ba_params["signature_type"] = sig_t
+    q = urllib.parse.urlencode(ba_params)
+    url = f"{fixed_clob}/balance-allowance?{q}"
+
+    headers = dict(get_polymarket_headers())
+    headers["User-Agent"] = "EzrasSetup/1.0"
+
+    status_code = -1
+    error: Optional[str] = None
+    balance: Optional[float] = None
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            status_code = int(resp.getcode())
+            raw = resp.read().decode("utf-8")
+            if raw.strip():
+                body = json.loads(raw)
+                balance = _extract_balance_from_json(body)
+    except urllib.error.HTTPError as e:
+        status_code = int(e.code)
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            error = (err_body or str(e))[:500]
+        except Exception:
+            error = str(e)
+    except Exception as e:
+        status_code = -1
+        error = str(e)
+
+    return {
+        "status_code": status_code,
+        "error": error,
+        "balance": balance,
+        "key_id_used": key_id,
+        "secret_set": secret_set,
+        "wallet_set": wallet_set,
+    }
 
 
 def get_polymarket_headers() -> Dict[str, str]:

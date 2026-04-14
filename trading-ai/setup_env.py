@@ -197,6 +197,13 @@ def main() -> int:
     ensure_dirs(rt)
     init_capital(rt)
 
+    try:
+        from trading_ai.shark.outlets.polymarket import test_polymarket_credentials
+
+        print("Polymarket credentials diagnostic:", json.dumps(test_polymarket_credentials(), indent=2))
+    except Exception as exc:
+        print(f"Polymarket credentials diagnostic failed: {exc}")
+
     results: List[Tuple[str, bool, str]] = []
     for name, fn in (
         ("Polymarket", test_polymarket),
