@@ -550,6 +550,41 @@ def test_31_kalshi_fetcher_maps_response_to_market_snapshot():
     assert sn.last_price_update_timestamp == now
 
 
+def test_31b_kalshi_tradeable_accepts_non_open_status():
+    from trading_ai.shark.outlets.kalshi import _kalshi_market_tradeable
+
+    now = 1_700_000_000.0
+    m = {
+        "ticker": "KX-1",
+        "status": "active",
+        "yes_ask": 50,
+        "no_ask": 50,
+        "close_time": now + 3600.0,
+    }
+    assert _kalshi_market_tradeable(m, now)
+    assert not _kalshi_market_tradeable({**m, "status": "closed"}, now)
+    assert not _kalshi_market_tradeable({**m, "settled": True}, now)
+
+
+def test_31c_gamma_row_normalization_tradeable():
+    from trading_ai.shark.outlets import polymarket as poly
+
+    now = 1_700_000_000.0
+    g = {
+        "conditionId": "0xabc",
+        "question": "Q?",
+        "endDate": "2030-01-01T12:00:00Z",
+        "clobTokenIds": '["111", "222"]',
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.6", "0.4"]',
+        "volume24hr": 99.0,
+    }
+    row = poly._gamma_market_to_clob_like_row(g)
+    assert row["condition_id"] == "0xabc"
+    assert len(row["tokens"]) == 2
+    assert poly._is_tradeable_market_dict(row, now)
+
+
 def test_32b_kalshi_rsa_pem_normalization_and_signed_headers(monkeypatch):
     pytest.importorskip("cryptography")
     from cryptography.hazmat.primitives import serialization

@@ -224,7 +224,7 @@ class KalshiClient:
         rows: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
         while True:
-            params: Dict[str, Any] = {"status": "open", "limit": min(limit, 1000)}
+            params: Dict[str, Any] = {"limit": min(limit, 1000)}
             if cursor:
                 params["cursor"] = cursor
             j = self._request("GET", "/markets", params=params)
@@ -337,15 +337,20 @@ def _parse_close_time_seconds(m: Dict[str, Any], now: float) -> float:
     return 86400.0
 
 
+_KALSHI_TERMINAL_STATUSES = frozenset(
+    {"closed", "settled", "finalized", "determined", "expired", "cancelled", "canceled"}
+)
+
+
 def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
-    """Only open, unsettled markets with close time in the future (when parseable)."""
-    st = str(m.get("status", "open")).lower()
-    if st != "open":
-        return False
+    """Unsettled markets with close time in the future; status must not be a known terminal value."""
     if m.get("settled") or m.get("is_settled"):
         return False
     end = _parse_close_timestamp_unix(m)
     if end is not None and end <= now:
+        return False
+    st = str(m.get("status", "")).strip().lower()
+    if st in _KALSHI_TERMINAL_STATUSES:
         return False
     return True
 
@@ -392,9 +397,11 @@ class KalshiFetcher(BaseOutletFetcher):
         try:
             now = time.time()
             raw_list = self._client.fetch_markets_open(limit=500)
+            sample_statuses = [str(m.get("status", "unknown")) for m in raw_list[:20] if isinstance(m, dict)]
+            logger.info("Kalshi sample statuses (first %s): %s", len(sample_statuses), sample_statuses)
             active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
             logger.info(
-                "Kalshi: %s fetched → %s active open markets",
+                "Kalshi: %s fetched → %s tradeable markets (settled/time/status filter)",
                 len(raw_list),
                 len(active_rows),
             )

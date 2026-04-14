@@ -64,13 +64,16 @@ def _token_liquidity_field(tok: Dict[str, Any]) -> Optional[float]:
 
 
 def _poly_end_timestamp_seconds(row: Dict[str, Any], now: float) -> Tuple[Optional[float], float]:
-    """Parse resolution instant from CLOB /markets row; return (unix_end_ts, seconds_to_resolution)."""
+    """Parse resolution instant from CLOB / Gamma market row; return (unix_end_ts, seconds_to_resolution)."""
     end_ts: Optional[float] = None
-    for key in ("end_time_iso", "end_date_iso", "endDateIso"):
+    for key in ("end_time_iso", "endDate", "end_date_iso", "endDateIso"):
         v = row.get(key)
         if isinstance(v, str) and v.strip():
             try:
-                end_ts = float(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp())
+                s = v.replace("Z", "+00:00")
+                if key == "endDateIso" and len(s) == 10 and s[4] == "-" and s[7] == "-":
+                    s = s + "T23:59:59+00:00"
+                end_ts = float(datetime.fromisoformat(s).timestamp())
                 break
             except ValueError:
                 continue
@@ -87,36 +90,140 @@ def _poly_end_timestamp_seconds(row: Dict[str, Any], now: float) -> Tuple[Option
     return end_ts, ttr
 
 
-def _coerce_boolish(val: Any, default: bool) -> bool:
-    if val is None:
-        return default
-    if isinstance(val, bool):
-        return val
-    s = str(val).strip().lower()
-    if s in ("true", "1", "yes", "active"):
-        return True
-    if s in ("false", "0", "no", ""):
-        return False
-    return default
-
-
 def _is_tradeable_market_dict(row: Dict[str, Any], now: float) -> bool:
-    """CLOB row must be active, not closed/archived, and not past resolution.
-
-    Only reject ``active``/``closed``/``archived`` on *explicit* API values so
-    ``None``/missing (common on CLOB payloads) does not drop otherwise-open markets.
-    """
-    active_val = row.get("active")
-    if active_val is False:
-        return False
-    if row.get("closed") is True:
-        return False
-    if row.get("archived") is True:
-        return False
+    """Tradeable if no parsed end time, or end is strictly in the future (server active/closed flags ignored)."""
     end_ts, _ = _poly_end_timestamp_seconds(row, now)
     if end_ts is not None and end_ts < now:
         return False
     return True
+
+
+def _gamma_api_base() -> str:
+    return (os.environ.get("POLY_GAMMA_API_BASE") or "https://gamma-api.polymarket.com").rstrip("/")
+
+
+def _parse_polymarket_json_list(val: Any) -> List[Any]:
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str) and val.strip():
+        try:
+            out = json.loads(val)
+            return out if isinstance(out, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def fetch_gamma_markets_page(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    """Gamma API — curated active market list (recommended over CLOB ``active=`` query params)."""
+    base = _gamma_api_base()
+    url = f"{base}/markets?closed=false&archived=false&limit={int(limit)}&offset={int(offset)}"
+    try:
+        r = requests.get(url, headers={"User-Agent": "EzrasShark/1.0"}, timeout=25)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+    except Exception as exc:
+        logger.warning("Polymarket Gamma page fetch failed offset=%s: %s", offset, exc)
+    return []
+
+
+def fetch_gamma_markets(limit_per_page: int = 100) -> List[Dict[str, Any]]:
+    """Paginated Gamma ``/markets`` (closed=false, archived=false)."""
+    raw_cap = (os.environ.get("EZRAS_POLY_GAMMA_MAX_PAGES") or "").strip()
+    if raw_cap.isdigit() and int(raw_cap) == 0:
+        max_pages = 50
+    elif raw_cap.isdigit():
+        max_pages = max(1, int(raw_cap))
+    else:
+        max_pages = 10
+    all_rows: List[Dict[str, Any]] = []
+    for page in range(max_pages):
+        offset = page * limit_per_page
+        batch = fetch_gamma_markets_page(limit_per_page, offset)
+        if not batch:
+            break
+        all_rows.extend(batch)
+        if len(batch) < limit_per_page:
+            break
+    return all_rows
+
+
+def _gamma_market_to_clob_like_row(g: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize Gamma JSON into a CLOB-shaped dict for shared snapshot + token parsing."""
+    cid = str(g.get("conditionId") or g.get("condition_id") or "").strip()
+    token_ids = [str(x).strip() for x in _parse_polymarket_json_list(g.get("clobTokenIds")) if str(x).strip()]
+    outcomes = _parse_polymarket_json_list(g.get("outcomes"))
+    prices_raw = _parse_polymarket_json_list(g.get("outcomePrices"))
+    prices_f: List[float] = []
+    for p in prices_raw[:2]:
+        try:
+            prices_f.append(float(p))
+        except (TypeError, ValueError):
+            prices_f.append(0.5)
+    tokens: List[Dict[str, Any]] = []
+    for i, tid in enumerate(token_ids[:2]):
+        oc = str(outcomes[i]).strip() if i < len(outcomes) else ("Yes" if i == 0 else "No")
+        pr = prices_f[i] if i < len(prices_f) else 0.5
+        tokens.append({"token_id": tid, "tokenId": tid, "outcome": oc, "price": pr})
+    bid = g.get("bestBid")
+    ask = g.get("bestAsk")
+    vol = g.get("volume24hr") or g.get("volume24hrClob") or g.get("volumeNum") or g.get("volume") or 0
+    row: Dict[str, Any] = {
+        "condition_id": cid,
+        "id": cid,
+        "question": g.get("question"),
+        "description": g.get("description") or g.get("question"),
+        "endDate": g.get("endDate"),
+        "end_date_iso": g.get("endDateIso"),
+        "end_time_iso": g.get("endDate"),
+        "tokens": tokens,
+        "volume": vol,
+        "volume_24h": vol,
+        "volumeNum": vol,
+        "question_id": g.get("questionID") or g.get("questionId"),
+        "outcome_prices": prices_f,
+        "_discovery": "gamma",
+    }
+    if bid is not None:
+        try:
+            row["best_bid"] = float(bid)
+        except (TypeError, ValueError):
+            pass
+    if ask is not None:
+        try:
+            row["best_ask"] = float(ask)
+        except (TypeError, ValueError):
+            pass
+    return row
+
+
+def _fetch_clob_market_pages_no_filters(fetcher: "PolymarketFetcher", max_pages: Optional[int]) -> List[Dict[str, Any]]:
+    """CLOB ``/markets`` without active/closed/archived query filters (filter client-side only)."""
+    try:
+        from py_clob_client.constants import END_CURSOR
+    except ImportError:
+        END_CURSOR = "LTE="
+    base = fetcher.CLOB_BASE.rstrip("/")
+    cursor = "MA=="
+    rows: List[Dict[str, Any]] = []
+    pages = 0
+    while cursor != END_CURSOR:
+        if max_pages is not None and pages >= max_pages:
+            break
+        url = f"{base}/markets?limit=100&next_cursor={urllib.parse.quote(cursor, safe='')}"
+        raw = fetcher.http_get_json(url)
+        batch = raw.get("data") if isinstance(raw, dict) else raw
+        if not isinstance(batch, list):
+            break
+        rows.extend([r for r in batch if isinstance(r, dict)])
+        pages += 1
+        nxt = raw.get("next_cursor") if isinstance(raw, dict) else None
+        if not nxt or nxt == END_CURSOR:
+            break
+        cursor = str(nxt)
+    return rows
 
 
 def fetch_polymarket_clob_market_json(condition_id: str) -> Optional[Dict[str, Any]]:
@@ -817,8 +924,14 @@ class PolymarketFetcher(BaseOutletFetcher):
 
     def is_healthy(self) -> bool:
         try:
+            page = fetch_gamma_markets_page(limit=1, offset=0)
+            if page:
+                return True
+        except Exception:
+            pass
+        try:
             base = self.CLOB_BASE.rstrip("/")
-            self.http_get_json(f"{base}/markets?active=true&closed=false&archived=false&limit=1")
+            self.http_get_json(f"{base}/markets?limit=1")
             return True
         except Exception:
             return False
@@ -829,82 +942,7 @@ class PolymarketFetcher(BaseOutletFetcher):
     def fetch_markets(self) -> List[MarketSnapshot]:
         return self.fetch_binary_markets()
 
-    def fetch_binary_markets(self) -> List[MarketSnapshot]:
-        """All CLOB markets via paginated ``/markets`` (``next_cursor`` until ``END_CURSOR``).
-
-        Env ``EZRAS_POLY_CLOB_MAX_PAGES`` overrides page count; default **2** pages to limit memory.
-        Set a higher integer or ``0`` (treated as no cap in env handling) only if you need full sweep.
-        """
-        try:
-            from py_clob_client.constants import END_CURSOR
-        except ImportError:
-            END_CURSOR = "LTE="
-        raw_cap = (os.environ.get("EZRAS_POLY_CLOB_MAX_PAGES") or "").strip()
-        if raw_cap.isdigit() and int(raw_cap) == 0:
-            max_pages: Optional[int] = None
-        elif raw_cap.isdigit():
-            max_pages = max(1, int(raw_cap))
-        else:
-            max_pages = 2
-        base = self.CLOB_BASE.rstrip("/")
-        cursor = "MA=="
-        rows: List[Dict[str, Any]] = []
-        pages = 0
-        try:
-            while cursor != END_CURSOR:
-                if max_pages is not None and pages >= max_pages:
-                    break
-                q = "active=true&closed=false&archived=false&limit=100"
-                url = f"{base}/markets?{q}&next_cursor={urllib.parse.quote(cursor, safe='')}"
-                raw = self.http_get_json(url)
-                batch = raw.get("data") if isinstance(raw, dict) else raw
-                if not isinstance(batch, list):
-                    break
-                rows.extend([r for r in batch if isinstance(r, dict)])
-                pages += 1
-                nxt = raw.get("next_cursor") if isinstance(raw, dict) else None
-                if not nxt or nxt == END_CURSOR:
-                    break
-                cursor = str(nxt)
-        except Exception:
-            return []
-        now = time.time()
-        raw_fetched = len(rows)
-        rejected_active = 0
-        rejected_closed = 0
-        rejected_archived = 0
-        rejected_expired = 0
-        rejected_no_price = 0
-        tradeable_rows: List[Dict[str, Any]] = []
-        for m in rows:
-            if not isinstance(m, dict):
-                continue
-            active_val = m.get("active")
-            if active_val is False:
-                rejected_active += 1
-                continue
-            if m.get("closed") is True:
-                rejected_closed += 1
-                continue
-            if m.get("archived") is True:
-                rejected_archived += 1
-                continue
-            end_ts, _ = _poly_end_timestamp_seconds(m, now)
-            if end_ts is not None and end_ts < now:
-                rejected_expired += 1
-                continue
-            tradeable_rows.append(m)
-        logger.info(
-            "Polymarket filter: total=%s rejected_active=%s rejected_closed=%s "
-            "rejected_archived=%s rejected_expired=%s rejected_no_price=%s passed=%s",
-            raw_fetched,
-            rejected_active,
-            rejected_closed,
-            rejected_archived,
-            rejected_expired,
-            rejected_no_price,
-            len(tradeable_rows),
-        )
+    def _rows_to_market_snapshots(self, tradeable_rows: List[Dict[str, Any]], now: float) -> List[MarketSnapshot]:
         out: List[MarketSnapshot] = []
         for row in tradeable_rows:
             cid = str(row.get("condition_id") or row.get("id") or "")
@@ -1005,10 +1043,73 @@ class PolymarketFetcher(BaseOutletFetcher):
                     no_token_id=nt_s,
                 )
             )
-        active_markets = [m for m in out if m.end_date_seconds is None or m.end_date_seconds > now]
+        return out
+
+    def fetch_binary_markets(self) -> List[MarketSnapshot]:
+        """Discover markets via Gamma API first; fall back to unfiltered CLOB pagination.
+
+        Tradeability uses **end time only** (``_is_tradeable_market_dict``) — no CLOB ``active=`` / ``closed=`` filters.
+
+        Env ``EZRAS_POLY_GAMMA_MAX_PAGES`` caps Gamma pages (default 10 × 100). ``EZRAS_POLY_CLOB_MAX_PAGES`` caps CLOB
+        fallback pages (default 2).
+        """
+        now = time.time()
+        raw_cap = (os.environ.get("EZRAS_POLY_CLOB_MAX_PAGES") or "").strip()
+        if raw_cap.isdigit() and int(raw_cap) == 0:
+            clob_max_pages: Optional[int] = None
+        elif raw_cap.isdigit():
+            clob_max_pages = max(1, int(raw_cap))
+        else:
+            clob_max_pages = 2
+
+        discovery = ""
+        tradeable_rows: List[Dict[str, Any]] = []
+        raw_fetched = 0
+
+        try:
+            gamma_raw = fetch_gamma_markets()
+            raw_fetched = len(gamma_raw)
+            normalized = [_gamma_market_to_clob_like_row(g) for g in gamma_raw if isinstance(g, dict)]
+            normalized = [r for r in normalized if r.get("condition_id")]
+            tradeable_rows = [r for r in normalized if _is_tradeable_market_dict(r, now)]
+            if tradeable_rows:
+                discovery = "gamma-api.polymarket.com"
+                logger.info(
+                    "Polymarket discovery: Gamma API raw=%s normalized=%s tradeable=%s",
+                    len(gamma_raw),
+                    len(normalized),
+                    len(tradeable_rows),
+                )
+        except Exception as exc:
+            logger.warning("Polymarket Gamma discovery failed: %s", exc)
+
+        if not tradeable_rows:
+            try:
+                clob_rows = _fetch_clob_market_pages_no_filters(self, clob_max_pages)
+                raw_fetched = len(clob_rows)
+                tradeable_rows = [r for r in clob_rows if isinstance(r, dict) and _is_tradeable_market_dict(r, now)]
+                discovery = "clob.polymarket.com (unfiltered)"
+                logger.info(
+                    "Polymarket discovery: CLOB unfiltered raw=%s tradeable=%s (Gamma had 0 tradeable or failed)",
+                    raw_fetched,
+                    len(tradeable_rows),
+                )
+            except Exception as exc:
+                logger.warning("Polymarket CLOB fallback failed: %s", exc)
+                return []
+
+        if not tradeable_rows:
+            logger.warning(
+                "Polymarket: 0 tradeable markets after Gamma + CLOB (discovery=%s raw_rows=%s)",
+                discovery or "none",
+                raw_fetched,
+            )
+            return []
+
+        out = self._rows_to_market_snapshots(tradeable_rows, now)
         logger.info(
-            "Polymarket: %s fetched → %s tradeable active markets",
-            raw_fetched,
-            len(active_markets),
+            "Polymarket discovery source=%s snapshots=%s (end-date filter only)",
+            discovery,
+            len(out),
         )
-        return active_markets
+        return out
