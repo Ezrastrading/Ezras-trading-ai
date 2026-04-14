@@ -1,8 +1,9 @@
-"""Avenue registry — one master agent, five revenue avenues, one treasury."""
+"""Avenue registry — one master agent, multiple revenue + intelligence avenues, one treasury."""
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from trading_ai.governance.storage_architecture import shark_state_path
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 
 load_shark_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _iso() -> str:
@@ -91,6 +94,30 @@ def _default_avenues() -> Dict[str, Avenue]:
             automation_level="full",
             **_t,
         ),
+        "metaculus": Avenue(
+            name="Metaculus",
+            platform="metaculus",
+            avenue_type="prediction_market",
+            starting_capital=25.00,
+            automation_level="manual_only",
+            **_t,
+        ),
+        "coinbase": Avenue(
+            name="Coinbase",
+            platform="coinbase",
+            avenue_type="crypto",
+            starting_capital=25.00,
+            automation_level="semi",
+            **_t,
+        ),
+        "robinhood": Avenue(
+            name="Robinhood",
+            platform="robinhood",
+            avenue_type="equity",
+            starting_capital=25.00,
+            automation_level="semi",
+            **_t,
+        ),
         "tastytrade": Avenue(
             name="Tastytrade",
             platform="tastytrade",
@@ -159,6 +186,25 @@ def save_avenues(avenues: Dict[str, Avenue]) -> None:
 
 
 # ── Mutations ─────────────────────────────────────────────────────────────────
+
+def set_avenue_status(avenue_name: str, status: str) -> None:
+    """Set ``status`` (active|paused|suspended). Triggers strategy unlock when transitioning to active."""
+    avenues = load_avenues()
+    if avenue_name not in avenues:
+        return
+    prev = (avenues[avenue_name].status or "").lower()
+    avenues[avenue_name].status = status
+    avenues[avenue_name].last_updated = _iso()
+    save_avenues(avenues)
+    new = (status or "").lower()
+    if prev != "active" and new == "active":
+        try:
+            from trading_ai.shark import avenue_activator
+
+            avenue_activator.on_avenue_became_active(avenue_name, previous_status=prev)
+        except Exception as exc:
+            logger.warning("avenue activator hook failed: %s", exc)
+
 
 def update_avenue_capital(avenue_name: str, new_capital: float) -> None:
     """Set current_capital for an avenue and persist."""

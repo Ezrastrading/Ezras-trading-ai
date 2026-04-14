@@ -541,13 +541,15 @@ def startup_banner(*, capital: float, phase: str, gaps_n: int) -> str:
                 extra = f" Manifold (USD): ${musd:.2f}\n"
         except Exception:
             pass
+    avenues_line = " Avenues: Kalshi · Polymarket · Manifold · Metaculus · Coinbase · Robinhood · Tastytrade\n"
     return (
         "🦈 Ezras Shark System — LIVE\n"
         f" Capital: ${k:.2f} (Kalshi)\n"
         + extra
         + f" Phase: {phase}\n"
-        " Scanning: Kalshi | Mode: 24/7\n"
-        " Targets: MINIMUM expectations.\n"
-        " Faster is always better. 🦈\n"
-        " System is hunting. Always."
+        + avenues_line
+        + " Scanning: multi-outlet | Mode: 24/7\n"
+        + " Targets: MINIMUM expectations.\n"
+        + " Faster is always better. 🦈\n"
+        + " System is hunting. Always."
     )

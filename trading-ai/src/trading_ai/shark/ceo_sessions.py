@@ -349,10 +349,38 @@ def build_ceo_session_prompt(
 
     growth_block = growth_path_summary_lines(float(stats["net_worth"]), month_index=1)
 
+    from trading_ai.shark.avenues import load_avenues
+    from trading_ai.shark.master_strategies import get_active_strategies, get_strategy_performance_summary
+
+    active_avenues = [k for k, a in load_avenues().items() if (a.status or "").lower() == "active"]
+    active_strategies = get_active_strategies(float(stats["net_worth"]), active_avenues)
+    active_names = [s.name for s in active_strategies]
+    perf = get_strategy_performance_summary()
+    perf_json = json.dumps(perf, indent=2, default=str)[:1000]
+
+    beast_block = ""
+    try:
+        from trading_ai.shark.avenue_activator import format_avenue_status_for_ceo
+        from trading_ai.shark.master_wallet import load_master_wallet
+
+        beast_block = (
+            "\n\nSIX AVENUES + MASTER WALLET (Beast architecture):\n"
+            f"{format_avenue_status_for_ceo()}\n\nmaster_wallet.json snapshot:\n"
+            f"{json.dumps(load_master_wallet(), indent=2)[:3500]}\n"
+            "\nMorning brief checklist: active vs pending venues, overnight hunt fires, "
+            "cross-venue signals (Kalshi↔Metaculus↔Polymarket), which credential to add next, "
+            "and one concrete strategy experiment per avenue type.\n"
+        )
+    except Exception:
+        beast_block = ""
+
     return f"""You are the CEO of Ezras Capital — a ruthlessly effective prediction market hedge fund.
 
-Primary execution venue: **Kalshi** (US-legal). Polymarket is **intelligence-only** (no orders).
-Also monitor: Manifold (mana sandbox), sports pipelines as configured.
+Primary execution venue: **Kalshi** (US-legal). Polymarket + Metaculus are **intelligence layers**
+(no orders from those outlets in this stack). Manifold: mana sandbox unless ``MANIFOLD_REAL_MONEY``.
+Coinbase / Robinhood / Tastytrade: enable with API keys + execution env flags when ready.
+Also monitor: sports pipelines as configured.
+{beast_block}
 
 Current capital: ${stats["net_worth"]:.2f}
 Starting capital: ${stats["starting"]:.2f}
@@ -388,6 +416,16 @@ STRATEGY PIPELINE (recent):
 {pipeline_txt}
 {week_block}
 
+ACTIVE STRATEGIES (eligible given capital + avenues):
+{json.dumps(active_names, indent=2)}
+
+STRATEGY PERFORMANCE (journal-backed, by master strategy id):
+{perf_json}
+
+Which strategies should we double down on?
+Which should we pause?
+What new strategies should we test?
+
 As CEO give me:
 1. Honest 2-sentence assessment
 2. What is working — keep doing it
@@ -418,7 +456,8 @@ Respond in JSON:
     "hunt_type_adjustments": {{}},
     "min_edge_changes": {{}},
     "sizing_changes": {{}},
-    "focus_markets": []
+    "focus_markets": [],
+    "strategy_enabled": {{}}
   }},
   "next_session_target": "one sentence",
   "confidence": 0.5
@@ -468,6 +507,9 @@ def _normalize_ceo_result(raw: Dict[str, Any]) -> Dict[str, Any]:
             "min_edge_changes": dict(pc.get("min_edge_changes") or {}) if isinstance(pc.get("min_edge_changes"), dict) else {},
             "sizing_changes": dict(pc.get("sizing_changes") or {}) if isinstance(pc.get("sizing_changes"), dict) else {},
             "focus_markets": list(pc.get("focus_markets") or []) if isinstance(pc.get("focus_markets"), list) else [],
+            "strategy_enabled": dict(pc.get("strategy_enabled") or {})
+            if isinstance(pc.get("strategy_enabled"), dict)
+            else {},
         },
         "next_session_target": str(raw.get("next_session_target", ""))[:400],
         "confidence": float(raw.get("confidence", 0.5) or 0.5),
@@ -497,6 +539,12 @@ def apply_ceo_parameter_changes(changes: dict) -> None:
         except (TypeError, ValueError):
             continue
         logger.info("CEO min_edge %s → %s", hunt, CEO_EDGE_OVERRIDES[str(hunt)])
+
+    se = changes.get("strategy_enabled") if isinstance(changes, dict) else None
+    if isinstance(se, dict) and se:
+        from trading_ai.shark.master_strategies import apply_strategy_enabled_changes
+
+        apply_strategy_enabled_changes(se)
 
     save_bayesian_snapshot()
     save_ceo_overrides()

@@ -12,10 +12,13 @@ from trading_ai.shark.crypto_polymarket_hunts import (
     run_filtered_polymarket_hunts,
 )
 from trading_ai.shark.kalshi_hunts import (
+    hunt_kalshi_metaculus_agreement,
+    hunt_kalshi_metaculus_divergence,
     hunt_kalshi_momentum,
     hunt_kalshi_near_close,
     hunt_kalshi_polymarket_divergence,
 )
+from trading_ai.shark.master_strategies import filter_hunt_signals_by_strategy
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 
 # Tunable liquidity floors (quote currency units)
@@ -251,12 +254,13 @@ def run_hunts_on_market(
     """
     with hunt_diagnostic_context(hunt_diag_index):
         if hunt_types_filter:
-            return run_filtered_polymarket_hunts(
+            raw = run_filtered_polymarket_hunts(
                 m,
                 hunt_types_filter,
                 now=now,
                 price_history=price_history,
             )
+            return filter_hunt_signals_by_strategy(raw, log_counts=True)
         sigs: List[HuntSignal] = []
         if m.volume_24h <= _FULL_HUNT_MIN_VOLUME_24H:
             for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage):
@@ -266,14 +270,19 @@ def run_hunts_on_market(
             if (m.outlet or "").lower() in ("polymarket", "kalshi"):
                 sigs.extend(append_polymarket_strategy_hunts(m, now=now))
             if (m.outlet or "").lower() == "kalshi":
-                for fn_k in (hunt_kalshi_near_close, hunt_kalshi_polymarket_divergence):
+                for fn_k in (
+                    hunt_kalshi_near_close,
+                    hunt_kalshi_polymarket_divergence,
+                    hunt_kalshi_metaculus_divergence,
+                    hunt_kalshi_metaculus_agreement,
+                ):
                     rk = fn_k(m)
                     if rk:
                         sigs.append(rk)
                 r_m = hunt_kalshi_momentum(m, price_history=price_history or {})
                 if r_m:
                     sigs.append(r_m)
-            return sigs
+            return filter_hunt_signals_by_strategy(sigs, log_counts=False)
         for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
             r = fn(m)
             if r:
@@ -293,14 +302,19 @@ def run_hunts_on_market(
         if (m.outlet or "").lower() in ("polymarket", "kalshi"):
             sigs.extend(append_polymarket_strategy_hunts(m, now=now))
         if (m.outlet or "").lower() == "kalshi":
-            for fn_k in (hunt_kalshi_near_close, hunt_kalshi_polymarket_divergence):
+            for fn_k in (
+                hunt_kalshi_near_close,
+                hunt_kalshi_polymarket_divergence,
+                hunt_kalshi_metaculus_divergence,
+                hunt_kalshi_metaculus_agreement,
+            ):
                 rk = fn_k(m)
                 if rk:
                     sigs.append(rk)
             r_m = hunt_kalshi_momentum(m, price_history=price_history or {})
             if r_m:
                 sigs.append(r_m)
-        return sigs
+        return filter_hunt_signals_by_strategy(sigs, log_counts=False)
 
 
 def group_markets_by_event(markets: Iterable[MarketSnapshot]) -> Dict[str, List[MarketSnapshot]]:
