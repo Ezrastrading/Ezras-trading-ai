@@ -2,3 +2,16 @@
 .venv/
 venv/
 .DS_Store
+
+# Legacy flat layout / local runtime (canonical code lives under trading-ai/)
+src/
+tests/
+UNKNOWN.egg-info/
+.lock_confirm_outputs/
+.post_trade_runtime/
+.smoke_last_run.json
+connectivity.txt
+data/
+logs/
+repo_readiness.txt
+smoke_results.txt
