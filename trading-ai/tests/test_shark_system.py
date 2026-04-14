@@ -666,6 +666,9 @@ def test_32_kalshi_order_placement_returns_valid_order_result_structure(monkeypa
             }
         assert method == "POST"
         assert "/portfolio/orders" in path
+        body = kwargs.get("body") or {}
+        assert body.get("type") == "market"
+        assert body.get("yes_price") == 90  # Kalshi requires a side price even for market orders
         return {
             "order": {"order_id": "ord-k-1", "status": "filled"},
             "filled_count": 10,

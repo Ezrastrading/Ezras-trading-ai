@@ -616,7 +616,8 @@ class KalshiClient:
         action: str = "buy",
     ) -> OrderResult:
         """
-        Kalshi execution is **market-only**: POST body is ``type: market`` (no limit / no resting).
+        Kalshi execution is **market-only**: POST body is ``type: market`` plus **one** of
+        ``yes_price`` / ``no_price`` in **cents** (API requirement — not a limit order).
 
         **Buys** (last line of defense): TTR ≤ ``KALSHI_MAX_TTR_SECONDS`` and implied prob ≥
         ``KALSHI_MIN_ORDER_PROB`` (default 0.85). **Sells** skip (profit exit / unwind).
@@ -633,54 +634,60 @@ class KalshiClient:
             act = "buy"
         cnt = max(1, int(count))
 
-        if act == "buy":
+        yp, npv = 0.5, 0.5
+        inner: Dict[str, Any] = {}
+        mj: Dict[str, Any] = {}
+        market_fetch_ok = False
+        try:
+            mj = self.get_market(ticker)
+            inner = mj.get("market") if isinstance(mj.get("market"), dict) else mj
+            if not isinstance(inner, dict):
+                inner = {}
+            yp, npv, _, _ = _kalshi_yes_no_from_market_row(inner)
+            market_fetch_ok = True
+        except Exception as exc:
+            logger.warning("Kalshi pre-trade gate (get_market) failed %s: %s — proceeding", ticker, exc)
+
+        if act == "buy" and market_fetch_ok:
             from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
 
-            try:
-                mj = self.get_market(ticker)
-                inner = mj.get("market") if isinstance(mj.get("market"), dict) else mj
-                if not isinstance(inner, dict):
-                    inner = {}
-                end = _parse_close_timestamp_unix(inner)
-                if end is not None:
-                    ttr = end - time.time()
-                    if ttr > kalshi_max_ttr_seconds():
-                        logger.error(
-                            "BLOCKED: TTR %.0fs exceeds max %.0fs — %s",
-                            ttr,
-                            kalshi_max_ttr_seconds(),
-                            ticker,
-                        )
-                        return OrderResult(
-                            order_id="",
-                            filled_price=0.0,
-                            filled_size=0.0,
-                            timestamp=time.time(),
-                            status="blocked_ttr",
-                            outlet="kalshi",
-                            raw=mj,
-                            success=False,
-                            reason="ttr_over_max",
-                        )
-                yp, npv, _, _ = _kalshi_yes_no_from_market_row(inner)
-                implied = float(yp if (side or "").lower() == "yes" else npv)
-                min_p = float((os.environ.get("KALSHI_MIN_ORDER_PROB") or "0.85").strip() or "0.85")
-                if implied < min_p:
-                    pct = implied * 100.0
-                    logger.error("BLOCKED: prob %.1f%% below 85%% minimum", pct)
+            end = _parse_close_timestamp_unix(inner)
+            if end is not None:
+                ttr = end - time.time()
+                if ttr > kalshi_max_ttr_seconds():
+                    logger.error(
+                        "BLOCKED: TTR %.0fs exceeds max %.0fs — %s",
+                        ttr,
+                        kalshi_max_ttr_seconds(),
+                        ticker,
+                    )
                     return OrderResult(
                         order_id="",
                         filled_price=0.0,
                         filled_size=0.0,
                         timestamp=time.time(),
-                        status="blocked_prob",
+                        status="blocked_ttr",
                         outlet="kalshi",
                         raw=mj,
                         success=False,
-                        reason="prob_below_min",
+                        reason="ttr_over_max",
                     )
-            except Exception as exc:
-                logger.warning("Kalshi pre-trade gate (get_market) failed %s: %s — proceeding", ticker, exc)
+            implied = float(yp if (side or "").lower() == "yes" else npv)
+            min_p = float((os.environ.get("KALSHI_MIN_ORDER_PROB") or "0.85").strip() or "0.85")
+            if implied < min_p:
+                pct = implied * 100.0
+                logger.error("BLOCKED: prob %.1f%% below 85%% minimum", pct)
+                return OrderResult(
+                    order_id="",
+                    filled_price=0.0,
+                    filled_size=0.0,
+                    timestamp=time.time(),
+                    status="blocked_prob",
+                    outlet="kalshi",
+                    raw=mj,
+                    success=False,
+                    reason="prob_below_min",
+                )
 
         body: Dict[str, Any] = {
             "ticker": ticker,
@@ -688,6 +695,7 @@ class KalshiClient:
             "side": side,
             "type": "market",
             "count": cnt,
+            **_kalshi_market_order_price_fields(side, yp, npv),
         }
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
@@ -923,6 +931,14 @@ def _kalshi_yes_no_from_market_row(m: Dict[str, Any]) -> Tuple[float, float, Opt
         no_p = 1.0 - yes_p
         n_src = f"inferred_from_{y_src}"
     return yes_p, no_p, y_src, n_src
+
+
+def _kalshi_market_order_price_fields(side: str, yp: float, npv: float) -> Dict[str, int]:
+    """Kalshi ``type: market`` still requires exactly one of ``yes_price`` / ``no_price`` (1–99 cents)."""
+    s = (side or "").strip().lower()
+    if s == "no":
+        return {"no_price": max(1, min(99, int(round(npv * 100))))}
+    return {"yes_price": max(1, min(99, int(round(yp * 100))))}
 
 
 def _parse_close_timestamp_unix(m: Dict[str, Any]) -> Optional[float]:
