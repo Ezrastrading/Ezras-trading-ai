@@ -266,6 +266,7 @@ def test_11_execution_chain_logs_steps():
     assert res.ok
     steps = [a["step"] for a in res.audit]
     assert "1_doctrine_gate" in steps and "15_telegram_resolution" in steps
+    assert "5b_claude" in steps
 
 
 def test_12_telegram_reporting_trade():
@@ -1710,3 +1711,246 @@ def test_120_polymarket_api_signing_produces_valid_ed25519_signature():
     sig_b64_u = sign_polymarket_request(ts, secret_unpadded)
     sig_u = base64.b64decode(sig_b64_u)
     pk.public_key().verify(sig_u, str(ts).encode("utf-8"))
+
+
+def test_121_is_crypto_short_market_true_for_btc_above_short_window():
+    import time
+
+    from trading_ai.shark.crypto_polymarket_hunts import _is_crypto_short_market
+
+    end = time.time() + 10 * 60
+    m = MarketSnapshot(
+        market_id="poly:t",
+        outlet="polymarket",
+        yes_price=0.4,
+        no_price=0.6,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=600.0,
+        resolution_criteria="",
+        last_price_update_timestamp=time.time(),
+        question_text="Will Bitcoin be above $90,000 at 2:05pm?",
+        end_timestamp_unix=end,
+    )
+    assert _is_crypto_short_market(m) is True
+
+
+def test_122_calc_crypto_prob_returns_probability_in_zero_one():
+    pytest.importorskip("scipy")
+    from trading_ai.shark.crypto_polymarket_hunts import calc_crypto_prob
+
+    p = calc_crypto_prob(100_000.0, 99_000.0, 5.0)
+    assert 0.0 < p < 1.0
+
+
+def test_123_hunt_pure_arbitrage_detects_yes_048_no_049():
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_pure_arbitrage
+
+    m = MarketSnapshot(
+        market_id="poly:a",
+        outlet="polymarket",
+        yes_price=0.48,
+        no_price=0.49,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=3600.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+    )
+    r = hunt_pure_arbitrage(m)
+    assert r is not None
+    assert r.edge_after_fees == pytest.approx(0.03, abs=1e-6)
+
+
+def test_124_hunt_near_resolution_fires_when_yes_098_and_10min_left():
+    import time
+
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_near_resolution
+
+    end = time.time() + 10 * 60
+    m = MarketSnapshot(
+        market_id="poly:n",
+        outlet="polymarket",
+        yes_price=0.98,
+        no_price=0.02,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=600.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+        end_timestamp_unix=end,
+    )
+    r = hunt_near_resolution(m)
+    assert r is not None
+    assert r.hunt_type == HuntType.NEAR_RESOLUTION
+
+
+def test_125_hunt_order_book_imbalance_fires_when_yes_side_thin():
+    from trading_ai.shark.crypto_polymarket_hunts import hunt_order_book_imbalance
+
+    m = MarketSnapshot(
+        market_id="poly:o",
+        outlet="polymarket",
+        yes_price=0.5,
+        no_price=0.5,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=86400.0,
+        resolution_criteria="",
+        last_price_update_timestamp=0.0,
+        best_ask_yes=10.0,
+        best_ask_no=90.0,
+    )
+    r = hunt_order_book_imbalance(m)
+    assert r is not None
+    assert r.details.get("side") == "yes"
+
+
+def test_126_crypto_scalp_scan_interval_job_registered():
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        crypto_scalp_scan=lambda: None,
+    )
+    assert sched is not None
+    assert "crypto_scalp_scan" in [j.id for j in sched.get_jobs()]
+
+
+def test_127_polymarket_uses_limit_slippage_not_market_order_api():
+    from pathlib import Path
+
+    import trading_ai.shark.polymarket_live as pl
+
+    assert pl.limit_price_with_slippage(0.50) == pytest.approx(0.501, abs=1e-9)
+    src = Path(pl.__file__).read_text(encoding="utf-8")
+    assert "create_market_order" not in src
+    assert "create_and_post_order" in src
+
+
+def test_128_claude_evaluate_trade_returns_valid_json(monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    fake_mod = types.ModuleType("anthropic")
+
+    class _Anthropic:
+        def __init__(self, api_key=None):
+            pass
+
+        class _Messages:
+            @staticmethod
+            def create(**kwargs):
+                class _Blk:
+                    text = (
+                        '{"decision": "YES", "true_probability": 0.62, '
+                        '"confidence": 0.71, "size_multiplier": 1.1, "reasoning": "Edge looks real."}'
+                    )
+
+                class _Resp:
+                    content = [_Blk()]
+
+                return _Resp()
+
+        messages = _Messages()
+
+    fake_mod.Anthropic = _Anthropic
+    monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+
+    from trading_ai.shark.claude_eval import claude_evaluate_trade
+
+    out = claude_evaluate_trade(
+        "Will X happen?",
+        "kalshi",
+        0.45,
+        0.55,
+        "statistical_window",
+        0.08,
+        "YES",
+    )
+    assert out is not None
+    assert out["decision"] == "YES"
+    assert 0.0 <= out["true_probability"] <= 1.0
+    assert "reasoning" in out
+
+
+def test_129_claude_skip_blocks_execution(monkeypatch):
+    m = MarketSnapshot(
+        market_id="claude-skip",
+        outlet="kalshi",
+        yes_price=0.45,
+        no_price=0.50,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=4000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+    )
+    hs = run_hunts_on_market(m)
+    from trading_ai.shark.models import HuntSignal
+
+    sc = score_opportunity(m, [hs[0], HuntSignal(HuntType.STATISTICAL_WINDOW, 0.09, 0.7, {})], strategy_key="t")
+    monkeypatch.setattr(
+        "trading_ai.shark.claude_eval.apply_claude_evaluator_gate",
+        lambda scored, intent, *, capital: (False, "claude_skip"),
+    )
+    res = run_execution_chain(sc, capital=80.0, outlet="kalshi", execute_live=False)
+    assert not res.ok
+    assert res.halted_at == "claude_skip"
+
+
+def test_130_claude_override_changes_side(monkeypatch):
+    m = MarketSnapshot(
+        market_id="claude-ov",
+        outlet="kalshi",
+        yes_price=0.45,
+        no_price=0.50,
+        volume_24h=2000.0,
+        time_to_resolution_seconds=4000.0,
+        resolution_criteria="test",
+        last_price_update_timestamp=0.0,
+    )
+    hs = run_hunts_on_market(m)
+    from trading_ai.shark.models import HuntSignal
+
+    sc = score_opportunity(m, [hs[0], HuntSignal(HuntType.STATISTICAL_WINDOW, 0.09, 0.7, {})], strategy_key="t")
+
+    def _apply(scored, intent, *, capital):
+        intent.side = "no"
+        intent.meta["claude_reasoning"] = "Prefer NO"
+        intent.meta["claude_confidence"] = 0.8
+        intent.meta["claude_decision"] = "NO"
+        intent.meta["claude_true_probability"] = 0.4
+        return True, ""
+
+    monkeypatch.setattr("trading_ai.shark.claude_eval.apply_claude_evaluator_gate", _apply)
+    res = run_execution_chain(sc, capital=80.0, outlet="kalshi", execute_live=False)
+    assert res.ok
+    assert res.intent is not None
+    assert res.intent.side == "no"
+    assert res.intent.meta.get("claude_reasoning") == "Prefer NO"
+
+
+def test_131_claude_reasoning_in_telegram_format():
+    from trading_ai.shark.reporting import format_trade_fired
+
+    t = format_trade_fired(
+        hunt="structural_arbitrage",
+        tier="TIER_A",
+        outlet="kalshi",
+        position_dollars=50.0,
+        edge_pct=0.08,
+        market_desc="Test market",
+        resolves_in="1d",
+        claude_reasoning="Model agrees with structural mispricing.",
+        claude_confidence=0.82,
+    )
+    assert "Claude: Model agrees" in t
+    assert "Confidence: 82%" in t

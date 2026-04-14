@@ -7,6 +7,7 @@ from typing import Sequence
 
 from trading_ai.shark.models import (
     HuntSignal,
+    HuntType,
     MarketSnapshot,
     OpportunityTier,
     ScoredOpportunity,
@@ -76,6 +77,18 @@ def score_opportunity(
 
 
 def _tier_from_hunts_and_score(hunts: Sequence[HuntSignal], score: float) -> tuple[OpportunityTier, float]:
+    if any(h.hunt_type == HuntType.PURE_ARBITRAGE for h in hunts):
+        return OpportunityTier.TIER_A, 1.3
+    if any(
+        h.hunt_type
+        in (
+            HuntType.CRYPTO_SCALP,
+            HuntType.NEAR_RESOLUTION,
+            HuntType.ORDER_BOOK_IMBALANCE,
+        )
+        for h in hunts
+    ):
+        return OpportunityTier.TIER_B, 1.0
     if len(hunts) >= 2:
         return OpportunityTier.TIER_A, 1.3
     if len(hunts) == 1 and score >= 0.48:

@@ -671,11 +671,24 @@ class PolymarketFetcher(BaseOutletFetcher):
                     continue
             end_iso = row.get("end_date_iso") or row.get("endDateIso")
             ttr = 86400.0
+            end_ts: Optional[float] = None
             if isinstance(end_iso, str):
                 try:
                     dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
-                    ttr = max(60.0, dt.timestamp() - now)
+                    end_ts = float(dt.timestamp())
+                    ttr = max(60.0, end_ts - now)
                 except ValueError:
+                    pass
+            qtext = str(row.get("question") or row.get("title") or "")
+            best_y: Optional[float] = None
+            best_n: Optional[float] = None
+            if len(tokens) >= 2 and all(isinstance(t, dict) for t in tokens[:2]):
+                try:
+                    ly = tokens[0].get("liquidity") or tokens[0].get("liquidity_num") or tokens[0].get("liquidityClob")
+                    ln = tokens[1].get("liquidity") or tokens[1].get("liquidity_num") or tokens[1].get("liquidityClob")
+                    if ly is not None and ln is not None:
+                        best_y, best_n = float(ly), float(ln)
+                except (TypeError, ValueError):
                     pass
             u: Dict[str, Any] = {
                 "condition_id": cid,
@@ -695,6 +708,10 @@ class PolymarketFetcher(BaseOutletFetcher):
                     last_price_update_timestamp=now,
                     underlying_data_if_available=u,
                     canonical_event_key=str(row.get("question_id") or cid),
+                    question_text=qtext or None,
+                    end_timestamp_unix=end_ts,
+                    best_ask_yes=best_y,
+                    best_ask_no=best_n,
                 )
             )
         return out

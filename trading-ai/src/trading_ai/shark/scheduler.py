@@ -44,6 +44,7 @@ def build_shark_scheduler(
     balance_sync: Optional[Callable[[], None]] = None,
     heartbeat: Optional[Callable[[], None]] = None,
     eod_force_trade: Optional[Callable[[], None]] = None,
+    crypto_scalp_scan: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -52,6 +53,8 @@ def build_shark_scheduler(
     sched = BackgroundScheduler(timezone=tz)
 
     sched.add_job(standard_scan, IntervalTrigger(minutes=5), id="scan_standard", replace_existing=True)
+    if crypto_scalp_scan is not None:
+        sched.add_job(crypto_scalp_scan, IntervalTrigger(seconds=30), id="crypto_scalp_scan", replace_existing=True)
 
     def _hot_wrapper() -> None:
         if hot_window_active():

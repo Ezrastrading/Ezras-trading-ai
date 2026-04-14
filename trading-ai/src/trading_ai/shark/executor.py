@@ -14,7 +14,15 @@ from trading_ai.shark.capital_phase import (
 )
 from trading_ai.shark.kelly import apply_kelly_scaling, kelly_full_fraction
 from trading_ai.shark.margin_control import check_margin_safety, effective_margin_pct_cap, get_margin_allowance
-from trading_ai.shark.models import ExecutionIntent, HuntType, MarketSnapshot, OpportunityTier, ScoredOpportunity
+from trading_ai.shark.models import (
+    CapitalPhase,
+    ExecutionIntent,
+    HuntSignal,
+    HuntType,
+    MarketSnapshot,
+    OpportunityTier,
+    ScoredOpportunity,
+)
 from trading_ai.shark.state import LOSS_TRACKER
 
 _log = logging.getLogger(__name__)
@@ -41,11 +49,19 @@ def _has_near_zero(hunts: List) -> bool:
     return any(getattr(h, "hunt_type", None) == HuntType.NEAR_ZERO_ACCUMULATION for h in hunts)
 
 
+def _execution_primary_hunt(hunts: List) -> HuntSignal:
+    """Prefer Hunt 6 if present; else the strongest edge (multiple hunts on one market)."""
+    for h in hunts:
+        if h.hunt_type == HuntType.NEAR_ZERO_ACCUMULATION:
+            return h
+    return max(hunts, key=lambda h: float(h.edge_after_fees))
+
+
 def _pick_side(hunts: List) -> Tuple[str, float]:
     for h in hunts:
         if h.hunt_type == HuntType.NEAR_ZERO_ACCUMULATION:
             return "yes", 0.0
-    h0 = hunts[0]
+    h0 = _execution_primary_hunt(hunts)
     d = h0.details or {}
     if h0.hunt_type == HuntType.OPTIONS_BINARY:
         return str(d.get("side", "yes")), 0.0
@@ -54,6 +70,12 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
         return side, 0.0
     if h0.hunt_type == HuntType.STRUCTURAL_ARBITRAGE:
         return "both_leg_arb", 0.0
+    if h0.hunt_type in (
+        HuntType.CRYPTO_SCALP,
+        HuntType.NEAR_RESOLUTION,
+        HuntType.ORDER_BOOK_IMBALANCE,
+    ):
+        return str(d.get("side", "yes")), 0.0
     return "yes", 0.0
 
 
@@ -63,7 +85,19 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
     for h in scored.hunts:
         if h.hunt_type == HuntType.NEAR_ZERO_ACCUMULATION:
             return max(0.01, min(0.99, float((h.details or {}).get("base_rate", m.yes_price))))
-    h = scored.hunts[0]
+    h = _execution_primary_hunt(scored.hunts)
+    d = h.details or {}
+    if h.hunt_type == HuntType.CRYPTO_SCALP:
+        return max(0.01, min(0.99, float(d.get("true_prob", m.yes_price))))
+    if h.hunt_type == HuntType.NEAR_RESOLUTION:
+        side = str(d.get("side", "yes"))
+        px = m.yes_price if side == "yes" else m.no_price
+        return max(0.97, min(0.995, px + 0.01))
+    if h.hunt_type == HuntType.ORDER_BOOK_IMBALANCE:
+        side = str(d.get("side", "yes"))
+        return m.yes_price if side == "yes" else m.no_price
+    if h.hunt_type == HuntType.PURE_ARBITRAGE:
+        return 0.99
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE:
         if str((h.details or {}).get("side", "yes")) == "no":
             return max(0.01, min(0.99, 1.0 - float((h.details or {}).get("p_true", m.yes_price))))
@@ -72,12 +106,158 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
 
 
 def _price_for_kelly(m: MarketSnapshot, scored: ScoredOpportunity) -> float:
-    h = scored.hunts[0]
+    h = _execution_primary_hunt(scored.hunts)
+    d = h.details or {}
     if _has_near_zero(scored.hunts):
         return m.yes_price
+    if h.hunt_type in (HuntType.CRYPTO_SCALP, HuntType.NEAR_RESOLUTION, HuntType.ORDER_BOOK_IMBALANCE):
+        return m.no_price if str(d.get("side", "yes")) == "no" else m.yes_price
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE and str((h.details or {}).get("side")) == "no":
         return m.no_price
     return m.yes_price
+
+
+def _arb_max_pair_usd(phase: CapitalPhase) -> float:
+    if phase == CapitalPhase.PHASE_1:
+        return 5.0
+    if phase == CapitalPhase.PHASE_2:
+        return 20.0
+    return 100.0
+
+
+def _hf_poly_notional(phase: CapitalPhase, capital: float, notional: float) -> float:
+    """Small fixed sizes for high-frequency Polymarket hunts (crypto / near-resolution / book)."""
+    if phase == CapitalPhase.PHASE_1:
+        return max(1.0, min(3.0, notional))
+    if phase == CapitalPhase.PHASE_2:
+        return max(5.0, min(10.0, notional))
+    return min(notional, capital * 0.02)
+
+
+def _has_hf_poly_hunt(hunts: List) -> bool:
+    return any(
+        getattr(h, "hunt_type", None)
+        in (HuntType.CRYPTO_SCALP, HuntType.NEAR_RESOLUTION, HuntType.ORDER_BOOK_IMBALANCE)
+        for h in hunts
+    )
+
+
+def _build_pure_arbitrage_intent(
+    scored: ScoredOpportunity,
+    *,
+    capital: float,
+    strategy_key: str,
+    outlet: str,
+    gap_exploitation_mode: bool,
+    current_gap_exposure_fraction: float,
+    min_edge_effective: float | None,
+    risk_position_multiplier: float,
+    market_category: str,
+    is_mana: bool,
+    current_drawdown_pct: float,
+    wallet_copy_trade: bool,
+) -> Optional[ExecutionIntent]:
+    m = scored.market
+    if scored.tier == OpportunityTier.BELOW_THRESHOLD:
+        return None
+    phase = detect_phase(capital)
+    pp = phase_params(phase)
+    min_e = min_edge_effective if min_edge_effective is not None else pp.min_edge
+    if scored.edge_size < min_e:
+        return None
+    yes_p = float(m.yes_price)
+    no_p = float(m.no_price)
+    pair_cost = yes_p + no_p
+    if pair_cost <= 1e-9:
+        return None
+    max_pair = _arb_max_pair_usd(phase)
+    cap_frac = min(pp.max_single_position_fraction, 0.15)
+    units = min(max_pair / pair_cost, capital * cap_frac / pair_cost)
+    notional = units * pair_cost
+    if notional < MIN_POSITION_USD:
+        return None
+    notional *= risk_position_multiplier
+    units = notional / pair_cost
+    u = m.underlying_data_if_available or {}
+    yes_tid = u.get("yes_token_id") or u.get("token_id")
+    no_tid = u.get("no_token_id")
+    if not yes_tid or not no_tid:
+        _log.info("Intent built: False market=%s reason=pure_arb_missing_tokens", m.market_id)
+        return None
+    stake = notional / max(capital, 1e-9)
+    if gap_exploitation_mode:
+        room = max(0.0, 0.60 - current_gap_exposure_fraction)
+        stake = min(stake, room)
+        notional = stake * capital
+        units = notional / pair_cost
+    loss_mult = LOSS_TRACKER.cluster_multiplier(
+        strategy=strategy_key,
+        hunt_type=HuntType.PURE_ARBITRAGE,
+        outlet=outlet,
+        market_category=market_category,
+    )
+    stake *= loss_mult
+    notional = stake * capital
+    units = notional / pair_cost
+    margin_borrowed = 0.0
+    if not is_mana:
+        margin_allowance = get_margin_allowance(
+            capital=capital,
+            confidence=scored.confidence,
+            hunt_tier=scored.tier.value,
+            current_drawdown_pct=current_drawdown_pct,
+            near_zero_hunt=False,
+        )
+        if notional > capital + 1e-9:
+            if not check_margin_safety(notional, capital, margin_allowance):
+                notional = min(notional, capital)
+                stake = notional / max(capital, 1e-9)
+                units = notional / pair_cost
+        margin_borrowed = max(0.0, notional - capital)
+    meta = {
+        "phase": phase.value,
+        "tier": scored.tier.value,
+        "pure_arbitrage_dual": True,
+        "yes_leg": {
+            "token_id": str(yes_tid),
+            "limit_price": yes_p,
+            "size": float(units),
+        },
+        "no_leg": {
+            "token_id": str(no_tid),
+            "limit_price": no_p,
+            "size": float(units),
+        },
+        "condition_id": u.get("condition_id"),
+        "market_category": market_category,
+        "margin_borrowed": margin_borrowed,
+        "margin_cap_pct": effective_margin_pct_cap(capital, scored.confidence) if not is_mana else 0.0,
+    }
+    if wallet_copy_trade:
+        meta["trade_type"] = "wallet_copy"
+    shr = max(1, int(units))
+    _log.info(
+        "Intent built: True market=%s notional_usd=%.2f outlet=%s (pure_arbitrage dual)",
+        m.market_id,
+        notional,
+        outlet,
+    )
+    return ExecutionIntent(
+        market_id=m.market_id,
+        outlet=outlet,
+        side="yes",
+        stake_fraction_of_capital=stake,
+        edge_after_fees=scored.edge_size,
+        estimated_win_probability=0.99,
+        hunt_types=[HuntType.PURE_ARBITRAGE],
+        source="shark_gap" if gap_exploitation_mode else "shark_compounding",
+        gap_exploit=gap_exploitation_mode,
+        meta=meta,
+        expected_price=yes_p,
+        notional_usd=notional,
+        shares=shr,
+        is_mana=is_mana,
+    )
 
 
 def build_execution_intent(
@@ -111,6 +291,21 @@ def build_execution_intent(
             min_e,
         )
         return None
+    if any(h.hunt_type == HuntType.PURE_ARBITRAGE for h in scored.hunts):
+        return _build_pure_arbitrage_intent(
+            scored,
+            capital=capital,
+            strategy_key=strategy_key,
+            outlet=outlet,
+            gap_exploitation_mode=gap_exploitation_mode,
+            current_gap_exposure_fraction=current_gap_exposure_fraction,
+            min_edge_effective=min_edge_effective,
+            risk_position_multiplier=risk_position_multiplier,
+            market_category=market_category,
+            is_mana=is_mana,
+            current_drawdown_pct=current_drawdown_pct,
+            wallet_copy_trade=wallet_copy_trade,
+        )
     p_win = estimate_win_probability(m, scored)
     px = _price_for_kelly(m, scored)
     fk = kelly_full_fraction(p_win, px)
@@ -125,9 +320,10 @@ def build_execution_intent(
     kelly_scaled = apply_kelly_scaling(fk, k_base)
     combined = phase_tier_combined_multiplier(phase, scored.tier)
     stake = kelly_scaled * combined
+    primary_ht = _execution_primary_hunt(scored.hunts).hunt_type
     loss_mult = LOSS_TRACKER.cluster_multiplier(
         strategy=strategy_key,
-        hunt_type=scored.hunts[0].hunt_type,
+        hunt_type=primary_ht,
         outlet=outlet,
         market_category=market_category,
     )
@@ -149,6 +345,12 @@ def build_execution_intent(
     notional = max(0.0, capital * stake)
     if 0.0 < notional < MIN_POSITION_USD:
         notional = MIN_POSITION_USD
+        stake = min(notional / max(capital, 1e-9), pp.max_single_position_fraction)
+    if (
+        _has_hf_poly_hunt(scored.hunts)
+        and (outlet or "").strip().lower() == "polymarket"
+    ):
+        notional = _hf_poly_notional(phase, capital, notional)
         stake = min(notional / max(capital, 1e-9), pp.max_single_position_fraction)
     shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
     margin_borrowed = 0.0

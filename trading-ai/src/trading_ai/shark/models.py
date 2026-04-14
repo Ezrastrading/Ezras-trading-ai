@@ -15,6 +15,10 @@ class HuntType(str, Enum):
     LIQUIDITY_IMBALANCE_FADE = "liquidity_imbalance_fade"
     NEAR_ZERO_ACCUMULATION = "near_zero_accumulation"
     OPTIONS_BINARY = "options_binary"
+    CRYPTO_SCALP = "crypto_scalp"
+    PURE_ARBITRAGE = "pure_arbitrage"
+    NEAR_RESOLUTION = "near_resolution"
+    ORDER_BOOK_IMBALANCE = "order_book_imbalance"
 
 
 class OpportunityTier(str, Enum):
@@ -54,6 +58,11 @@ class MarketSnapshot:
     imbalance_since_unix: Optional[float] = None
     required_position_dollars: float = 100.0
     market_category: str = "default"
+    # Polymarket short-horizon / microstructure (optional)
+    question_text: Optional[str] = None
+    end_timestamp_unix: Optional[float] = None
+    best_ask_yes: Optional[float] = None
+    best_ask_no: Optional[float] = None
 
 
 @dataclass
@@ -135,6 +144,10 @@ class OpenPosition:
     condition_id: Optional[str] = None
     token_id: Optional[str] = None
     margin_borrowed_usd: float = 0.0
+    claude_reasoning: Optional[str] = None
+    claude_confidence: Optional[float] = None
+    claude_true_probability: Optional[float] = None
+    claude_decision: Optional[str] = None
 
 
 @dataclass

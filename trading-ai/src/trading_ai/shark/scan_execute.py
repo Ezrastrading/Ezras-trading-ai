@@ -9,13 +9,13 @@ import gc
 import json
 import logging
 import time
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Set, Tuple
 
 from trading_ai.shark.capital_effective import effective_capital_for_outlet
 from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
 from trading_ai.shark.gap_hunter import confirm_pattern, gap_score, scan_for_gaps_stub
 from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_market
-from trading_ai.shark.models import OpportunityTier
+from trading_ai.shark.models import HuntType, OpportunityTier
 from trading_ai.shark.scanner import OutletFetcher, record_opportunity_for_burst, scan_markets
 from trading_ai.shark.scorer import score_opportunity
 from trading_ai.shark.state_store import load_capital
@@ -39,6 +39,7 @@ def run_scan_execution_cycle(
     fetchers: Sequence[OutletFetcher],
     *,
     tag: str = "scan",
+    hunt_types_filter: Optional[Set[HuntType]] = None,
 ) -> Tuple[int, int]:
     """
     Fetch markets, run hunts + scoring, execute chain per qualifying market.
@@ -70,7 +71,12 @@ def run_scan_execution_cycle(
         batch = markets[i : i + _BATCH_SIZE]
         batch_rows: list[tuple] = []
         for m in batch:
-            hunts = run_hunts_on_market(m, cross_context=cross, now=now)
+            hunts = run_hunts_on_market(
+                m,
+                cross_context=cross,
+                now=now,
+                hunt_types_filter=hunt_types_filter,
+            )
             if not hunts:
                 continue
             hunt_nonempty += 1
@@ -113,10 +119,16 @@ def run_scan_execution_cycle(
                     current_drawdown_pct=risk.drawdown_from_peak,
                 )
                 if intent is not None:
-                    try:
-                        execute_mana_trade(intent, scored=scored)
-                    except Exception:
-                        logger.exception("%s: mana sandbox failed for %s", tag, m.market_id)
+                    from trading_ai.shark.claude_eval import apply_claude_evaluator_gate
+
+                    ok_m, halt_m = apply_claude_evaluator_gate(scored, intent, capital=mana_cap)
+                    if not ok_m:
+                        logger.info("%s mana_sandbox: Claude gate blocked (%s) %s", tag, halt_m, m.market_id)
+                    else:
+                        try:
+                            execute_mana_trade(intent, scored=scored)
+                        except Exception:
+                            logger.exception("%s: mana sandbox failed for %s", tag, m.market_id)
                 logger.info(
                     "%s mana_sandbox: market=%s ok=intent=%s",
                     tag,

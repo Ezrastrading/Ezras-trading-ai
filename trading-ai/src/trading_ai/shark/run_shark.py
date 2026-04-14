@@ -156,6 +156,19 @@ def main() -> None:
         n, att = run_scan_execution_cycle(fetchers, tag="gap_active")
         log.info("gap_active: markets=%s execution_attempts=%s", n, att)
 
+    def crypto_scalp_scan() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.outlets.polymarket import PolymarketFetcher
+
+        fetchers = (PolymarketFetcher(),)
+        hunt_filter = {
+            HuntType.CRYPTO_SCALP,
+            HuntType.PURE_ARBITRAGE,
+            HuntType.NEAR_RESOLUTION,
+        }
+        n, att = run_scan_execution_cycle(fetchers, tag="crypto_scalp", hunt_types_filter=hunt_filter)
+        log.info("crypto_scalp_scan: markets=%s execution_attempts=%s", n, att)
+
     def resolution_monitor() -> None:
         try:
             from trading_ai.shark.mana_sandbox import tick_mana_resolutions
@@ -248,6 +261,7 @@ def main() -> None:
         balance_sync=_balance_sync,
         heartbeat=_heartbeat,
         eod_force_trade=eod_force_scan,
+        crypto_scalp_scan=crypto_scalp_scan,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from trading_ai.shark.crypto_polymarket_hunts import (
+    append_polymarket_strategy_hunts,
+    run_filtered_polymarket_hunts,
+)
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 
 # Tunable liquidity floors (quote currency units)
@@ -225,14 +229,23 @@ def run_hunts_on_market(
     cross_context: Optional[Dict[str, Sequence[MarketSnapshot]]] = None,
     now: Optional[float] = None,
     macro_feed: Optional[Dict[str, Any]] = None,
+    hunt_types_filter: Optional[Set[HuntType]] = None,
 ) -> List[HuntSignal]:
-    """Run Hunts 1–2 only when volume is low; full suite (3–7 + cross) when volume > $1k / 24h."""
+    """Run Hunts 1–2 only when volume is low; full suite (3–7 + cross) when volume > $1k / 24h.
+
+    When ``hunt_types_filter`` is set (e.g. 30s crypto scan), only those Polymarket hunts run;
+    non-Polymarket markets return no signals.
+    """
+    if hunt_types_filter:
+        return run_filtered_polymarket_hunts(m, hunt_types_filter, now=now)
     sigs: List[HuntSignal] = []
     if m.volume_24h <= _FULL_HUNT_MIN_VOLUME_24H:
         for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage):
             r = fn(m)
             if r:
                 sigs.append(r)
+        if (m.outlet or "").lower() == "polymarket":
+            sigs.extend(append_polymarket_strategy_hunts(m, now=now))
         return sigs
     for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
         r = fn(m)
@@ -249,6 +262,8 @@ def run_hunts_on_market(
         xm = hunt_cross_platform_mispricing(group)
         if m.market_id in xm:
             sigs.append(xm[m.market_id])
+    if (m.outlet or "").lower() == "polymarket":
+        sigs.extend(append_polymarket_strategy_hunts(m, now=now))
     return sigs
 
 
