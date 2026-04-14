@@ -45,19 +45,18 @@ def _order_fill_count(order: Dict[str, Any]) -> float:
 
 
 def run_kalshi_stale_resting_order_sweep() -> None:
-    """List resting orders; cancel any with zero fills older than the configured age (default 3 min)."""
+    """List resting orders; cancel any with zero fills older than the configured age (default ~10s)."""
     if (os.environ.get("KALSHI_STALE_ORDER_SWEEP_ENABLED") or "true").strip().lower() not in (
         "1",
         "true",
         "yes",
     ):
         return
+    raw = (os.environ.get("KALSHI_STALE_ORDER_MINUTES") or "0.17").strip() or "0.17"
     try:
-        mins_raw = (os.environ.get("KALSHI_STALE_ORDER_MINUTES") or "3").strip() or "3"
-        stale_minutes = max(1, int(mins_raw))
+        stale_sec = max(1.0, float(raw) * 60.0)
     except ValueError:
-        stale_minutes = 3
-    stale_sec = float(stale_minutes * 60)
+        stale_sec = 10.0
 
     from trading_ai.shark.outlets.kalshi import KalshiClient
 
@@ -87,5 +86,4 @@ def run_kalshi_stale_resting_order_sweep() -> None:
         except Exception as exc:
             logger.warning("Kalshi stale order sweep: cancel failed %s %s: %s", ticker, oid, exc)
             continue
-        age_min = int(age_sec // 60)
-        logger.info("Cancelled stale resting order: [%s] age=%smin", ticker, age_min)
+        logger.info("Cancelled stale resting order: [%s] age=%.1fs", ticker, age_sec)

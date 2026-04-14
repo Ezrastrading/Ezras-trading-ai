@@ -662,7 +662,7 @@ def test_32_kalshi_order_placement_returns_valid_order_result_structure(monkeypa
 
     monkeypatch.setattr(KalshiClient, "_request", fake_request)
     c = KalshiClient(api_key="test-key")
-    r = c.place_order(ticker="KX-T", side="yes", count=10, yes_price_cents=47)
+    r = c.place_order(ticker="KX-T", side="yes", count=10, order_type="market")
     assert r.order_id == "ord-k-1"
     assert r.outlet == "kalshi"
     assert r.status
@@ -763,24 +763,9 @@ def test_35_high_slippage_flagged_but_trade_continues():
     assert conf.unfilled_cancelled is False
 
 
-def test_36_unfilled_order_cancelled_after_60_seconds():
+def test_36_kalshi_zero_fill_not_confirmed():
+    """Resting/cancelled Kalshi orders (no fill) are unconfirmed; cancel happens in place_order."""
     from trading_ai.shark.execution_live import confirm_execution
-
-    clock = [0.0]
-
-    def fake_now():
-        return clock[0]
-
-    def fake_sleep(delta):
-        clock[0] += float(delta)
-
-    cancelled = []
-
-    def poll_order(oid):
-        return {"status": "resting", "order": {"status": "resting"}}
-
-    def cancel_order(oid):
-        cancelled.append(oid)
 
     intent = ExecutionIntent(
         market_id="kalshi:KX-T",
@@ -803,17 +788,10 @@ def test_36_unfilled_order_cancelled_after_60_seconds():
         status="resting",
         outlet="kalshi",
     )
-    conf = confirm_execution(
-        order,
-        intent,
-        sleep_fn=fake_sleep,
-        time_fn=fake_now,
-        poll_order=poll_order,
-        cancel_order=cancel_order,
-    )
+    conf = confirm_execution(order, intent)
     assert conf.unfilled_cancelled is True
     assert conf.confirmed is False
-    assert cancelled == ["ord-rest"]
+    assert conf.actual_fill_size == 0.0
 
 
 def test_37_resolution_detected_and_capital_updated_correctly(tmp_path, monkeypatch):
