@@ -122,6 +122,21 @@ def run_execution_chain(
         _append(audit, "1_precheck", skipped=True, reason="no_intent_tier_or_edge")
         return ChainResult(False, "precheck", audit, None)
 
+    if (outlet or "").strip().lower() == "kalshi":
+        from trading_ai.shark import kalshi_limits
+
+        n_kalshi_open = kalshi_limits.count_kalshi_open_positions()
+        max_k = kalshi_limits.kalshi_max_open_positions_from_env()
+        if n_kalshi_open >= max_k:
+            _append(
+                audit,
+                "0_kalshi_open_cap",
+                open_positions=n_kalshi_open,
+                max_open=max_k,
+            )
+            log.info("Kalshi execution skipped: open cap %s >= %s", n_kalshi_open, max_k)
+            return ChainResult(False, "kalshi_max_open", audit, intent)
+
     if (outlet or "").strip().lower() == "polymarket":
         from trading_ai.shark.outlets.polymarket import ensure_polymarket_intent_token_ids
 
@@ -285,7 +300,7 @@ def run_execution_chain(
             logging.getLogger(__name__).exception("submit_order failed")
             _append(audit, "9_submit_order", status="FAILED", error=str(exc))
             append_shark_audit_record({"step": "submit_failed", "market_id": intent.market_id, "error": str(exc)})
-            if not getattr(intent, "is_mana", False):
+            if not getattr(intent, "is_mana", False) and (intent.outlet or "").strip().lower() == "kalshi":
                 try:
                     send_telegram_live(f"❌ ORDER FAILED\n{intent.outlet} {intent.market_id}\n{exc!s}")
                 except Exception:

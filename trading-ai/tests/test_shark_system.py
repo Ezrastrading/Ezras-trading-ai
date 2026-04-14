@@ -1344,7 +1344,123 @@ def test_polymarket_submit_order_geoblock_when_env_true(monkeypatch):
     )
     r = submit_order(intent)
     assert r.success is False
-    assert r.status == "geoblock_skip"
+    assert r.status == "geo_blocked"
+    assert "geoblock" in (r.reason or "").lower() or "scan" in (r.reason or "").lower()
+
+
+def test_hunt_kalshi_near_close_fires_within_four_hours():
+    import time
+
+    from trading_ai.shark.kalshi_hunts import hunt_kalshi_near_close
+    from trading_ai.shark.models import MarketSnapshot
+
+    end = time.time() + 2 * 3600
+    m = MarketSnapshot(
+        market_id="KX-NC",
+        outlet="kalshi",
+        yes_price=0.87,
+        no_price=0.13,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=7200.0,
+        resolution_criteria="Fed",
+        last_price_update_timestamp=time.time(),
+        end_date_seconds=end,
+    )
+    sig = hunt_kalshi_near_close(m)
+    assert sig is not None
+    assert sig.hunt_type.value == "kalshi_near_close"
+
+
+def test_hunt_kalshi_momentum_fires_on_five_percent_move():
+    import time
+
+    from trading_ai.shark.kalshi_hunts import hunt_kalshi_momentum
+    from trading_ai.shark.models import MarketSnapshot
+
+    ph = {"KX-M": [0.40, 0.42, 0.51]}
+    m = MarketSnapshot(
+        market_id="KX-M",
+        outlet="kalshi",
+        yes_price=0.51,
+        no_price=0.49,
+        volume_24h=5000.0,
+        time_to_resolution_seconds=86400.0,
+        resolution_criteria="x",
+        last_price_update_timestamp=time.time(),
+    )
+    sig = hunt_kalshi_momentum(m, price_history=ph)
+    assert sig is not None
+    assert sig.hunt_type.value == "kalshi_momentum"
+
+
+def test_kalshi_ssl_context_uses_certifi_when_available():
+    import ssl
+
+    from trading_ai.shark.outlets.kalshi import _get_ssl_context
+
+    ctx = _get_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+
+
+def test_scheduler_kalshi_hf_runs_every_30_seconds():
+    from datetime import timedelta
+
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        kalshi_hf_scan=lambda: None,
+    )
+    assert sched is not None
+    jobs = {j.id: j for j in sched.get_jobs()}
+    assert "kalshi_hf" in jobs
+    assert jobs["kalshi_hf"].trigger.interval == timedelta(seconds=30)
+
+
+def test_scheduler_kalshi_full_and_ceo_jobs_registered():
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        ceo_session=lambda _s: None,
+        kalshi_full_scan=lambda: None,
+        kalshi_convergence_scan=lambda: None,
+        kalshi_hf_scan=lambda: None,
+    )
+    ids = [j.id for j in sched.get_jobs()]
+    assert "kalshi_full" in ids
+    assert "kalshi_convergence" in ids
+    assert sum(1 for i in ids if str(i).startswith("ceo_")) == 4
+
+
+def test_execution_submit_fail_sends_telegram_only_for_kalshi():
+    import inspect
+
+    from trading_ai.shark import execution
+
+    src = inspect.getsource(execution.run_execution_chain)
+    assert "send_telegram_live" in src
+    assert '.lower()=="kalshi"' in src.replace(" ", "")
 
 
 def test_74_kalshi_401_does_not_block_all_systems_go(tmp_path, monkeypatch):

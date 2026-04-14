@@ -76,6 +76,9 @@ def _pick_side(hunts: List) -> Tuple[str, float]:
         HuntType.NEAR_RESOLUTION,
         HuntType.ORDER_BOOK_IMBALANCE,
         HuntType.VOLUME_SPIKE,
+        HuntType.KALSHI_NEAR_CLOSE,
+        HuntType.KALSHI_CONVERGENCE,
+        HuntType.KALSHI_MOMENTUM,
     ):
         return str(d.get("side", "yes")), 0.0
     return "yes", 0.0
@@ -103,6 +106,13 @@ def estimate_win_probability(m: MarketSnapshot, scored: ScoredOpportunity) -> fl
         return m.yes_price if side == "yes" else m.no_price
     if h.hunt_type == HuntType.PURE_ARBITRAGE:
         return 0.99
+    if h.hunt_type in (HuntType.KALSHI_NEAR_CLOSE, HuntType.KALSHI_CONVERGENCE):
+        side = str((h.details or {}).get("side", "yes"))
+        px = m.yes_price if side == "yes" else m.no_price
+        return max(0.01, min(0.99, float(px)))
+    if h.hunt_type == HuntType.KALSHI_MOMENTUM:
+        side = str((h.details or {}).get("side", "yes"))
+        return m.yes_price if side == "yes" else m.no_price
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE:
         if str((h.details or {}).get("side", "yes")) == "no":
             return max(0.01, min(0.99, 1.0 - float((h.details or {}).get("p_true", m.yes_price))))
@@ -120,6 +130,9 @@ def _price_for_kelly(m: MarketSnapshot, scored: ScoredOpportunity) -> float:
         HuntType.NEAR_RESOLUTION,
         HuntType.ORDER_BOOK_IMBALANCE,
         HuntType.VOLUME_SPIKE,
+        HuntType.KALSHI_NEAR_CLOSE,
+        HuntType.KALSHI_CONVERGENCE,
+        HuntType.KALSHI_MOMENTUM,
     ):
         return m.no_price if str(d.get("side", "yes")) == "no" else m.yes_price
     if h.hunt_type == HuntType.DEAD_MARKET_CONVERGENCE and str((h.details or {}).get("side")) == "no":
@@ -386,6 +399,12 @@ def build_execution_intent(
         and (outlet or "").strip().lower() == "polymarket"
     ):
         notional = _hf_poly_notional(phase, capital, notional)
+        stake = min(notional / max(capital, 1e-9), pp.max_single_position_fraction)
+    if (outlet or "").strip().lower() == "kalshi":
+        from trading_ai.shark import kalshi_limits
+
+        lo, hi = kalshi_limits.kalshi_notional_bounds_usd()
+        notional = min(hi, max(lo, notional))
         stake = min(notional / max(capital, 1e-9), pp.max_single_position_fraction)
     shr = max(1, int(notional / max(exp_price, 1e-6))) if exp_price > 0 else 1
     margin_borrowed = 0.0

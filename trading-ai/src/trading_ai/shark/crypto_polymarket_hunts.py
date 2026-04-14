@@ -12,7 +12,7 @@ import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 import requests
 
@@ -330,8 +330,15 @@ def run_filtered_polymarket_hunts(
     hunt_types: Set[HuntType],
     *,
     now: Optional[float] = None,
+    price_history: Optional[Dict[str, List[float]]] = None,
 ) -> List[HuntSignal]:
     """Run only selected :class:`HuntType` runners (fast scans). Polymarket + Kalshi + Manifold (hunts no-op when inapplicable)."""
+    from trading_ai.shark.kalshi_hunts import (
+        hunt_kalshi_momentum,
+        hunt_kalshi_near_close,
+        hunt_kalshi_polymarket_divergence,
+    )
+
     o = (m.outlet or "").lower()
     if o not in ("polymarket", "kalshi", "manifold"):
         return []
@@ -341,14 +348,29 @@ def run_filtered_polymarket_hunts(
         HuntType.NEAR_RESOLUTION: hunt_near_resolution,
         HuntType.ORDER_BOOK_IMBALANCE: hunt_order_book_imbalance,
         HuntType.VOLUME_SPIKE: hunt_volume_spike,
+        HuntType.KALSHI_NEAR_CLOSE: hunt_kalshi_near_close,
+        HuntType.KALSHI_CONVERGENCE: hunt_kalshi_polymarket_divergence,
     }
     poly_only = {HuntType.CRYPTO_SCALP, HuntType.ORDER_BOOK_IMBALANCE}
     sigs: List[HuntSignal] = []
     for ht in hunt_types:
         if ht in poly_only and o != "polymarket":
             continue
+        if ht == HuntType.KALSHI_MOMENTUM:
+            if o != "kalshi":
+                continue
+            try:
+                r = hunt_kalshi_momentum(m, price_history=price_history or {})
+            except Exception:
+                logger.exception("filtered hunt KALSHI_MOMENTUM failed")
+                continue
+            if r:
+                sigs.append(r)
+            continue
         fn = mapping.get(ht)
         if not fn:
+            continue
+        if ht in (HuntType.KALSHI_NEAR_CLOSE, HuntType.KALSHI_CONVERGENCE) and o != "kalshi":
             continue
         try:
             r = fn(m)

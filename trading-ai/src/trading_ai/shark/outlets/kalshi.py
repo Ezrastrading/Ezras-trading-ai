@@ -33,6 +33,11 @@ from trading_ai.shark.dotenv_load import load_shark_dotenv
 from trading_ai.shark.models import MarketSnapshot, OrderResult
 from trading_ai.shark.outlets.base import BaseOutletFetcher
 
+try:
+    import certifi
+except ImportError:
+    certifi = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger(__name__)
 
 load_shark_dotenv()
@@ -93,6 +98,16 @@ def sign_kalshi_pss_sha256(private_key: Any, timestamp_ms: str, method: str, pat
 def path_for_kalshi_signature(full_url: str) -> str:
     """Path used in the signature string (no query), e.g. ``/trade-api/v2/markets``."""
     return urllib.parse.urlparse(full_url).path.split("?")[0]
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    """CA bundle from certifi (Railway-friendly); fallback to system defaults."""
+    if certifi is not None:
+        try:
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception as exc:
+            logger.warning("Kalshi: certifi context failed (%s), using default", exc)
+    return ssl.create_default_context()
 
 
 class KalshiClient:
@@ -162,36 +177,21 @@ class KalshiClient:
         req = urllib.request.Request(url, data=data, method=method, headers=self._auth_headers(method, url))
         try:
             raw = ""
-            insecure_ctx = ssl.create_default_context()
-            insecure_ctx.check_hostname = False
-            insecure_ctx.verify_mode = ssl.CERT_NONE
+            ssl_ctx = _get_ssl_context()
             last_ssl: Optional[BaseException] = None
             for attempt in range(3):
-                got = False
-                for use_relaxed in (False, True):
-                    try:
-                        opener_kw: Dict[str, Any] = {"timeout": 45}
-                        if use_relaxed:
-                            opener_kw["context"] = insecure_ctx
-                        with urllib.request.urlopen(req, **opener_kw) as resp:
-                            raw = resp.read().decode("utf-8")
-                        got = True
-                        break
-                    except ssl.SSLError as e:
-                        last_ssl = e
-                        logger.warning(
-                            "Kalshi SSL error (attempt %s/3, relaxed=%s): %s",
-                            attempt + 1,
-                            use_relaxed,
-                            e,
-                        )
-                if got:
+                try:
+                    with urllib.request.urlopen(req, timeout=45, context=ssl_ctx) as resp:
+                        raw = resp.read().decode("utf-8")
                     break
-                if attempt < 2:
-                    time.sleep(1)
-                    continue
-                logger.error("Kalshi SSL failed 3x")
-                raise last_ssl if last_ssl else ssl.SSLError("Kalshi SSL failed")
+                except ssl.SSLError as e:
+                    last_ssl = e
+                    logger.warning("Kalshi SSL error (attempt %s/3): %s", attempt + 1, e)
+                    if attempt < 2:
+                        time.sleep(1)
+                        continue
+                    logger.error("Kalshi SSL failed after 3 attempts (certifi CA bundle)")
+                    raise
             if not raw.strip():
                 return {}
             out = json.loads(raw)
@@ -258,6 +258,41 @@ class KalshiClient:
                 break
         return rows[:limit]
 
+    def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
+        """
+        High-frequency pool: open markets resolving within ~7d, YES/NO mid-range, min volume,
+        sorted by nearest ``close_time`` first (up to ``top_n``).
+        """
+        now = time.time()
+        horizon = now + 7 * 86400
+        params: Dict[str, Any] = {"status": "open", "limit": 200}
+        try:
+            j = self._request("GET", "/markets", params=params)
+        except Exception:
+            j = self._request("GET", "/markets", params={"limit": 200})
+        batch = j.get("markets") or j.get("data") or []
+        if not isinstance(batch, list):
+            return []
+        candidates: List[Dict[str, Any]] = []
+        for m in batch:
+            if not isinstance(m, dict):
+                continue
+            if not _kalshi_market_tradeable(m, now):
+                continue
+            end = _parse_close_timestamp_unix(m)
+            if end is None or end > horizon:
+                continue
+            vol = float(m.get("volume_24h") or m.get("volume") or 0)
+            if vol < 100.0:
+                continue
+            ya = float(m.get("yes_ask") or m.get("yes_bid") or 0) / 100.0
+            na = float(m.get("no_ask") or m.get("no_bid") or 0) / 100.0
+            if ya <= 0 or na <= 0:
+                continue
+            candidates.append(m)
+        candidates.sort(key=lambda x: _parse_close_timestamp_unix(x) or horizon)
+        return candidates[:top_n]
+
     def fetch_orderbook_depth(self, ticker: str) -> Tuple[float, float]:
         j = self._request("GET", f"/markets/{urllib.parse.quote(ticker, safe='')}/orderbook")
         ob = j.get("orderbook") or j
@@ -321,6 +356,12 @@ class KalshiClient:
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         return self._request("DELETE", f"/portfolio/orders/{urllib.parse.quote(order_id, safe='')}")
+
+
+def fetch_kalshi_active_markets(client: Optional[KalshiClient] = None, *, top_n: int = 200) -> List[Dict[str, Any]]:
+    """Module helper — same as :meth:`KalshiClient.fetch_kalshi_active_markets`."""
+    c = client or KalshiClient()
+    return c.fetch_kalshi_active_markets(top_n=top_n)
 
 
 def build_kalshi_request_headers(method: str, full_url: str) -> Dict[str, str]:
@@ -415,16 +456,18 @@ class KalshiFetcher(BaseOutletFetcher):
             return []
         try:
             now = time.time()
-            raw_list = self._client.fetch_markets_open(limit=500)
+            raw_list = self._client.fetch_kalshi_active_markets(top_n=200)
+            if not raw_list:
+                raw_list = self._client.fetch_markets_open(limit=500)
+                active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
+                raw_list = active_rows[:200]
             sample_statuses = [str(m.get("status", "unknown")) for m in raw_list[:20] if isinstance(m, dict)]
             logger.info("Kalshi sample statuses (first %s): %s", len(sample_statuses), sample_statuses)
-            active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
             logger.info(
-                "Kalshi: %s fetched → %s tradeable markets (settled/time/status filter)",
+                "Kalshi: %s active-pool markets (near-resolution / volume / price band)",
                 len(raw_list),
-                len(active_rows),
             )
-            return [map_kalshi_market_to_snapshot(m, now) for m in active_rows]
+            return [map_kalshi_market_to_snapshot(m, now) for m in raw_list]
         except KalshiAuthError:
             return []
         except Exception as exc:

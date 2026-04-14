@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from trading_ai.shark.models import CapitalPhase, OpportunityTier
 
@@ -15,6 +16,39 @@ ACCELERATION_MONTHLY_TARGET_MID: dict[int, float] = {
     5: 200000.0,
 }
 YEAR_END_TARGET_DEFAULT: float = 500_000.0
+
+# Six-month minimum trajectory (USD) — doctrine / CEO motivation; not financial advice.
+SIX_MONTH_GROWTH_MILESTONES_USD: List[Tuple[int, float, float]] = [
+    (1, 25.0, 1750.0),
+    (2, 1750.0, 8000.0),
+    (3, 8000.0, 35_000.0),
+    (4, 35_000.0, 120_000.0),
+    (5, 120_000.0, 480_000.0),
+    (6, 480_000.0, 780_000.0),
+]
+STRETCH_MULTIPLIER: float = 3.0
+
+
+def six_month_milestone_for_month(month_1_to_6: int) -> Optional[Tuple[float, float]]:
+    """Return (floor_usd, target_usd) for month index 1..6, or None."""
+    for m, lo, hi in SIX_MONTH_GROWTH_MILESTONES_USD:
+        if m == month_1_to_6:
+            return (lo, hi)
+    return None
+
+
+def growth_path_summary_lines(current_capital: float, *, month_index: int = 1) -> str:
+    """Short text block for CEO prompts — progress vs minimum month target."""
+    row = six_month_milestone_for_month(max(1, min(6, month_index)))
+    if not row:
+        return ""
+    lo, hi = row
+    pace = (current_capital - lo) / max(hi - lo, 1e-9) if hi > lo else 0.0
+    return (
+        f"Month {month_index} minimum band: ${lo:,.0f} → ${hi:,.0f} | "
+        f"current ${current_capital:,.2f} | linear pace in band ~{pace:.0%}\n"
+        f"Stretch multiplier on all targets: {STRETCH_MULTIPLIER}x"
+    )
 
 
 def acceleration_monthly_target_midpoint(month_index_1_based: int) -> float:

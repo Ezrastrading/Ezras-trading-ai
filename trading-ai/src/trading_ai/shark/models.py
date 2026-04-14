@@ -20,6 +20,9 @@ class HuntType(str, Enum):
     NEAR_RESOLUTION = "near_resolution"
     ORDER_BOOK_IMBALANCE = "order_book_imbalance"
     VOLUME_SPIKE = "volume_spike"
+    KALSHI_NEAR_CLOSE = "kalshi_near_close"
+    KALSHI_CONVERGENCE = "kalshi_convergence"
+    KALSHI_MOMENTUM = "kalshi_momentum"
 
 
 class OpportunityTier(str, Enum):

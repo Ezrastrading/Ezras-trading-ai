@@ -214,6 +214,41 @@ def main() -> None:
         n, att = run_scan_execution_cycle(fetchers, tag="arb_sweep", hunt_types_filter=hunt_filter)
         log.info("arb_sweep: markets=%s execution_attempts=%s", n, att)
 
+    def kalshi_full_scan() -> None:
+        from trading_ai.shark.outlets import default_fetchers
+
+        fetchers = tuple(default_fetchers())
+        n, att = run_scan_execution_cycle(fetchers, tag="kalshi_full")
+        log.info("kalshi_full: markets=%s execution_attempts=%s", n, att)
+
+    def kalshi_hf_scan() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.scan_execute import execution_fetchers_kalshi_only
+
+        fset = {
+            HuntType.KALSHI_NEAR_CLOSE,
+            HuntType.NEAR_RESOLUTION,
+            HuntType.PURE_ARBITRAGE,
+            HuntType.KALSHI_MOMENTUM,
+        }
+        n, att = run_scan_execution_cycle(
+            tuple(execution_fetchers_kalshi_only()),
+            tag="kalshi_hf",
+            hunt_types_filter=fset,
+        )
+        log.info("kalshi_hf: markets=%s execution_attempts=%s", n, att)
+
+    def kalshi_convergence_scan() -> None:
+        from trading_ai.shark.models import HuntType
+        from trading_ai.shark.scan_execute import scan_fetchers_all
+
+        n, att = run_scan_execution_cycle(
+            tuple(scan_fetchers_all()),
+            tag="kalshi_convergence",
+            hunt_types_filter={HuntType.KALSHI_CONVERGENCE},
+        )
+        log.info("kalshi_convergence: markets=%s execution_attempts=%s", n, att)
+
     def resolution_monitor() -> None:
         try:
             from trading_ai.shark.mana_sandbox import tick_mana_resolutions
@@ -255,8 +290,14 @@ def main() -> None:
             log.warning("daily memo failed (non-blocking): %s", exc)
 
     def weekly_summary() -> None:
-        """Mana sandbox is silent — no Telegram."""
-        return
+        """Sunday: CEO week review + pipeline (non-blocking)."""
+        try:
+            from trading_ai.shark import ceo_sessions
+
+            ceo_sessions.run_ceo_session_safe("WEEKLY_REVIEW")
+            log.info("weekly CEO review completed")
+        except Exception as exc:
+            log.warning("weekly CEO review failed: %s", exc)
 
     def state_backup() -> None:
         backup_all_state_files()
@@ -342,6 +383,9 @@ def main() -> None:
         kalshi_near_resolution=kalshi_near_resolution,
         ceo_session=ceo_brief,
         daily_excel_report=_daily_excel_report,
+        kalshi_hf_scan=kalshi_hf_scan,
+        kalshi_convergence_scan=kalshi_convergence_scan,
+        kalshi_full_scan=kalshi_full_scan,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

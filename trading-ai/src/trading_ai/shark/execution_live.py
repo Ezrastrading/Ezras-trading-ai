@@ -50,7 +50,7 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
     if o == "polymarket":
         poly_exec = (os.getenv("POLY_EXECUTION_ENABLED") or "false").strip().lower()
         if poly_exec != "true":
-            logger.warning("Polymarket execution disabled (POLY_EXECUTION_ENABLED is not true)")
+            logger.warning("Polymarket execution disabled — intelligence-only (POLY_EXECUTION_ENABLED not true)")
             return OrderResult(
                 order_id="",
                 filled_price=0.0,
@@ -62,17 +62,17 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 success=False,
                 reason="Polymarket execution disabled",
             )
-        logger.warning("Polymarket execution blocked — US geoblock (403)")
+        logger.warning("Polymarket order blocked — US geoblock (scan-only intelligence)")
         return OrderResult(
             order_id="",
             filled_price=0.0,
             filled_size=0.0,
             timestamp=time.time(),
-            status="geoblock_skip",
+            status="geo_blocked",
             outlet="polymarket",
             raw={},
             success=False,
-            reason="Polymarket US restricted",
+            reason="US geoblock — scan only",
         )
     if o == "kalshi":
         from trading_ai.shark.outlets.kalshi import KalshiClient

@@ -11,6 +11,11 @@ from trading_ai.shark.crypto_polymarket_hunts import (
     hunt_diagnostic_context,
     run_filtered_polymarket_hunts,
 )
+from trading_ai.shark.kalshi_hunts import (
+    hunt_kalshi_momentum,
+    hunt_kalshi_near_close,
+    hunt_kalshi_polymarket_divergence,
+)
 from trading_ai.shark.models import HuntSignal, HuntType, MarketSnapshot
 
 # Tunable liquidity floors (quote currency units)
@@ -232,6 +237,7 @@ def run_hunts_on_market(
     macro_feed: Optional[Dict[str, Any]] = None,
     hunt_types_filter: Optional[Set[HuntType]] = None,
     hunt_diag_index: Optional[int] = None,
+    price_history: Optional[Dict[str, List[float]]] = None,
 ) -> List[HuntSignal]:
     """Run Hunts 1–2 only when volume is low; full suite (3–7 + cross) when volume > $1k / 24h.
 
@@ -240,10 +246,17 @@ def run_hunts_on_market(
 
     ``hunt_diag_index`` 0..9 enables INFO-level diagnostic lines in ``hunt_near_resolution`` /
     ``hunt_pure_arbitrage`` for the first ten markets of a scan cycle.
+
+    ``price_history`` — Kalshi market_id → last YES prices (momentum hunt).
     """
     with hunt_diagnostic_context(hunt_diag_index):
         if hunt_types_filter:
-            return run_filtered_polymarket_hunts(m, hunt_types_filter, now=now)
+            return run_filtered_polymarket_hunts(
+                m,
+                hunt_types_filter,
+                now=now,
+                price_history=price_history,
+            )
         sigs: List[HuntSignal] = []
         if m.volume_24h <= _FULL_HUNT_MIN_VOLUME_24H:
             for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage):
@@ -252,6 +265,14 @@ def run_hunts_on_market(
                     sigs.append(r)
             if (m.outlet or "").lower() in ("polymarket", "kalshi"):
                 sigs.extend(append_polymarket_strategy_hunts(m, now=now))
+            if (m.outlet or "").lower() == "kalshi":
+                for fn_k in (hunt_kalshi_near_close, hunt_kalshi_polymarket_divergence):
+                    rk = fn_k(m)
+                    if rk:
+                        sigs.append(rk)
+                r_m = hunt_kalshi_momentum(m, price_history=price_history or {})
+                if r_m:
+                    sigs.append(r_m)
             return sigs
         for fn in (hunt_dead_market_convergence, hunt_structural_arbitrage, hunt_statistical_window, hunt_options_binary):
             r = fn(m)
@@ -271,6 +292,14 @@ def run_hunts_on_market(
         # Hunts 8–12 (crypto scalp, arb, near resolution, order book, volume spike) — all CLOB/Kalshi categories, no whitelist.
         if (m.outlet or "").lower() in ("polymarket", "kalshi"):
             sigs.extend(append_polymarket_strategy_hunts(m, now=now))
+        if (m.outlet or "").lower() == "kalshi":
+            for fn_k in (hunt_kalshi_near_close, hunt_kalshi_polymarket_divergence):
+                rk = fn_k(m)
+                if rk:
+                    sigs.append(rk)
+            r_m = hunt_kalshi_momentum(m, price_history=price_history or {})
+            if r_m:
+                sigs.append(r_m)
         return sigs
 
 

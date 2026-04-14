@@ -11,8 +11,10 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
+import re
 import time
-from typing import Optional, Sequence, Set, Tuple, List
+from typing import Dict, Optional, Sequence, Set, Tuple, List
 
 from trading_ai.shark.capital_effective import effective_capital_for_outlet
 from trading_ai.shark.execution import _resolve_execute_live, run_execution_chain
@@ -21,12 +23,45 @@ from trading_ai.shark.hunt_engine import group_markets_by_event, run_hunts_on_ma
 from trading_ai.shark.models import HuntType, OpportunityTier
 from trading_ai.shark.scanner import OutletFetcher, record_opportunity_for_burst, scan_markets
 from trading_ai.shark.scorer import score_opportunity
-from trading_ai.shark.state_store import load_capital
+from trading_ai.shark.state_store import load_capital, load_kalshi_price_history, merge_kalshi_prices_from_scan
 
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50
-_TOP_PER_BATCH = 5
+
+
+def _top_per_batch() -> int:
+    try:
+        return max(5, min(20, int((os.environ.get("SCAN_TOP_PER_BATCH") or "10").strip() or "10")))
+    except ValueError:
+        return 10
+
+
+def _norm_title(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower())[:120].strip()
+
+
+def attach_poly_reference_prices(markets: Sequence[object]) -> None:
+    """Match Kalshi ↔ Polymarket by normalized title so ``KALSHI_CONVERGENCE`` can compare YES prices."""
+    by_title: Dict[str, list] = {}
+    for m in markets:
+        if (getattr(m, "outlet", None) or "") != "polymarket":
+            continue
+        k = _norm_title(str(getattr(m, "question_text", None) or getattr(m, "resolution_criteria", "") or ""))
+        if not k:
+            continue
+        by_title.setdefault(k, []).append(m)
+    for m in markets:
+        if (getattr(m, "outlet", None) or "").lower() != "kalshi":
+            continue
+        k = _norm_title(str(getattr(m, "question_text", None) or getattr(m, "resolution_criteria", "") or ""))
+        u = dict(getattr(m, "underlying_data_if_available", None) or {})
+        for poly in by_title.get(k, []):
+            py = getattr(poly, "yes_price", None)
+            if py is not None:
+                u["poly_yes_reference"] = float(py)
+                break
+        m.underlying_data_if_available = u
 
 
 def scan_fetchers_all() -> List[OutletFetcher]:
@@ -84,6 +119,9 @@ def run_scan_execution_cycle(
         _ceo_bump_scan_stats(0, 0)
         return 0, 0
 
+    attach_poly_reference_prices(markets)
+    price_hist = load_kalshi_price_history()
+
     n_m = len(markets)
     yes_none = sum(1 for m in markets if getattr(m, "yes_price", None) is None)
     yes_float = sum(1 for m in markets if getattr(m, "yes_price", None) is not None)
@@ -133,13 +171,14 @@ def run_scan_execution_cycle(
                 now=now,
                 hunt_types_filter=htf,
                 hunt_diag_index=global_idx if global_idx < 10 else None,
+                price_history=price_hist,
             )
             if not hunts:
                 continue
             hunt_nonempty += 1
             batch_rows.append((score_opportunity(m, hunts), m))
         batch_rows.sort(key=lambda t: -t[0].score)
-        for scored, m in batch_rows[:_TOP_PER_BATCH]:
+        for scored, m in batch_rows[: _top_per_batch()]:
             if scored.tier == OpportunityTier.BELOW_THRESHOLD:
                 continue
             record_opportunity_for_burst(now)
@@ -265,6 +304,7 @@ def run_scan_execution_cycle(
         "Hunt results: %s markets with qualifying hunts",
         hunt_nonempty,
     )
+    merge_kalshi_prices_from_scan(markets)
     _touch_last_scan_unix(time.time())
     _post_scan_balance_sync()
     _ceo_bump_scan_stats(len(markets), attempts)

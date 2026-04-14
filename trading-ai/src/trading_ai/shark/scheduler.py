@@ -51,6 +51,9 @@ def build_shark_scheduler(
     kalshi_near_resolution: Optional[Callable[[], None]] = None,
     ceo_session: Optional[Callable[[str], None]] = None,
     daily_excel_report: Optional[Callable[[], None]] = None,
+    kalshi_hf_scan: Optional[Callable[[], None]] = None,
+    kalshi_convergence_scan: Optional[Callable[[], None]] = None,
+    kalshi_full_scan: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -58,7 +61,10 @@ def build_shark_scheduler(
     tz = os.environ.get("SHARK_TZ", "UTC")
     sched = BackgroundScheduler(timezone=tz)
 
-    sched.add_job(standard_scan, IntervalTrigger(minutes=5), id="scan_standard", replace_existing=True)
+    if kalshi_full_scan is not None:
+        sched.add_job(kalshi_full_scan, IntervalTrigger(minutes=5), id="kalshi_full", replace_existing=True)
+    else:
+        sched.add_job(standard_scan, IntervalTrigger(minutes=5), id="scan_standard", replace_existing=True)
     if crypto_scalp_scan is not None:
         sched.add_job(crypto_scalp_scan, IntervalTrigger(seconds=30), id="crypto_scalp_scan", replace_existing=True)
     if near_resolution_sweep is not None:
@@ -67,6 +73,17 @@ def build_shark_scheduler(
         sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
     if kalshi_near_resolution is not None:
         sched.add_job(kalshi_near_resolution, IntervalTrigger(seconds=60), id="kalshi_near_resolution", replace_existing=True)
+
+    def _kalshi_hf_wrapper() -> None:
+        if (os.environ.get("KALSHI_HF_ENABLED") or "true").strip().lower() != "true":
+            return
+        if kalshi_hf_scan is not None:
+            kalshi_hf_scan()
+
+    if kalshi_hf_scan is not None:
+        sched.add_job(_kalshi_hf_wrapper, IntervalTrigger(seconds=30), id="kalshi_hf", replace_existing=True)
+    if kalshi_convergence_scan is not None:
+        sched.add_job(kalshi_convergence_scan, IntervalTrigger(seconds=60), id="kalshi_convergence", replace_existing=True)
 
     def _hot_wrapper() -> None:
         if hot_window_active():

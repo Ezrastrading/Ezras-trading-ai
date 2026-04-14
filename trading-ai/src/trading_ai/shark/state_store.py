@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from trading_ai.governance.storage_architecture import shark_state_backups_dir, shark_state_path
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -222,6 +222,66 @@ def save_positions(data: Dict[str, Any]) -> None:
             remote_state.sync_all_state_to_supabase()
     except Exception:
         pass
+
+
+def kalshi_price_history_path() -> Path:
+    return shark_state_path("kalshi_price_history.json")
+
+
+def load_kalshi_price_history() -> Dict[str, List[float]]:
+    """Last up to 5 YES prices per Kalshi market id (for momentum hunts)."""
+    p = kalshi_price_history_path()
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, List[float]] = {}
+        for k, v in raw.items():
+            if not isinstance(v, list):
+                continue
+            nums = []
+            for x in v[-5:]:
+                try:
+                    nums.append(float(x))
+                except (TypeError, ValueError):
+                    continue
+            if nums:
+                out[str(k)] = nums
+        return out
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_kalshi_price_history(data: Dict[str, List[float]]) -> None:
+    p = kalshi_price_history_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    slim = {k: v[-5:] for k, v in data.items() if v}
+    p.write_text(json.dumps(slim, indent=2), encoding="utf-8")
+
+
+def merge_kalshi_prices_from_scan(markets: Sequence[Any]) -> None:
+    """Append current YES price for each Kalshi market (called once per scan cycle)."""
+    ph = load_kalshi_price_history()
+    for m in markets:
+        o = getattr(m, "outlet", None) or ""
+        if str(o).lower() != "kalshi":
+            continue
+        mid = str(getattr(m, "market_id", "") or "")
+        if not mid:
+            continue
+        y = getattr(m, "yes_price", None)
+        if y is None:
+            continue
+        try:
+            yf = float(y)
+        except (TypeError, ValueError):
+            continue
+        cur = ph.get(mid, [])
+        nxt = (cur + [yf])[-5:]
+        ph[mid] = nxt
+    save_kalshi_price_history(ph)
 
 
 def load_gaps() -> Dict[str, Any]:
