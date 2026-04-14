@@ -264,35 +264,64 @@ class KalshiClient:
                 break
         return rows[:limit]
 
-    def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
-        """
-        High-frequency pool: open markets resolving within ~7d, min volume.
-
-        After collecting up to 200 rows, sort so **price imbalance** (furthest from 0.5) is
-        prioritized, then **soonest close**; balanced ~50/50 markets come last so hunts see
-        real edges first.
-        """
-        now = time.time()
-        horizon = now + 7 * 86400
-        params: Dict[str, Any] = {"status": "open", "limit": 200}
+    def fetch_markets_for_series(self, series_ticker: str, *, limit: int = 80) -> List[Dict[str, Any]]:
+        """GET /markets with ``series_ticker`` (single-event series). Returns [] on error."""
+        lim = max(1, min(int(limit), 200))
+        params: Dict[str, Any] = {"series_ticker": series_ticker, "status": "open", "limit": lim}
         try:
             j = self._request("GET", "/markets", params=params)
         except Exception:
-            j = self._request("GET", "/markets", params={"limit": 200})
-        batch = j.get("markets") or j.get("data") or []
-        if not isinstance(batch, list):
             return []
+        batch = j.get("markets") or j.get("data") or []
+        return batch if isinstance(batch, list) else []
+
+    def fetch_kalshi_active_markets(self, *, top_n: int = 200) -> List[Dict[str, Any]]:
+        """
+        High-frequency pool: single-event binaries (not parlays), min volume, resolving within ~7d.
+
+        Pulls ``KALSHI_GOOD_SERIES`` via ``series_ticker=…``, then augments from the open feed if
+        sparse. Sorts so **price imbalance** (furthest from 0.5) is prioritized, then **soonest
+        close**; balanced ~50/50 markets come last so hunts see real edges first.
+        """
+        now = time.time()
+        horizon = now + 7 * 86400
+        merged: Dict[str, Dict[str, Any]] = {}
+
+        for ser in KALSHI_GOOD_SERIES:
+            for row in self.fetch_markets_for_series(ser, limit=80):
+                if not isinstance(row, dict):
+                    continue
+                tid = str(row.get("ticker") or "").strip()
+                if tid:
+                    merged[tid] = row
+
+        if len(merged) < 40:
+            params: Dict[str, Any] = {"status": "open", "limit": 200}
+            try:
+                j = self._request("GET", "/markets", params=params)
+            except Exception:
+                j = self._request("GET", "/markets", params={"limit": 200})
+            batch = j.get("markets") or j.get("data") or []
+            if isinstance(batch, list):
+                for m in batch:
+                    if not isinstance(m, dict):
+                        continue
+                    tid = str(m.get("ticker") or "").strip()
+                    if tid:
+                        merged.setdefault(tid, m)
+
+        all_markets = list(merged.values())
+        tickers = [str(m.get("ticker", ""))[:12] for m in all_markets[:20]]
+        logger.info("Kalshi ticker samples: %s", tickers)
+
         candidates: List[Dict[str, Any]] = []
-        for m in batch:
+        for m in all_markets:
             if not isinstance(m, dict):
                 continue
             if not _kalshi_market_tradeable(m, now):
                 continue
             end = _parse_close_timestamp_unix(m)
             if end is None or end > horizon:
-                continue
-            vol = float(m.get("volume_24h") or m.get("volume") or 0)
-            if vol < 100.0:
                 continue
             ya, na, _, _ = _kalshi_yes_no_from_market_row(m)
             if ya <= 0 or na <= 0:
@@ -464,9 +493,88 @@ _KALSHI_TERMINAL_STATUSES = frozenset(
     {"closed", "settled", "finalized", "determined", "expired", "cancelled", "canceled"}
 )
 
+# Multi-leg / parlay tickers — not single-event binaries.
+KALSHI_SKIP_PREFIXES: Tuple[str, ...] = (
+    "KXMVE",
+    "KXMVS",
+    "KXMVC",
+)
+
+# Prefer these single-event roots (prefix match on ``ticker`` or ``series_ticker``).
+KALSHI_GOOD_SERIES: Tuple[str, ...] = (
+    "INXD",
+    "NASDAQ",
+    "BTC",
+    "ETH",
+    "FED",
+    "CPI",
+    "JOBS",
+    "HIGHTEMP",
+    "KXNFL",
+    "KXNBA",
+    "KXMLB",
+    "KXNHL",
+    "TRUMP",
+    "CONGRESS",
+    "KXBTC",
+    "KXETH",
+    "KXFED",
+    "KXCPI",
+    "KXJOBS",
+    "KXHIGHTEMP",
+    "KXINX",
+    "KXNDX",
+    "KXNASDAQ",
+    "KXTRUMP",
+    "KXCONGRESS",
+)
+
+
+def _kalshi_market_volume(m: Dict[str, Any]) -> float:
+    """Use the best available Kalshi volume field (contracts / notional varies by API)."""
+    v24 = m.get("volume_24h")
+    v0 = m.get("volume")
+    try:
+        a = float(v24) if v24 is not None else 0.0
+    except (TypeError, ValueError):
+        a = 0.0
+    try:
+        b = float(v0) if v0 is not None else 0.0
+    except (TypeError, ValueError):
+        b = 0.0
+    return max(a, b)
+
+
+def _kalshi_ticker_passes_binary_focus(ticker: str, m: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Keep single-event style markets: listed ``KALSHI_GOOD_SERIES`` roots, or any ticker
+    that is not a ``KXMV*`` parlay-style product.
+    """
+    t = (ticker or "").strip().upper()
+    if not t:
+        return False
+    if m:
+        ser = str(m.get("series_ticker") or m.get("series_ticker_name") or "").strip().upper()
+        if ser and any(ser.startswith(g.upper()) for g in KALSHI_GOOD_SERIES):
+            return True
+    if any(t.startswith(g.upper()) for g in KALSHI_GOOD_SERIES):
+        return True
+    if t.startswith("KXMV"):
+        return False
+    return True
+
 
 def _kalshi_market_tradeable(m: Dict[str, Any], now: float) -> bool:
-    """Unsettled markets with close time in the future; status must not be a known terminal value."""
+    """Single-event, liquid, unsettled markets with a future close (excludes parlays)."""
+    ticker = str(m.get("ticker") or m.get("market_id") or "")
+    tu = ticker.upper()
+    for prefix in KALSHI_SKIP_PREFIXES:
+        if tu.startswith(prefix.upper()):
+            return False
+    if not _kalshi_ticker_passes_binary_focus(ticker, m):
+        return False
+    if _kalshi_market_volume(m) < 10.0:
+        return False
     if m.get("settled") or m.get("is_settled"):
         return False
     end = _parse_close_timestamp_unix(m)
@@ -535,6 +643,8 @@ class KalshiFetcher(BaseOutletFetcher):
             if not raw_list:
                 raw_list = self._client.fetch_markets_open(limit=500)
                 active_rows = [m for m in raw_list if isinstance(m, dict) and _kalshi_market_tradeable(m, now)]
+                fb_ticks = [str(m.get("ticker", ""))[:12] for m in active_rows[:20]]
+                logger.info("Kalshi ticker samples (open fallback): %s", fb_ticks)
                 raw_list = active_rows[:200]
             sample_statuses = [str(m.get("status", "unknown")) for m in raw_list[:20] if isinstance(m, dict)]
             logger.info("Kalshi sample statuses (first %s): %s", len(sample_statuses), sample_statuses)

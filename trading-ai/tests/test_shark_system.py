@@ -560,10 +560,29 @@ def test_31b_kalshi_tradeable_accepts_non_open_status():
         "yes_ask": 50,
         "no_ask": 50,
         "close_time": now + 3600.0,
+        "volume": 50.0,
     }
     assert _kalshi_market_tradeable(m, now)
     assert not _kalshi_market_tradeable({**m, "status": "closed"}, now)
     assert not _kalshi_market_tradeable({**m, "settled": True}, now)
+
+
+def test_31b2_kalshi_tradeable_rejects_parlays_and_low_volume():
+    from trading_ai.shark.outlets.kalshi import _kalshi_market_tradeable
+
+    now = 1_700_000_000.0
+    base = {
+        "status": "active",
+        "yes_ask": 50,
+        "no_ask": 50,
+        "close_time": now + 3600.0,
+        "volume": 50.0,
+    }
+    assert not _kalshi_market_tradeable({**base, "ticker": "KXMVEPARLAY-1"}, now)
+    assert not _kalshi_market_tradeable({**base, "ticker": "KXMVSPORT-1"}, now)
+    assert not _kalshi_market_tradeable({**base, "ticker": "KXMVCROSS-1"}, now)
+    assert not _kalshi_market_tradeable({**base, "ticker": "KXMVOTHER-1"}, now)
+    assert not _kalshi_market_tradeable({**base, "ticker": "KX-2", "volume": 5.0}, now)
 
 
 def test_31c_gamma_row_normalization_tradeable():
