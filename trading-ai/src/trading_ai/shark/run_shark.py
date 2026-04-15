@@ -127,6 +127,23 @@ def main() -> None:
     except Exception as exc:
         log.warning("Initial balance sync failed (non-blocking): %s", exc)
 
+    # ── Coinbase accumulator — init + startup position check ──────────────────
+    _coinbase_accumulator = None
+    try:
+        from trading_ai.shark.coinbase_accumulator import (
+            CoinbaseAccumulator,
+            coinbase_enabled,
+        )
+
+        if coinbase_enabled():
+            _coinbase_accumulator = CoinbaseAccumulator()
+            _coinbase_accumulator.load_and_check_positions_on_startup()
+            log.info("Coinbase accumulator initialised")
+        else:
+            log.info("Coinbase disabled (set COINBASE_ENABLED=true to activate)")
+    except Exception as exc:
+        log.warning("Coinbase accumulator init failed (non-blocking): %s", exc)
+
     rec = load_capital()
     g = load_gaps()
     gaps_n = len(g.get("gaps_under_observation") or [])
@@ -521,6 +538,29 @@ def main() -> None:
             crypto_status = "OPEN" if is_crypto_market_hours() else "CLOSED"
             sports_enabled = (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
             sports_status = "ACTIVE" if sports_enabled else "QUIET"
+
+            # ── Coinbase accumulator snapshot ─────────────────────────────────
+            cb_section = ""
+            try:
+                if _coinbase_accumulator is not None:
+                    cb = _coinbase_accumulator.get_summary()
+                    cb_pnl = float(cb.get("daily_pnl_usd") or 0.0)
+                    cb_cost = float(cb.get("total_cost_usd") or 0.0)
+                    cb_open = int(cb.get("open_count") or 0)
+                    cb_total = float(cb.get("total_realized_usd") or 0.0)
+                    by_pid = cb.get("by_product") or {}
+                    pid_line = " | ".join(
+                        f"{k}: {v}" for k, v in sorted(by_pid.items())
+                    ) or "none"
+                    cb_section = (
+                        f"\n\n📊 COINBASE:\n"
+                        f"  BTC/ETH/SOL open: {pid_line}\n"
+                        f"  Deployed: ${cb_cost:.2f} | Positions: {cb_open}\n"
+                        f"  Today P&L: ${cb_pnl:+.2f} | All-time: ${cb_total:+.2f}"
+                    )
+            except Exception:
+                pass
+
             msg = (
                 f"⏰ EZRAS HOURLY:\n"
                 f"💰 Balance: ${bal:.2f}\n"
@@ -529,6 +569,7 @@ def main() -> None:
                 f"🚀 P&L today: ${pnl:+.2f} ({pnl_pct:+.1f}%)\n"
                 f"📈 Crypto: {crypto_status}\n"
                 f"🏀 Sports: {sports_status}"
+                f"{cb_section}"
             )
             send_telegram(msg)
             log.info("HOURLY_REPORT: sent")
@@ -570,12 +611,16 @@ def main() -> None:
         kalshi_blitz_cron=kalshi_blitz,
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,
+        coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)
         sys.exit(1)
     sched.start()
     log.info("Shark scheduler started — 24/7")
+    for job in sched.get_jobs():
+        if "blitz" in job.id.lower():
+            log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 
     def _send_bot_online_telegram() -> None:
         try:

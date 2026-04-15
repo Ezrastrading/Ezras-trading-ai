@@ -1329,7 +1329,7 @@ def _kalshi_market_within_max_ttr(m: Dict[str, Any], now: float) -> bool:
         return True
     ticker = str(m.get("ticker") or "").strip()
     ttr_min = ttr / 60.0
-    logger.info("Skipped %s: TTR too long (%.0fmin > %.0fmin)", ticker, ttr_min, max_ttr / 60.0)
+    logger.debug("Skipped %s: TTR too long (%.0fmin > %.0fmin)", ticker, ttr_min, max_ttr / 60.0)
     return False
 
 
