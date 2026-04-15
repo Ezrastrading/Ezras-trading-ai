@@ -11,16 +11,22 @@ from typing import Any, Optional
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path == "/health" or self.path == "/healthz":
+        path = (self.path or "").split("?", 1)[0]
+        if path in ("/", "/health", "/healthz"):
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            status: dict[str, Any] = {
-                "status": "alive",
-                "shark": "hunting",
-                "version": "1.0",
-            }
-            self.wfile.write(json.dumps(status).encode("utf-8"))
+            if path == "/":
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                status: dict[str, Any] = {
+                    "status": "alive",
+                    "shark": "hunting",
+                    "version": "1.0",
+                }
+                self.wfile.write(json.dumps(status).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()

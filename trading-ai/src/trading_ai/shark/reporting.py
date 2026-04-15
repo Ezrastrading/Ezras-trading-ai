@@ -563,7 +563,7 @@ def format_shark_heartbeat_message(
 
 
 def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
-    """Scheduled heartbeat — logs/metrics only; no Telegram."""
+    """Scheduled heartbeat — logs liveness; optional self-GET ``/health`` for Railway-style probes."""
     from trading_ai.shark.state_store import load_capital
 
     uptime_h = (time.time() - started_at) / 3600.0
@@ -581,7 +581,24 @@ def send_shark_heartbeat_alert(*, started_at: float) -> Dict[str, Any]:
         next_scan_seconds=300.0,
     )
     _remember("heartbeat", {"text": text})
-    logger.debug("heartbeat (Telegram disabled): %s", text[:400])
+    logger.info(
+        "heartbeat ok — uptime %.1fh capital $%.2f trades_today=%s (%s)",
+        uptime_h,
+        cap_usd,
+        rec.total_trades,
+        server,
+    )
+    port = int((os.environ.get("PORT") or "8080").strip() or "8080")
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            code = getattr(resp, "status", 200)
+            _ = resp.read(256)
+        logger.debug("heartbeat self-probe /health -> %s", code)
+    except Exception as exc:
+        logger.warning("heartbeat self-probe /health failed (non-fatal): %s", exc)
     return {"sent": False, "skipped_duplicate": False, "ok": True, "error": None, "quiet": True}
 
 

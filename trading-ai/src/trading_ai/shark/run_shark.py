@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -498,6 +499,70 @@ def main() -> None:
         sys.exit(1)
     sched.start()
     log.info("Shark scheduler started — 24/7")
+
+    def _send_bot_online_telegram() -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from trading_ai.shark.reporting import send_telegram, trading_capital_usd_for_alerts
+
+            rec = load_capital()
+            bal = trading_capital_usd_for_alerts(fallback=rec.current_capital)
+            t = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            send_telegram(f"✅ EZRAS BOT ONLINE — ${bal:.2f} ready, all systems active, {t}")
+            log.info("ONLINE: startup Telegram sent (EZRAS BOT ONLINE)")
+        except Exception as exc:
+            log.warning("ONLINE Telegram failed: %s", exc)
+
+    _send_bot_online_telegram()
+
+    def _watchdog() -> None:
+        while True:
+            time.sleep(60)
+            try:
+                if not getattr(sched, "running", True):
+                    log.critical("WATCHDOG: scheduler stopped — restarting")
+                    try:
+                        sched.start()
+                        from datetime import datetime, timezone
+
+                        from trading_ai.shark.reporting import send_telegram
+
+                        t = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                        send_telegram(f"🔄 EZRAS BOT RESTARTED — back online {t}")
+                        log.info("WATCHDOG: scheduler restarted — Telegram sent (EZRAS BOT RESTARTED)")
+                    except Exception as e:
+                        log.critical("WATCHDOG: restart failed: %s", e)
+                        os.kill(os.getpid(), signal.SIGTERM)
+            except Exception as exc:
+                log.warning("WATCHDOG loop error: %s", exc)
+
+    threading.Thread(target=_watchdog, name="shark-watchdog", daemon=True).start()
+
+    _idle_state = {"last_idle_alert": 0.0, "last_market_hint": 0.0}
+
+    def _idle_and_market_hours_loop() -> None:
+        while True:
+            time.sleep(60)
+            try:
+                now = time.time()
+                rec = load_capital()
+                lt = rec.last_trade_unix
+                ref = float(lt) if lt is not None and float(lt) > 0 else boot_unix
+                if now - ref > 600.0 and now - _idle_state["last_idle_alert"] >= 600.0:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    send_telegram("⚠️ EZRAS: No trades in 10min — checking markets")
+                    _idle_state["last_idle_alert"] = now
+                if now - _idle_state["last_market_hint"] >= 300.0:
+                    log.info(
+                        "Waiting for markets... Market hours: crypto opens 9am ET, sports active during games"
+                    )
+                    _idle_state["last_market_hint"] = now
+            except Exception as exc:
+                log.warning("idle/market-hours loop: %s", exc)
+
+    threading.Thread(target=_idle_and_market_hours_loop, name="shark-idle-hint", daemon=True).start()
 
     def _stop(*_a: object) -> None:
         sched.shutdown(wait=False)
