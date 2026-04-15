@@ -11,6 +11,11 @@ Coinbase 24/7 — **high-frequency scalp** (Engines A / B / C) + optional **gain
 Position sizing: ``COINBASE_HFT_POSITION_PCT``, ``COINBASE_GAINER_POSITION_PCT`` (see env),
 ``COINBASE_RESERVE_PCT``, ``COINBASE_MAX_DEPLOY_PCT`` — no fixed-dollar order envs.
 
+Exits: ``_check_exits`` runs every scan after prices (before buy engines). Open products
+without quotes get a salvage fetch. ``COINBASE_TIME_STOP_MIN`` (default 30, set 0 to
+disable) forces market sell for any position age. ``COINBASE_PROFIT_TARGET_PCT`` /
+``COINBASE_STOP_LOSS_PCT`` apply to engines A/B/C. State is saved after each buy/sell.
+
 Prices: public tickers (Advanced Trade market + Exchange fallback — see ``outlets/coinbase.py``).
 JWT only for ``/accounts`` and ``/orders``.
 
@@ -645,6 +650,12 @@ class CoinbaseAccumulator:
         try:
             state = load_coinbase_state()
             _reset_daily_pnl_if_needed(state)
+            n_open = len(state.get("positions") or [])
+            logger.info(
+                "Coinbase startup: %d open position(s) from %s",
+                n_open,
+                _positions_path(),
+            )
             now = time.time()
             scan_ids = _hf_scan_product_ids(self._client, state, now)
             pids = list(set(scan_ids) | set(collect_price_product_ids(state)))
@@ -703,8 +714,25 @@ class CoinbaseAccumulator:
         if not prices:
             return {"ok": False, "error": "no_prices", "trades_this_scan": 0}
 
+        # Ensure every open position has a quote (otherwise _check_exits skips → stuck forever).
+        open_ids = collect_price_product_ids(state)
+        missing = [x for x in open_ids if x and x not in prices]
+        if missing:
+            try:
+                extra = self._client.get_prices_batched(missing)
+                prices.update(extra)
+                if len(extra) < len(missing):
+                    logger.warning(
+                        "Coinbase: price salvage partial %d/%d open products quoted",
+                        len(extra),
+                        len(missing),
+                    )
+            except Exception as exc:
+                logger.warning("Coinbase: price salvage for open positions failed: %s", exc)
+
         self._ingest_prices_into_history(prices, now)
 
+        # Exit pass every tick before any buy engine (state is loaded from disk each scan).
         self._check_exits(state, prices, now)
 
         if run:
@@ -796,6 +824,7 @@ class CoinbaseAccumulator:
             send_telegram(_telegram_buy_line(_cb_sym(product_id), order_usd, mid))
         except Exception:
             pass
+        save_coinbase_state(state)
         return True
 
     def _engine_b_micro(
@@ -945,6 +974,7 @@ class CoinbaseAccumulator:
             usd_balance = max(0.0, usd_balance - order_usd)
             bought += 1
             self._buys_this_scan = int(getattr(self, "_buys_this_scan", 0)) + 1
+            save_coinbase_state(state)
             _log_trade(
                 {
                     "ts": now,
@@ -1069,6 +1099,7 @@ class CoinbaseAccumulator:
             usd_balance = max(0.0, usd_balance - order_usd)
             bought += 1
             self._buys_this_scan = int(getattr(self, "_buys_this_scan", 0)) + 1
+            save_coinbase_state(state)
             _log_trade(
                 {
                     "ts": now,
@@ -1168,23 +1199,43 @@ class CoinbaseAccumulator:
         remaining: List[Dict[str, Any]] = []
         for pos in list(state.get("positions") or []):
             pid = str(pos.get("product_id") or "")
+            entry = float(pos.get("entry_price") or 0.0)
+            size_base = float(pos.get("size_base") or 0.0)
+            strategy = str(pos.get("hf_engine") or pos.get("strategy") or "A")
+
             if pid not in prices:
+                logger.info(
+                    "CB EXIT CHECK: %s entry=%.4f current=n/a pnl=n/a (no price in batch)",
+                    pid,
+                    entry,
+                )
                 remaining.append(pos)
                 continue
 
             bid, _ask = prices[pid]
             current = bid
-            entry = float(pos.get("entry_price") or 0.0)
-            size_base = float(pos.get("size_base") or 0.0)
             cost_usd = float(pos.get("cost_usd") or 0.0)
-            strategy = str(pos.get("hf_engine") or pos.get("strategy") or "A")
 
             if entry <= 0 or size_base <= 0:
+                logger.info(
+                    "CB EXIT CHECK: %s entry=%.4f current=%.4f pnl=n/a (invalid size/entry)",
+                    pid,
+                    entry,
+                    current,
+                )
                 remaining.append(pos)
                 continue
 
             gain_pct = (current - entry) / entry
             entry_t = float(pos.get("entry_time") or 0.0)
+
+            logger.info(
+                "CB EXIT CHECK: %s entry=%.4f current=%.4f pnl=%.2f%%",
+                pid,
+                entry,
+                current,
+                gain_pct * 100.0,
+            )
 
             profit_exit = False
             stop_exit = False
@@ -1192,7 +1243,16 @@ class CoinbaseAccumulator:
             time_exit = False
             is_hunter = strategy == "D" and bool(pos.get("hunter"))
 
-            if strategy == "D":
+            ts_min = _env_float("COINBASE_TIME_STOP_MIN", 30.0)
+            force_global_time = (
+                ts_min > 0
+                and entry_t > 0
+                and (now - entry_t) >= ts_min * 60.0
+            )
+
+            if force_global_time:
+                sell_reason = f"global_time_stop {ts_min:.0f}min"
+            elif strategy == "D":
                 peak = max(float(pos.get("peak_price") or entry), current)
                 hist = list(self._price_history.get(pid) or [])
 
@@ -1218,6 +1278,7 @@ class CoinbaseAccumulator:
                         and abs(current - ref_flat) / ref_flat < flat_th
                     )
 
+                    vol_dry_exit = False
                     st_now = self._cached_exchange_stats(pid, now)
                     if st_now:
                         sv = float(st_now.get("volume") or 0.0)
@@ -1276,8 +1337,14 @@ class CoinbaseAccumulator:
                     else:
                         sell_reason = f"gainer time {((now - entry_t)/60):.1f}m"
             else:
-                tp = float(pos.get("take_profit_pct") or _env_float("COINBASE_PROFIT_TARGET_PCT", 0.02))
-                sl = float(pos.get("stop_loss_pct") or _env_float("COINBASE_STOP_LOSS_PCT", 0.01))
+                tp = float(
+                    pos.get("take_profit_pct")
+                    or _env_float("COINBASE_PROFIT_TARGET_PCT", 0.001)
+                )
+                sl = float(
+                    pos.get("stop_loss_pct")
+                    or _env_float("COINBASE_STOP_LOSS_PCT", 0.005)
+                )
                 max_hold = float(pos.get("max_hold_sec") or 999999.0)
                 time_exit = (now - entry_t) >= max_hold
                 profit_exit = gain_pct >= tp
@@ -1309,6 +1376,8 @@ class CoinbaseAccumulator:
                 )
                 if is_hunter:
                     state.setdefault("hunter_cooldown", {})[pid] = now
+
+                save_coinbase_state(state)
 
                 _log_trade(
                     {
@@ -1343,20 +1412,22 @@ class CoinbaseAccumulator:
                     if strategy == "D":
                         if is_hunter:
                             mins = (now - entry_t) / 60.0
-                            if trail_exit:
+                            if trail_exit and not force_global_time:
                                 send_telegram(_telegram_hunter_trail(sym))
                             else:
                                 send_telegram(
                                     _telegram_hunter_sold(sym, gain_pct, pnl, mins)
                                 )
-                        elif trail_exit:
+                        elif trail_exit and not force_global_time:
                             tr = _env_float("COINBASE_GAINERS_TRAILING_STOP", 0.05)
                             send_telegram(_telegram_gainer_trailing_stop(sym, tr))
                         else:
                             send_telegram(
                                 _telegram_gainer_sell_profit(sym, gain_pct, pnl)
                             )
-                    elif stop_exit or (time_exit and pnl < 0):
+                    elif stop_exit or (time_exit and pnl < 0) or (
+                        sell_reason.startswith("global_time_stop")
+                    ):
                         send_telegram(_telegram_stop_line(sym, gain_pct, pnl))
                     else:
                         send_telegram(_telegram_sell_profit_line(sym, gain_pct, pnl))
