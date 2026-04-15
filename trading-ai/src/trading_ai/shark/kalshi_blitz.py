@@ -77,7 +77,6 @@ def run_kalshi_blitz() -> int:
         KalshiClient,
         _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
-        fetch_kalshi_orderbook_best_ask_cents,
     )
     from trading_ai.shark.reporting import send_telegram
     from trading_ai.shark.state_store import load_capital
@@ -195,7 +194,7 @@ def run_kalshi_blitz() -> int:
     batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.3))
     max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
     retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
-    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 15.0))
+    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 3.0))
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
         ticker = str(t["ticker"])
@@ -204,19 +203,15 @@ def run_kalshi_blitz() -> int:
 
         def _do() -> Tuple[bool, str, float]:
             side_l = str(t["side"]).strip().lower()
-            ya, na = fetch_kalshi_orderbook_best_ask_cents(ticker, client)
-            if side_l == "yes":
-                lc = ya if ya is not None else int(t["yes_cents"])
-            else:
-                lc = na if na is not None else int(t["no_cents"])
-            lc = max(1, min(99, int(lc)))
+            side_cents = int(t["yes_cents"]) if side_l == "yes" else int(t["no_cents"])
+            side_cents = max(1, min(99, side_cents))
             res = client.place_order(
                 ticker=ticker,
                 side=t["side"],
                 count=cnt,
                 action="buy",
-                order_type="limit",
-                limit_price_cents=lc,
+                order_type="market",
+                side_price_cents=side_cents,
                 fill_timeout_sec=fill_to,
                 min_order_prob=min_prob,
             )

@@ -646,12 +646,15 @@ class KalshiClient:
         action: str = "buy",
         order_type: str = "market",
         limit_price_cents: Optional[int] = None,
+        side_price_cents: Optional[int] = None,
         fill_timeout_sec: Optional[float] = None,
         min_order_prob: Optional[float] = None,
     ) -> OrderResult:
         """
         POST ``type: market`` or ``type: limit`` with **one** of ``yes_price`` / ``no_price``
-        in **cents** (Kalshi API requirement for both order types).
+        in **cents** (Kalshi API requirement for both order types). For **market** buys,
+        pass ``side_price_cents`` to set that field from caller data (e.g. blitz); otherwise
+        prices come from :meth:`get_market`.
 
         **Buys** (last line of defense): TTR ≤ ``KALSHI_MAX_TTR_SECONDS`` and implied prob ≥
         ``min_order_prob`` if passed, else ``KALSHI_MIN_ORDER_PROB`` (default 0.85), except
@@ -759,13 +762,20 @@ class KalshiClient:
                 **price_fields,
             }
         else:
+            if side_price_cents is not None:
+                sc = max(1, min(99, int(side_price_cents)))
+                m_price_fields: Dict[str, int] = (
+                    {"yes_price": sc} if (side or "").strip().lower() == "yes" else {"no_price": sc}
+                )
+            else:
+                m_price_fields = _kalshi_market_order_price_fields(side, yp, npv)
             body = {
                 "ticker": ticker,
                 "action": act,
                 "side": side,
                 "type": "market",
                 "count": cnt,
-                **_kalshi_market_order_price_fields(side, yp, npv),
+                **m_price_fields,
             }
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
