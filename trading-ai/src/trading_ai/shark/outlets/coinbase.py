@@ -252,19 +252,20 @@ class CoinbaseClient:
         if not self.has_credentials():
             raise CoinbaseAuthError("Coinbase credentials not configured")
 
-        # Build query string first — JWT `uri` claim must match the full request path + query.
+        # Build path + query once — JWT ``uri`` claim and the HTTP URL must match exactly.
         qs = _query_string(params)
-
-        base_path = urlparse(self.base_url).path.rstrip("/")
-        request_path = f"{base_path}{path}{qs}"
-        jwt_token = self._build_jwt(method, request_path)
+        rel_path = path if path.startswith("/") else f"/{path}"
+        base = urlparse(self.base_url)
+        broker_prefix = base.path.rstrip("/")
+        uri_path_for_jwt = f"{broker_prefix}{rel_path}{qs}"
+        jwt_token = self._build_jwt(method, uri_path_for_jwt)
         headers = {
             "Authorization": f"Bearer {jwt_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
-        url = f"{self.base_url}{path}{qs}"
+        url = f"{base.scheme}://{base.netloc}{broker_prefix}{rel_path}{qs}"
         data: Optional[bytes] = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         ssl_ctx = _get_ssl_context()
@@ -337,27 +338,123 @@ class CoinbaseClient:
         prices = self.get_prices([product_id])
         return prices.get(product_id, (0.0, 0.0))
 
+    def get_product_price(self, product_id: str) -> Tuple[float, float]:
+        """
+        GET /products/{product_id} — authenticated; includes bid/ask on many products.
+
+        Used when ``/best_bid_ask`` fails authorization.
+        """
+        safe = urllib.parse.quote(str(product_id).strip(), safe="-")
+        j = self._request("GET", f"/products/{safe}")
+        bid = float(j.get("bid_price") or j.get("best_bid") or 0.0)
+        ask = float(j.get("ask_price") or j.get("best_ask") or 0.0)
+        if bid <= 0 and ask <= 0:
+            px = j.get("price")
+            if px is not None:
+                p = float(px)
+                return p, p
+        return bid, ask
+
+    def _get_public_ticker_bid_ask(self, product_id: str) -> Tuple[float, float]:
+        """GET …/products/{id}/ticker — public; no JWT."""
+        safe = urllib.parse.quote(str(product_id).strip(), safe="-")
+        url = f"{_ADV_BASE_URL}/products/{safe}/ticker"
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "EzrasShark/1.0"}, method="GET"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=_get_ssl_context()) as resp:
+                j = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("Coinbase public ticker %s: %s", product_id, exc)
+            return 0.0, 0.0
+        bid = float(
+            j.get("best_bid")
+            or j.get("bid")
+            or j.get("bid_price")
+            or j.get("price")
+            or 0.0
+        )
+        ask = float(
+            j.get("best_ask")
+            or j.get("ask")
+            or j.get("ask_price")
+            or j.get("price")
+            or 0.0
+        )
+        if bid <= 0 and ask <= 0:
+            px = j.get("price")
+            if px is not None:
+                p = float(px)
+                return p, p
+        return bid, ask
+
+    def _fetch_price_with_fallbacks(self, product_id: str) -> Tuple[float, float]:
+        """Public ticker first, then authenticated single-product endpoint."""
+        bid, ask = self._get_public_ticker_bid_ask(product_id)
+        if bid > 0 and ask > 0:
+            return bid, ask
+        if bid > 0 or ask > 0:
+            return bid, ask
+        if self.has_credentials():
+            try:
+                return self.get_product_price(product_id)
+            except Exception as exc:
+                logger.debug("Coinbase get_product_price %s: %s", product_id, exc)
+        return 0.0, 0.0
+
     def get_prices(self, product_ids: List[str]) -> Dict[str, Tuple[float, float]]:
         """
         GET /best_bid_ask — return ``{product_id: (bid, ask)}`` for multiple products.
 
         Uses repeated ``product_ids`` query params as required by the v3 API.
+        ``product_ids`` are sorted so the query string (and JWT ``uri``) is stable.
+
+        On 401 or partial failure, falls back to public ``/ticker`` then
+        ``/products/{id}`` per product (sequential).
         """
         if not product_ids:
             return {}
-        j = self._request(
-            "GET", "/best_bid_ask", params={"product_ids": product_ids}
-        )
+        ids = list(dict.fromkeys(product_ids))
+        ids_sorted = sorted(ids)
+
         result: Dict[str, Tuple[float, float]] = {}
-        for book in j.get("pricebooks") or []:
-            pid = str(book.get("product_id") or "")
-            if not pid:
+        try:
+            j = self._request(
+                "GET", "/best_bid_ask", params={"product_ids": ids_sorted}
+            )
+            for book in j.get("pricebooks") or []:
+                pid = str(book.get("product_id") or "")
+                if not pid:
+                    continue
+                bids = book.get("bids") or []
+                asks = book.get("asks") or []
+                bid = float(bids[0]["price"]) if bids else 0.0
+                ask = float(asks[0]["price"]) if asks else 0.0
+                result[pid] = (bid, ask)
+        except CoinbaseAuthError as exc:
+            logger.warning(
+                "Coinbase best_bid_ask unauthorized (%s) — per-product fallbacks",
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Coinbase best_bid_ask failed (%s) — per-product fallbacks", exc
+            )
+
+        need: List[str] = []
+        for pid in ids:
+            if pid not in result:
+                need.append(pid)
                 continue
-            bids = book.get("bids") or []
-            asks = book.get("asks") or []
-            bid = float(bids[0]["price"]) if bids else 0.0
-            ask = float(asks[0]["price"]) if asks else 0.0
-            result[pid] = (bid, ask)
+            b, a = result[pid]
+            if b <= 0 and a <= 0:
+                need.append(pid)
+        for pid in need:
+            bid, ask = self._fetch_price_with_fallbacks(pid)
+            if bid > 0 or ask > 0:
+                result[pid] = (bid, ask)
+
         return result
 
     def get_prices_batched(
