@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -63,6 +63,30 @@ def normalize_coinbase_key_material(raw: str) -> str:
 
 def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _query_string(params: Optional[Dict[str, Any]]) -> str:
+    """
+    Build ``?a=1&b=2`` for JWT ``uri`` and the HTTP URL.
+
+    Uses :func:`urllib.parse.urlencode` so product ids like ``BTC-USD`` stay
+    unencoded (hyphens). Over-aggressive :func:`~urllib.parse.quote` with
+    ``safe=\"\"`` turns ``-`` into ``%2D``, which can break CDP JWT checks for
+    ``/best_bid_ask?product_ids=...``.
+    """
+    if not params:
+        return ""
+    pairs: List[Tuple[str, str]] = []
+    for k, v in params.items():
+        if v is None:
+            continue
+        ks = str(k)
+        if isinstance(v, list):
+            for item in v:
+                pairs.append((ks, str(item)))
+        else:
+            pairs.append((ks, str(v)))
+    return "?" + urlencode(pairs)
 
 
 def _get_ssl_context() -> ssl.SSLContext:
@@ -229,27 +253,7 @@ class CoinbaseClient:
             raise CoinbaseAuthError("Coinbase credentials not configured")
 
         # Build query string first — JWT `uri` claim must match the full request path + query.
-        qs = ""
-        if params:
-            parts: List[str] = []
-            for k, v in params.items():
-                if v is None:
-                    continue
-                if isinstance(v, list):
-                    for item in v:
-                        parts.append(
-                            urllib.parse.quote(str(k), safe="")
-                            + "="
-                            + urllib.parse.quote(str(item), safe="")
-                        )
-                else:
-                    parts.append(
-                        urllib.parse.quote(str(k), safe="")
-                        + "="
-                        + urllib.parse.quote(str(v), safe="")
-                    )
-            if parts:
-                qs = "?" + "&".join(parts)
+        qs = _query_string(params)
 
         base_path = urlparse(self.base_url).path.rstrip("/")
         request_path = f"{base_path}{path}{qs}"
