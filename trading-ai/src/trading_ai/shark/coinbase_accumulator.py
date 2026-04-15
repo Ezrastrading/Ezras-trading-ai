@@ -975,7 +975,8 @@ class CoinbaseAccumulator:
             return
 
         change_pct = (current_price - ref_price) / ref_price
-        if change_pct > -0.01:  # need ≥1% drop
+        dip_pct = _env_float("COINBASE_DIP_PCT", 0.01)
+        if change_pct > -dip_pct:
             return
 
         # Don't stack A positions opened in the last 10 minutes on the same product
@@ -1169,7 +1170,8 @@ class CoinbaseAccumulator:
             return
 
         change_pct = (current_price - ref_price) / ref_price
-        if change_pct < 0.005:  # need ≥0.5% up move
+        mom_trig = _env_float("COINBASE_MOMENTUM_PCT", 0.005)
+        if change_pct < mom_trig:
             return
 
         # Only one C position per product at a time
