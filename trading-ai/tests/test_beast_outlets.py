@@ -129,6 +129,15 @@ def test_default_fetchers_include_metaculus():
     assert "metaculus" in names
 
 
+def test_default_fetchers_exclude_polymarket_when_disabled(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_ENABLED", "false")
+    from trading_ai.shark.outlets import default_fetchers
+
+    names = {f.outlet_name for f in default_fetchers()}
+    assert "polymarket" not in names
+    assert "kalshi" in names
+
+
 def test_avenue_activator_evaluate_smoke():
     from trading_ai.shark.avenue_activator import evaluate_avenues
 

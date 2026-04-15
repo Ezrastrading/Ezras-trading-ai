@@ -16,6 +16,13 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _polymarket_jobs_enabled() -> bool:
+    from trading_ai.shark.outlets import polymarket_enabled
+
+    return polymarket_enabled()
+
+
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -74,16 +81,30 @@ def build_shark_scheduler(
     tz = os.environ.get("SHARK_TZ", "UTC")
     sched = BackgroundScheduler(timezone=tz)
 
+    if not _polymarket_jobs_enabled():
+        logger.info("Polymarket disabled — skipping Polymarket-only jobs (crypto_scalp_scan, near_resolution_sweep, arb_sweep)")
+
     if kalshi_full_scan is not None:
         sched.add_job(kalshi_full_scan, IntervalTrigger(minutes=5), id="kalshi_full", replace_existing=True)
     else:
         sched.add_job(standard_scan, IntervalTrigger(minutes=5), id="scan_standard", replace_existing=True)
-    if crypto_scalp_scan is not None:
-        sched.add_job(crypto_scalp_scan, IntervalTrigger(seconds=30), id="crypto_scalp_scan", replace_existing=True)
-    if near_resolution_sweep is not None:
-        sched.add_job(near_resolution_sweep, IntervalTrigger(seconds=60), id="near_resolution_sweep", replace_existing=True)
-    if arb_sweep is not None:
-        sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
+    if _polymarket_jobs_enabled():
+        if crypto_scalp_scan is not None:
+            sched.add_job(
+                crypto_scalp_scan,
+                IntervalTrigger(seconds=30),
+                id="crypto_scalp_scan",
+                replace_existing=True,
+            )
+        if near_resolution_sweep is not None:
+            sched.add_job(
+                near_resolution_sweep,
+                IntervalTrigger(seconds=60),
+                id="near_resolution_sweep",
+                replace_existing=True,
+            )
+        if arb_sweep is not None:
+            sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
     if kalshi_near_resolution is not None:
         sched.add_job(kalshi_near_resolution, IntervalTrigger(seconds=60), id="kalshi_near_resolution", replace_existing=True)
 

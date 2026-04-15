@@ -2245,7 +2245,8 @@ def test_gamma_fetch_skips_cleanly_on_enomem(monkeypatch):
     assert poly.fetch_gamma_markets_page(limit=10, offset=0) == []
 
 
-def test_126_crypto_scalp_scan_interval_job_registered():
+def test_126_crypto_scalp_scan_interval_job_registered(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_ENABLED", "true")
     from trading_ai.shark.scheduler import build_shark_scheduler
 
     sched = build_shark_scheduler(
@@ -2270,6 +2271,35 @@ def test_126_crypto_scalp_scan_interval_job_registered():
     assert "crypto_scalp_scan" in ids
     assert "near_resolution_sweep" in ids
     assert "arb_sweep" in ids
+    assert "kalshi_near_resolution" in ids
+
+
+def test_126a_polymarket_disabled_scheduler_omits_poly_jobs(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_ENABLED", "false")
+    from trading_ai.shark.scheduler import build_shark_scheduler
+
+    sched = build_shark_scheduler(
+        standard_scan=lambda: None,
+        hot_scan=lambda: None,
+        gap_passive_scan=lambda: None,
+        gap_active_scan=lambda: None,
+        resolution_monitor=lambda: None,
+        daily_memo=lambda: None,
+        weekly_summary=lambda: None,
+        state_backup=lambda: None,
+        health_check=lambda: None,
+        hot_window_active=lambda: False,
+        gap_active=lambda: False,
+        crypto_scalp_scan=lambda: None,
+        near_resolution_sweep=lambda: None,
+        arb_sweep=lambda: None,
+        kalshi_near_resolution=lambda: None,
+    )
+    assert sched is not None
+    ids = [j.id for j in sched.get_jobs()]
+    assert "crypto_scalp_scan" not in ids
+    assert "near_resolution_sweep" not in ids
+    assert "arb_sweep" not in ids
     assert "kalshi_near_resolution" in ids
 
 
@@ -2536,7 +2566,8 @@ def test_133_hunt_near_resolution_fires_at_093_threshold():
     assert r.hunt_type == HuntType.NEAR_RESOLUTION
 
 
-def test_134_three_sweep_jobs_near_resolution_arb_kalshi_registered():
+def test_134_three_sweep_jobs_near_resolution_arb_kalshi_registered(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_ENABLED", "true")
     from trading_ai.shark.scheduler import build_shark_scheduler
 
     sched = build_shark_scheduler(

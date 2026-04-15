@@ -148,6 +148,10 @@ def main() -> None:
     g = load_gaps()
     gaps_n = len(g.get("gaps_under_observation") or [])
     from trading_ai.shark.capital_phase import detect_phase
+    from trading_ai.shark.outlets import polymarket_enabled
+
+    if not polymarket_enabled():
+        log.info("Polymarket disabled (POLYMARKET_ENABLED=false) — Kalshi + Coinbase only; no Polymarket scans or sweeps")
 
     ph = detect_phase(rec.current_capital)
     banner = startup_banner(capital=rec.current_capital, phase=ph.value, gaps_n=gaps_n)
@@ -209,6 +213,7 @@ def main() -> None:
     _crypto_scalp_sched = (
         crypto_scalp_scan
         if (os.environ.get("CRYPTO_SCALP_SCAN_ENABLED") or "false").strip().lower() == "true"
+        and polymarket_enabled()
         else None
     )
 
@@ -646,8 +651,8 @@ def main() -> None:
         heartbeat=_heartbeat,
         eod_force_trade=eod_force_scan,
         crypto_scalp_scan=_crypto_scalp_sched,
-        near_resolution_sweep=near_resolution_sweep,
-        arb_sweep=arb_sweep,
+        near_resolution_sweep=near_resolution_sweep if polymarket_enabled() else None,
+        arb_sweep=arb_sweep if polymarket_enabled() else None,
         kalshi_near_resolution=kalshi_near_resolution,
         ceo_session=ceo_brief,
         daily_excel_report=_daily_excel_report,

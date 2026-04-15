@@ -101,19 +101,22 @@ def sync_all_platforms() -> Dict:
     Falls back to last-known value when a fetch fails.
     Returns sync result dict.
     """
+    from trading_ai.shark.outlets import polymarket_enabled
     from trading_ai.shark.treasury import load_treasury, update_platform_balances
 
     existing = load_treasury()
     kalshi_fetched = fetch_kalshi_balance_usd()
     manifold_fetched = fetch_manifold_balance_mana()
 
-    try:
-        from trading_ai.shark.outlets.polymarket import fetch_polymarket_balance
+    poly_fetched = None
+    if polymarket_enabled():
+        try:
+            from trading_ai.shark.outlets.polymarket import fetch_polymarket_balance
 
-        poly_fetched = fetch_polymarket_balance()
-    except Exception as exc:
-        logger.warning("Polymarket balance sync skipped: %s", exc)
-        poly_fetched = None
+            poly_fetched = fetch_polymarket_balance()
+        except Exception as exc:
+            logger.warning("Polymarket balance sync skipped: %s", exc)
+            poly_fetched = None
 
     try:
         env_k = float((os.environ.get("KALSHI_ACTUAL_BALANCE") or "0").strip() or 0)
