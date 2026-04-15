@@ -186,29 +186,54 @@ def run_kalshi_blitz() -> int:
         n_eth,
     )
 
+    batch_size = max(1, _parse_env_int("KALSHI_BLITZ_BATCH_SIZE", 5))
+    batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.3))
+    max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
+    retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
+
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
         ticker = str(t["ticker"])
         px = max(float(t["price"]), 0.01)
         cnt = max(1, int(per_trade / px))
-        try:
+
+        def _do() -> Tuple[bool, str, float]:
             res = client.place_order(ticker=ticker, side=t["side"], count=cnt, action="buy")
             fs = float(res.filled_size or 0.0)
             fp = float(res.filled_price or 0.0)
             cost = fs * fp if fs > 0 and fp > 0 else 0.0
             ok = fs > 0 and (res.success is not False)
             return ok, ticker, cost
+
+        try:
+            return _do()
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "429" in msg or "too many requests" in msg:
+                logger.warning("Crypto blitz 429 on %s — one retry after %.1fs", ticker, retry_429_sleep)
+                time.sleep(retry_429_sleep)
+                try:
+                    return _do()
+                except Exception as exc2:
+                    logger.warning("Crypto blitz order failed %s after 429 retry: %s", ticker, exc2)
+                    return False, ticker, 0.0
+            logger.warning("Crypto blitz order failed %s: %s", ticker, exc)
+            return False, ticker, 0.0
         except Exception as exc:
             logger.warning("Crypto blitz order failed %s: %s", ticker, exc)
             return False, ticker, 0.0
 
     placed = 0
     deployed = 0.0
-    workers = min(32, max(1, len(selected)))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for ok, _tick, cost in ex.map(_place, selected):
-            if ok:
-                placed += 1
-                deployed += cost
+    for batch_start in range(0, len(selected), batch_size):
+        chunk = selected[batch_start : batch_start + batch_size]
+        workers = min(max_workers, max(1, len(chunk)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for ok, _tick, cost in ex.map(_place, chunk):
+                if ok:
+                    placed += 1
+                    deployed += cost
+        if batch_start + batch_size < len(selected):
+            time.sleep(batch_delay)
 
     logger.info(
         "CRYPTO BLITZ DONE: %s/%s filled, $%.2f deployed", placed, len(selected), deployed

@@ -341,8 +341,9 @@ class KalshiClient:
                 self.last_error = "401"
                 raise KalshiAuthError("401 unauthorized") from e
             if e.code == 429:
-                logger.warning("Kalshi 429 — backing off 30s")
-                time.sleep(30)
+                backoff = float((os.environ.get("KALSHI_429_RETRY_SLEEP_SEC") or "2").strip() or "2")
+                logger.warning("Kalshi 429 — backing off %.1fs then retry", backoff)
+                time.sleep(backoff)
                 return self._request(method, path, params=params, body=body, _retry_5xx=_retry_5xx)
             if 500 <= e.code < 600 and _retry_5xx < 3:
                 delay = (2**_retry_5xx) * 0.5
