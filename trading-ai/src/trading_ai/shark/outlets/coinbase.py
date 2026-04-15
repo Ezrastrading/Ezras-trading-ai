@@ -316,13 +316,18 @@ class CoinbaseClient:
 
     def get_usd_balance(self) -> float:
         """Available USD balance in the connected Coinbase account."""
+        return self.get_available_balance("USD")
+
+    def get_available_balance(self, currency: str) -> float:
+        """Available balance for a currency code (e.g. ``USD``, ``BTC``, ``ETH``)."""
         try:
+            cur = (currency or "").strip().upper()
             for acct in self.get_accounts():
-                if acct.get("currency") == "USD":
+                if str(acct.get("currency") or "").upper() == cur:
                     avail = acct.get("available_balance") or {}
                     return float(avail.get("value") or 0.0)
         except Exception as exc:
-            logger.warning("Coinbase USD balance fetch failed: %s", exc)
+            logger.warning("Coinbase %s balance fetch failed: %s", currency, exc)
         return 0.0
 
     # ── prices ────────────────────────────────────────────────────────────────
