@@ -1,17 +1,14 @@
 """
-Coinbase 24/7 spot engine — BTC-USD + ETH-USD only (see env toggles).
+Coinbase 24/7 spot — tiered multi-product + optional dynamic scanner.
 
-  A  Dip buyer — every ~60 s: price drops ≥1% vs ~5 min ago; exits +3% / stop (COINBASE_STOP_LOSS_PCT).
-     Order ~$5 (COINBASE_DIP_ORDER_*); budget COINBASE_BTC_BUDGET / COINBASE_ETH_BUDGET.
-  B  Grid (each scan) — COINBASE_GRID_STEP_BTC / _ETH ($500 / $50 default); COINBASE_GRID_ENABLED.
-     Max 5 lots per coin; +3% take-profit per lot.
-  H  Native BTC holder — wallet BTC minus A/B/C lots; entry reset to spot on startup; +3% take-profit only
-     (no stop-loss); after sell, rebuy on 1% dip (COINBASE_HOLDER_REBUY_*).
-  C  Momentum — +0.5% in 2 min; +1% / −0.5% exits; COINBASE_MOMENTUM_ORDER_USD (~$3).
+  Tier 1 (BTC-USD, ETH-USD): strategies A + B (grid) + C + H (native BTC holder).
+  Tier 2 (COINBASE_TIER2_PRODUCTS): strategy A only, ~$2–3 per dip (COINBASE_TIER2_*).
+  Tier 3 (COINBASE_TIER3_PRODUCTS): strategy C only, ~$1–2 per scalp (COINBASE_TIER3_*).
+  Dynamic (COINBASE_DYNAMIC_SCAN): every COINBASE_DYNAMIC_SCAN_INTERVAL s, list /products,
+     USD pairs, quote volume 24h > $1M, rank by largest |% move| over ~5 min, top N for C scalps.
 
-Safety: 20% USD reserve, COINBASE_MAX_DEPLOY_PCT (default 0.80), COINBASE_MAX_TOTAL_USD cap,
-COINBASE_MAX_DAILY_LOSS (default $20), COINBASE_MIN_ORDER_USD (default $2),
-COINBASE_MAX_ORDERS_PER_MIN (default 5).
+Safety: COINBASE_MAX_DEPLOY_PCT (default 0.80), COINBASE_MAX_PER_COIN_USD (default $10),
+COINBASE_MAX_POSITIONS (default 10), COINBASE_MIN_ORDER_USD, daily loss cap.
 
 State: shark/state/coinbase_positions.json; logs: shark/data/logs/coinbase_trade_log.jsonl
 """
@@ -83,6 +80,8 @@ def _default_state() -> Dict[str, Any]:
         "total_realized_usd": 0.0,
         "grid_state": {},
         "btc_holder_rebuy": None,
+        "dynamic_momentum_ids": [],
+        "dynamic_scan_ts": 0.0,
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -155,23 +154,122 @@ def _reset_daily_pnl_if_needed(state: Dict[str, Any]) -> None:
         state["daily_pnl_date"] = today
 
 
-# ── product universe (BTC + ETH spot only) ───────────────────────────────────
+# ── tier 1 (full strategies) ─────────────────────────────────────────────────
 
-_PRODUCTS: List[str] = ["BTC-USD", "ETH-USD"]
+_TIER1: List[str] = ["BTC-USD", "ETH-USD"]
 
-_PRODUCT_BUDGETS: Dict[str, Tuple[str, float]] = {
+# Backward-compatible name (same object as tier 1).
+_PRODUCTS = _TIER1
+
+_TIER1_BUDGET_ENV: Dict[str, Tuple[str, float]] = {
     "BTC-USD": ("COINBASE_BTC_BUDGET", 8.0),
     "ETH-USD": ("COINBASE_ETH_BUDGET", 5.0),
 }
 
+_DEFAULT_TIER2 = (
+    "SOL-USD,AVAX-USD,MATIC-USD,LINK-USD,DOT-USD,ADA-USD,XRP-USD,DOGE-USD"
+)
+_DEFAULT_TIER3 = (
+    "UNI-USD,AAVE-USD,LTC-USD,BCH-USD,ATOM-USD,NEAR-USD,APT-USD,ARB-USD"
+)
 
-def _get_budget(product_id: str) -> float:
-    env_key, default = _PRODUCT_BUDGETS.get(product_id, ("", 0.0))
-    return _env_float(env_key, default) if env_key else default
+
+def _parse_csv_products(raw: Optional[str]) -> List[str]:
+    if not raw or not str(raw).strip():
+        return []
+    return [x.strip() for x in str(raw).split(",") if x.strip()]
+
+
+def _tier1_list() -> List[str]:
+    return list(_TIER1)
+
+
+def _tier2_list() -> List[str]:
+    return _parse_csv_products(os.environ.get("COINBASE_TIER2_PRODUCTS") or _DEFAULT_TIER2)
+
+
+def _tier3_list() -> List[str]:
+    return _parse_csv_products(os.environ.get("COINBASE_TIER3_PRODUCTS") or _DEFAULT_TIER3)
+
+
+def _tier2_only_ids() -> List[str]:
+    t1 = set(_tier1_list())
+    return [p for p in _tier2_list() if p not in t1]
+
+
+def _tier3_only_ids() -> List[str]:
+    t1 = set(_tier1_list())
+    t2 = set(_tier2_list())
+    return [p for p in _tier3_list() if p not in t1 and p not in t2]
+
+
+def _max_position_value_usd(state: Dict[str, Any], product_id: str) -> float:
+    """Max total USD in open positions for this product (per-coin + tier caps)."""
+    max_coin = _env_float("COINBASE_MAX_PER_COIN_USD", 10.0)
+    pid = product_id
+    t1 = set(_tier1_list())
+    t2 = set(_tier2_list())
+    t3 = set(_tier3_list())
+    dyn = list(state.get("dynamic_momentum_ids") or [])
+    if pid in t1:
+        env_key, default = _TIER1_BUDGET_ENV.get(pid, ("", 0.0))
+        raw = _env_float(env_key, default) if env_key else max_coin
+        return min(max_coin, raw) if raw > 0 else max_coin
+    if pid in dyn:
+        b = _env_float("COINBASE_DYNAMIC_BUDGET_USD", 2.0)
+        return min(max_coin, b)
+    if pid in t2:
+        b = _env_float("COINBASE_TIER2_BUDGET_USD", 3.0)
+        return min(max_coin, b)
+    if pid in t3:
+        b = _env_float("COINBASE_TIER3_BUDGET_USD", 2.0)
+        return min(max_coin, b)
+    return max_coin
 
 
 def _all_products() -> List[str]:
-    return list(_PRODUCTS)
+    """Union of configured tier lists (used where a static list is needed)."""
+    seen: Dict[str, None] = {}
+    for p in _tier1_list() + _tier2_list() + _tier3_list():
+        seen[p] = None
+    return list(seen.keys())
+
+
+def collect_price_product_ids(state: Dict[str, Any]) -> List[str]:
+    """All product ids we need bid/ask for (tiers, open positions, dynamic movers)."""
+    ids = set(_tier1_list()) | set(_tier2_list()) | set(_tier3_list())
+    for p in state.get("positions") or []:
+        pid = p.get("product_id")
+        if pid:
+            ids.add(str(pid))
+    for x in state.get("dynamic_momentum_ids") or []:
+        ids.add(str(x))
+    return list(ids)
+
+
+def _quote_volume_24h_usd(row: Dict[str, Any]) -> float:
+    for k in (
+        "approximate_quote_24h_volume",
+        "quote_volume_24h",
+        "volume_24h",
+    ):
+        v = row.get(k)
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _mid_at_or_before(
+    hist: List[Tuple[float, float]], ts: float
+) -> Optional[float]:
+    old = [(t, p) for t, p in hist if t <= ts]
+    if not old:
+        return None
+    return float(old[-1][1])
 
 
 def _cb_sym(product_id: str) -> str:
@@ -219,7 +317,11 @@ def _can_buy(
     """Check all hard safety gates. Returns (allowed, reason)."""
     max_total = _env_float("COINBASE_MAX_TOTAL_USD", 2000.0)
     max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 20.0)
-    max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 10.0))
+    raw_max = os.environ.get("COINBASE_MAX_POSITIONS")
+    if raw_max is not None and str(raw_max).strip() != "":
+        max_open = int(float(raw_max))
+    else:
+        max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 10.0))
     min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
 
     # 1. Daily loss gate
@@ -231,7 +333,7 @@ def _can_buy(
     if usd_amount < min_order:
         return False, f"order ${usd_amount:.2f} below minimum ${min_order:.2f}"
 
-    # 3. Max open positions
+    # 3. Max open positions (all coins)
     open_count = len(state.get("positions") or [])
     if open_count >= max_open:
         return False, f"max open positions ({max_open}) reached"
@@ -248,15 +350,14 @@ def _can_buy(
             f"max deploy {max_deploy_pct*100:.0f}% of ${usd_balance:.2f} balance would be exceeded"
         )
 
-    # 5. Per-instrument budget
-    budget = _get_budget(product_id)
-    if budget > 0:
-        product_cost = _product_open_cost(state, product_id)
-        if product_cost + usd_amount > budget:
-            return False, (
-                f"{product_id} budget ${budget:.0f} would be exceeded "
-                f"(${product_cost:.2f} already open)"
-            )
+    # 5. Per-instrument cap (tier budget + COINBASE_MAX_PER_COIN_USD)
+    cap = _max_position_value_usd(state, product_id)
+    product_cost = _product_open_cost(state, product_id)
+    if cap > 0 and product_cost + usd_amount > cap:
+        return False, (
+            f"{product_id} cap ${cap:.0f} would be exceeded "
+            f"(${product_cost:.2f} already open)"
+        )
 
     # 6. 20% cash reserve
     reserve = usd_balance * 0.20
@@ -279,7 +380,7 @@ def _fmt_base_size(product_id: str, size: float) -> str:
         return f"{size:.8f}"
     if product_id.startswith("ETH"):
         return f"{size:.6f}"
-    return f"{size:.4f}"  # SOL, etc.
+    return f"{size:.6f}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,13 +390,12 @@ def _fmt_base_size(product_id: str, size: float) -> str:
 
 class CoinbaseAccumulator:
     """
-    24/7 spot crypto accumulation engine (BTC-USD + ETH-USD).
+    24/7 spot engine — tiered products + optional dynamic momentum scanner.
 
     Usage::
 
         acc = CoinbaseAccumulator()
         acc.load_and_check_positions_on_startup()   # call once at boot
-        # APScheduler calls every 60 s.
         acc.scan_and_trade()
     """
 
@@ -357,7 +457,8 @@ class CoinbaseAccumulator:
             state = load_coinbase_state()
             _reset_daily_pnl_if_needed(state)
             now = time.time()
-            prices = self._client.get_prices(_all_products())
+            pids = collect_price_product_ids(state)
+            prices = self._client.get_prices_batched(pids)
             if not prices:
                 logger.warning("Coinbase startup: no prices — skipping holder sync / exits")
                 return
@@ -536,35 +637,10 @@ class CoinbaseAccumulator:
         except Exception:
             pass
 
-    # ── internal scan ─────────────────────────────────────────────────────────
-
-    def _scan(self) -> Dict[str, Any]:
-        state = load_coinbase_state()
-        _reset_daily_pnl_if_needed(state)
-
-        # ── fetch prices ──────────────────────────────────────────────────────
-        try:
-            prices = self._client.get_prices(_all_products())
-        except Exception as exc:
-            logger.warning("Coinbase price fetch failed: %s", exc)
-            return {"ok": False, "error": "price_fetch"}
-
-        if not prices:
-            logger.debug("Coinbase: no price data returned")
-            return {"ok": False, "error": "no_prices"}
-
-        # ── fetch available USD balance (for safety gates) ────────────────────
-        try:
-            usd_balance = self._client.get_usd_balance()
-        except Exception:
-            usd_balance = 0.0
-
-        now = time.time()
-        run_ac_strategies = (now - self._last_ac_tick) >= 60.0
-        if run_ac_strategies:
-            self._last_ac_tick = now
-
-        # ── update rolling price history (10-minute window) ───────────────────
+    def _ingest_prices_into_history(
+        self, prices: Dict[str, Tuple[float, float]], now: float
+    ) -> None:
+        """Append mids to rolling 10-minute deques (dip / momentum / dynamic scoring)."""
         for pid, (bid, ask) in prices.items():
             if bid <= 0 and ask <= 0:
                 continue
@@ -575,39 +651,160 @@ class CoinbaseAccumulator:
             while hist and hist[0][0] < cutoff:
                 hist.popleft()
 
+    def _maybe_refresh_dynamic_movers(self, state: Dict[str, Any], now: float) -> None:
+        """List all products, filter liquid USD pairs, rank by |5m % move|, keep top N."""
+        if not _env_bool("COINBASE_DYNAMIC_SCAN", True):
+            return
+        interval = _env_float("COINBASE_DYNAMIC_SCAN_INTERVAL", 300.0)
+        last = float(state.get("dynamic_scan_ts") or 0.0)
+        if now - last < interval:
+            return
+        min_vol = _env_float("COINBASE_DYNAMIC_MIN_VOLUME_USD", 1_000_000.0)
+        try:
+            rows = self._client.list_brokerage_products()
+        except Exception as exc:
+            logger.warning("Coinbase dynamic scan list products: %s", exc)
+            return
+
+        filtered: List[str] = []
+        for row in rows:
+            pid = str(row.get("product_id") or "")
+            if not pid.endswith("-USD"):
+                continue
+            qc = str(row.get("quote_currency_id") or row.get("quote_currency") or "")
+            if qc and qc.upper() != "USD":
+                continue
+            if _quote_volume_24h_usd(row) < min_vol:
+                continue
+            filtered.append(pid)
+
+        if not filtered:
+            state["dynamic_scan_ts"] = now
+            state["dynamic_momentum_ids"] = []
+            logger.info("Coinbase dynamic scan: no USD products above volume threshold")
+            return
+
+        try:
+            pmap = self._client.get_prices_batched(filtered)
+        except Exception as exc:
+            logger.warning("Coinbase dynamic scan prices: %s", exc)
+            return
+
+        self._ingest_prices_into_history(pmap, now)
+
+        win = _env_float("COINBASE_DYNAMIC_MOVE_LOOKBACK_SEC", 300.0)
+        scored: List[Tuple[str, float]] = []
+        for pid, (bid, ask) in pmap.items():
+            if bid <= 0 and ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref = _mid_at_or_before(hist, now - win)
+            if ref is None or ref <= 0:
+                continue
+            move = abs((mid - ref) / ref)
+            scored.append((pid, move))
+
+        scored.sort(key=lambda x: -x[1])
+        topn = max(1, int(_env_float("COINBASE_DYNAMIC_TOP_N", 5.0)))
+        top_ids = [p for p, _ in scored[:topn]]
+        state["dynamic_momentum_ids"] = top_ids
+        state["dynamic_scan_ts"] = now
+        logger.info(
+            "Coinbase dynamic scan: %d ranked, top movers: %s",
+            len(scored),
+            top_ids,
+        )
+
+    # ── internal scan ─────────────────────────────────────────────────────────
+
+    def _scan(self) -> Dict[str, Any]:
+        state = load_coinbase_state()
+        _reset_daily_pnl_if_needed(state)
+
+        try:
+            usd_balance = self._client.get_usd_balance()
+        except Exception:
+            usd_balance = 0.0
+
+        now = time.time()
+        self._maybe_refresh_dynamic_movers(state, now)
+
+        try:
+            pids = collect_price_product_ids(state)
+            prices = self._client.get_prices_batched(pids)
+        except Exception as exc:
+            logger.warning("Coinbase price fetch failed: %s", exc)
+            return {"ok": False, "error": "price_fetch"}
+
+        if not prices:
+            logger.debug("Coinbase: no price data returned")
+            return {"ok": False, "error": "no_prices"}
+
+        run_ac_strategies = (now - self._last_ac_tick) >= 60.0
+        if run_ac_strategies:
+            self._last_ac_tick = now
+
+        self._ingest_prices_into_history(prices, now)
+
         self._sync_btc_holder_position(state, prices, now, reset_entry=False)
 
-        # ── check exits on all open positions ─────────────────────────────────
         self._check_exits(state, prices, now)
 
         self._maybe_btc_holder_rebuy(state, prices, usd_balance, now)
 
-        # ── buy strategies ────────────────────────────────────────────────────
-        for pid in _all_products():
-            if pid not in prices:
-                continue
+        t1 = set(_tier1_list())
+        t2o = set(_tier2_only_ids())
+        t3o = set(_tier3_only_ids())
+        dyn_ids = list(state.get("dynamic_momentum_ids") or [])
+
+        for pid in sorted(prices.keys()):
             bid, ask = prices[pid]
             if bid <= 0 or ask <= 0:
                 continue
             mid = (bid + ask) / 2.0
 
-            # Strategy A: dip buy (~60s cadence)
-            if run_ac_strategies:
-                self._strategy_a(state, pid, mid, usd_balance, now)
+            if pid in t1:
+                if run_ac_strategies:
+                    self._strategy_a(state, pid, mid, usd_balance, now, tier="1")
+                if _env_bool("COINBASE_GRID_ENABLED", True):
+                    self._strategy_b(state, pid, mid, usd_balance)
+                if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
+                    mo = _env_float("COINBASE_MOMENTUM_ORDER_USD", 3.0)
+                    self._strategy_c(
+                        state, pid, mid, usd_balance, now, momentum_order_usd=mo
+                    )
+            elif pid in t2o:
+                if run_ac_strategies:
+                    self._strategy_a(state, pid, mid, usd_balance, now, tier="2")
+            elif pid in t3o:
+                if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
+                    mo = _env_float("COINBASE_TIER3_ORDER_USD", 1.5)
+                    self._strategy_c(
+                        state, pid, mid, usd_balance, now, momentum_order_usd=mo
+                    )
 
-            # Strategy B: grid (each scan)
-            if _env_bool("COINBASE_GRID_ENABLED", True):
-                self._strategy_b(state, pid, mid, usd_balance)
-
-            # Strategy C: momentum scalp (~60s cadence)
+        for pid in dyn_ids:
+            if pid not in prices:
+                continue
+            if pid in t1 or pid in t2o:
+                continue
+            bid, ask = prices[pid]
+            if bid <= 0 or ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0
             if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
-                self._strategy_c(state, pid, mid, usd_balance, now)
+                mo = _env_float("COINBASE_DYNAMIC_ORDER_USD", 2.0)
+                self._strategy_c(
+                    state, pid, mid, usd_balance, now, momentum_order_usd=mo
+                )
 
         save_coinbase_state(state)
         return {
             "ok": True,
             "products": list(prices.keys()),
             "usd_balance": round(usd_balance, 2),
+            "dynamic_top": list(state.get("dynamic_momentum_ids") or []),
         }
 
     # ── exit checker ──────────────────────────────────────────────────────────
@@ -761,8 +958,10 @@ class CoinbaseAccumulator:
         current_price: float,
         usd_balance: float,
         now: float,
+        *,
+        tier: str = "1",
     ) -> None:
-        """Buy when price drops ≥1% in the last 5 minutes."""
+        """Buy when price drops ≥1% in the last 5 minutes (tier 1 or tier 2 sizing)."""
         hist = list(self._price_history.get(product_id) or [])
         if len(hist) < 2:
             return
@@ -790,12 +989,17 @@ class CoinbaseAccumulator:
         if has_recent:
             return
 
-        budget = _get_budget(product_id)
         min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        dip_lo = _env_float("COINBASE_DIP_ORDER_MIN_USD", 5.0)
-        dip_hi = _env_float("COINBASE_DIP_ORDER_MAX_USD", 10.0)
-        # Engine A: $5–10 per trade, scaled down if budget is tiny
-        order_usd = max(min_order, min(dip_hi, max(dip_lo, min(budget * 0.15, dip_hi))))
+        cap = _max_position_value_usd(state, product_id)
+        if tier == "2":
+            base = _env_float("COINBASE_TIER2_DIP_ORDER_USD", 2.5)
+            order_usd = max(min_order, min(cap, base))
+        else:
+            dip_lo = _env_float("COINBASE_DIP_ORDER_MIN_USD", 5.0)
+            dip_hi = _env_float("COINBASE_DIP_ORDER_MAX_USD", 10.0)
+            order_usd = max(
+                min_order, min(dip_hi, max(dip_lo, min(cap * 0.15, dip_hi)))
+            )
 
         ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
         if not ok:
@@ -948,6 +1152,8 @@ class CoinbaseAccumulator:
         current_price: float,
         usd_balance: float,
         now: float,
+        *,
+        momentum_order_usd: Optional[float] = None,
     ) -> None:
         """Buy on +0.5% move in 2 minutes; exit at +1% or -0.5%."""
         hist = list(self._price_history.get(product_id) or [])
@@ -975,16 +1181,16 @@ class CoinbaseAccumulator:
             return
 
         min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        # Default ~$3 scalp; optional COINBASE_MOMENTUM_BUDGET_PCT caps vs deployable cash
-        fixed = _env_float("COINBASE_MOMENTUM_ORDER_USD", 3.0)
+        fixed = (
+            momentum_order_usd
+            if momentum_order_usd is not None
+            else _env_float("COINBASE_MOMENTUM_ORDER_USD", 3.0)
+        )
         mom_pct = _env_float("COINBASE_MOMENTUM_BUDGET_PCT", 0.20)
         deployable = max(0.0, usd_balance * 0.80)
-        cap = deployable * mom_pct
-        budget = _get_budget(product_id)
-        if budget > 0:
-            order_usd = max(min_order, min(fixed, cap, budget))
-        else:
-            order_usd = max(min_order, min(fixed, cap))
+        pct_cap = deployable * mom_pct
+        budget_cap = _max_position_value_usd(state, product_id)
+        order_usd = max(min_order, min(fixed, pct_cap, budget_cap))
 
         ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
         if not ok:

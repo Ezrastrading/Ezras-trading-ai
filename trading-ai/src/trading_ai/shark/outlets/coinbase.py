@@ -360,6 +360,47 @@ class CoinbaseClient:
             result[pid] = (bid, ask)
         return result
 
+    def get_prices_batched(
+        self,
+        product_ids: List[str],
+        *,
+        chunk_size: int = 80,
+    ) -> Dict[str, Tuple[float, float]]:
+        """Same as :meth:`get_prices` but splits into chunks to avoid oversized query strings."""
+        out: Dict[str, Tuple[float, float]] = {}
+        ids = list(dict.fromkeys(product_ids))
+        for i in range(0, len(ids), max(1, chunk_size)):
+            chunk = ids[i : i + chunk_size]
+            out.update(self.get_prices(chunk))
+        return out
+
+    def list_brokerage_products(self) -> List[Dict[str, Any]]:
+        """
+        GET /products — all tradable products (paginated).
+
+        Used by the accumulator dynamic scanner (USD volume filter).
+        """
+        all_rows: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        page_limit = 250
+        for _ in range(200):
+            params: Dict[str, Any] = {"limit": page_limit}
+            if cursor:
+                params["cursor"] = cursor
+            j = self._request("GET", "/products", params=params)
+            batch = j.get("products") or []
+            all_rows.extend(batch)
+            if len(batch) < page_limit:
+                break
+            cursor = (
+                j.get("next_cursor")
+                or (j.get("pagination") or {}).get("next_cursor")
+                or j.get("cursor")
+            )
+            if not cursor:
+                break
+        return all_rows
+
     # ── orders ────────────────────────────────────────────────────────────────
 
     def place_market_buy(self, product_id: str, usd_amount: float) -> OrderResult:
