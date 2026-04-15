@@ -1,23 +1,27 @@
 """
-Coinbase 24/7 spot — tiered multi-product + optional dynamic scanner.
+Coinbase 24/7 — **high-frequency scalp** (Engines A / B / C) + optional **Engine D** (gainers).
 
-  Tier 1 (BTC-USD, ETH-USD): strategies A + B (grid) + C + H (native BTC holder).
-  Tier 2 (COINBASE_TIER2_PRODUCTS): strategy A only, ~$2–3 per dip (COINBASE_TIER2_*).
-  Tier 3 (COINBASE_TIER3_PRODUCTS): strategy C only, ~$1–2 per scalp (COINBASE_TIER3_*).
-  Dynamic (COINBASE_DYNAMIC_SCAN): every COINBASE_DYNAMIC_SCAN_INTERVAL s, list /products,
-     USD pairs, quote volume 24h > $1M, rank by largest |% move| over ~5 min, top N for C scalps.
+  **A — HF gainers**  Top hour movers (when ``COINBASE_GAINERS_ENABLED`` is off). Skipped when D on.
+  **B — Micro**    BTC-USD & ETH-USD only: short-horizon momentum / mean-reversion (env).
+  **C — Reversion**  Short dip vs 2m (env).
+  **D — Gainers**  ``COINBASE_GAINERS_ENABLED``: every ~60s evaluate all **Exchange** USD pairs
+                   (``GET api.exchange.coinbase.com/products``), top **60m** % movers, optional
+                   volume filter (default \$10k 24h when known); buy top N; exits per env.
 
-Safety: COINBASE_MAX_DEPLOY_PCT (default 0.80), COINBASE_MAX_PER_COIN_USD (default $10),
-COINBASE_MAX_POSITIONS (default 10), COINBASE_MIN_ORDER_USD, daily loss cap.
+Prices: public tickers (Advanced Trade market + Exchange fallback — see ``outlets/coinbase.py``).
+JWT only for ``/accounts`` and ``/orders``.
 
-State: shark/state/coinbase_positions.json; logs: shark/data/logs/coinbase_trade_log.jsonl
+Safety: ``COINBASE_MAX_PER_COIN_USD`` (default $6), ``COINBASE_MAX_POSITIONS`` (default 20),
+``COINBASE_MAX_DEPLOY_PCT`` (0.80), 20% cash reserve, ``COINBASE_MAX_ORDERS_PER_MIN`` (high default),
+``COINBASE_MIN_ORDER_USD``.
+
+State: ``shark/state/coinbase_positions.json``; logs: ``shark/data/logs/coinbase_trade_log.jsonl``
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import time
 from collections import deque
@@ -68,9 +72,6 @@ def _trade_log_path() -> Path:
     return p
 
 
-# ── state I/O ────────────────────────────────────────────────────────────────
-
-
 def _default_state() -> Dict[str, Any]:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return {
@@ -78,10 +79,10 @@ def _default_state() -> Dict[str, Any]:
         "daily_pnl_usd": 0.0,
         "daily_pnl_date": today,
         "total_realized_usd": 0.0,
-        "grid_state": {},
-        "btc_holder_rebuy": None,
-        "dynamic_momentum_ids": [],
-        "dynamic_scan_ts": 0.0,
+        "hf_product_cache": [],
+        "hf_product_cache_ts": 0.0,
+        "hf_last_buy_a": {},
+        "gainers_scan_ts": 0.0,
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -123,14 +124,17 @@ def _log_trade(record: Dict[str, Any]) -> None:
 
 
 class _RateLimiter:
-    """Token bucket: at most ``max_per_minute`` order calls per rolling 60-second window."""
+    """Rolling 60s window for order API calls."""
 
     def __init__(self, max_per_minute: Optional[int] = None) -> None:
         if max_per_minute is None:
             try:
-                max_per_minute = max(1, int(float(os.environ.get("COINBASE_MAX_ORDERS_PER_MIN") or "5")))
+                max_per_minute = max(
+                    1,
+                    int(float(os.environ.get("COINBASE_MAX_ORDERS_PER_MIN") or "180")),
+                )
             except (TypeError, ValueError):
-                max_per_minute = 5
+                max_per_minute = 180
         self._max = max_per_minute
         self._calls: deque[float] = deque()
 
@@ -144,132 +148,11 @@ class _RateLimiter:
         return True
 
 
-# ── daily P&L reset ───────────────────────────────────────────────────────────
-
-
 def _reset_daily_pnl_if_needed(state: Dict[str, Any]) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("daily_pnl_date") != today:
         state["daily_pnl_usd"] = 0.0
         state["daily_pnl_date"] = today
-
-
-# ── tier 1 (full strategies) ─────────────────────────────────────────────────
-
-_TIER1: List[str] = ["BTC-USD", "ETH-USD"]
-
-# Backward-compatible name (same object as tier 1).
-_PRODUCTS = _TIER1
-
-_TIER1_BUDGET_ENV: Dict[str, Tuple[str, float]] = {
-    "BTC-USD": ("COINBASE_BTC_BUDGET", 8.0),
-    "ETH-USD": ("COINBASE_ETH_BUDGET", 5.0),
-}
-
-_DEFAULT_TIER2 = (
-    "SOL-USD,AVAX-USD,MATIC-USD,LINK-USD,DOT-USD,ADA-USD,XRP-USD,DOGE-USD"
-)
-_DEFAULT_TIER3 = (
-    "UNI-USD,AAVE-USD,LTC-USD,BCH-USD,ATOM-USD,NEAR-USD,APT-USD,ARB-USD"
-)
-
-
-def _parse_csv_products(raw: Optional[str]) -> List[str]:
-    if not raw or not str(raw).strip():
-        return []
-    return [x.strip() for x in str(raw).split(",") if x.strip()]
-
-
-def _tier1_list() -> List[str]:
-    return list(_TIER1)
-
-
-def _tier2_list() -> List[str]:
-    return _parse_csv_products(os.environ.get("COINBASE_TIER2_PRODUCTS") or _DEFAULT_TIER2)
-
-
-def _tier3_list() -> List[str]:
-    return _parse_csv_products(os.environ.get("COINBASE_TIER3_PRODUCTS") or _DEFAULT_TIER3)
-
-
-def _tier2_only_ids() -> List[str]:
-    t1 = set(_tier1_list())
-    return [p for p in _tier2_list() if p not in t1]
-
-
-def _tier3_only_ids() -> List[str]:
-    t1 = set(_tier1_list())
-    t2 = set(_tier2_list())
-    return [p for p in _tier3_list() if p not in t1 and p not in t2]
-
-
-def _max_position_value_usd(state: Dict[str, Any], product_id: str) -> float:
-    """Max total USD in open positions for this product (per-coin + tier caps)."""
-    max_coin = _env_float("COINBASE_MAX_PER_COIN_USD", 10.0)
-    pid = product_id
-    t1 = set(_tier1_list())
-    t2 = set(_tier2_list())
-    t3 = set(_tier3_list())
-    dyn = list(state.get("dynamic_momentum_ids") or [])
-    if pid in t1:
-        env_key, default = _TIER1_BUDGET_ENV.get(pid, ("", 0.0))
-        raw = _env_float(env_key, default) if env_key else max_coin
-        return min(max_coin, raw) if raw > 0 else max_coin
-    if pid in dyn:
-        b = _env_float("COINBASE_DYNAMIC_BUDGET_USD", 2.0)
-        return min(max_coin, b)
-    if pid in t2:
-        b = _env_float("COINBASE_TIER2_BUDGET_USD", 3.0)
-        return min(max_coin, b)
-    if pid in t3:
-        b = _env_float("COINBASE_TIER3_BUDGET_USD", 2.0)
-        return min(max_coin, b)
-    return max_coin
-
-
-def _all_products() -> List[str]:
-    """Union of configured tier lists (used where a static list is needed)."""
-    seen: Dict[str, None] = {}
-    for p in _tier1_list() + _tier2_list() + _tier3_list():
-        seen[p] = None
-    return list(seen.keys())
-
-
-def collect_price_product_ids(state: Dict[str, Any]) -> List[str]:
-    """All product ids we need bid/ask for (tiers, open positions, dynamic movers)."""
-    ids = set(_tier1_list()) | set(_tier2_list()) | set(_tier3_list())
-    for p in state.get("positions") or []:
-        pid = p.get("product_id")
-        if pid:
-            ids.add(str(pid))
-    for x in state.get("dynamic_momentum_ids") or []:
-        ids.add(str(x))
-    return list(ids)
-
-
-def _quote_volume_24h_usd(row: Dict[str, Any]) -> float:
-    for k in (
-        "approximate_quote_24h_volume",
-        "quote_volume_24h",
-        "volume_24h",
-    ):
-        v = row.get(k)
-        if v is None:
-            continue
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            pass
-    return 0.0
-
-
-def _mid_at_or_before(
-    hist: List[Tuple[float, float]], ts: float
-) -> Optional[float]:
-    old = [(t, p) for t, p in hist if t <= ts]
-    if not old:
-        return None
-    return float(old[-1][1])
 
 
 def _cb_sym(product_id: str) -> str:
@@ -289,14 +172,84 @@ def _telegram_stop_line(sym: str, gain_pct: float, pnl_usd: float) -> str:
     return f"🛑 CB STOP {sym} {gain_pct * 100:.1f}% -${abs(pnl_usd):.2f}"
 
 
-# Grid only on BTC/ETH — step USD and order USD per product (env overrides).
-_PRODUCT_GRID: Dict[str, Tuple[str, float, str, float]] = {
-    "BTC-USD": ("COINBASE_GRID_STEP_BTC", 500.0, "COINBASE_GRID_ORDER_BTC", 10.0),
-    "ETH-USD": ("COINBASE_GRID_STEP_ETH", 50.0, "COINBASE_GRID_ORDER_ETH", 5.0),
-}
+def _telegram_gainer_buy(sym: str, momentum_pct: float, order_usd: float, price: float) -> str:
+    u = f"${order_usd:.0f}" if abs(order_usd - round(order_usd)) < 0.02 else f"${order_usd:.2f}"
+    return f"🚀 GAINER BUY: {sym} +{momentum_pct * 100:.1f}% momentum, {u} @ ${price:,.4f}"
 
 
-# ── safety checks ─────────────────────────────────────────────────────────────
+def _telegram_gainer_sell_profit(sym: str, profit_pct: float, pnl_usd: float) -> str:
+    return f"💰 GAINER SELL: {sym} +{profit_pct * 100:.1f}% profit, ${abs(pnl_usd):.2f}"
+
+
+def _telegram_gainer_trailing_stop(sym: str, trail_pct: float) -> str:
+    return f"🛑 GAINER STOP: {sym} trailing stop -{trail_pct * 100:.0f}% from peak"
+
+
+def _gainers_enabled() -> bool:
+    return coinbase_enabled() and _env_bool("COINBASE_GAINERS_ENABLED", False)
+
+
+def _gainers_deployed_usd(state: Dict[str, Any]) -> float:
+    return sum(
+        float(p.get("cost_usd") or 0.0)
+        for p in (state.get("positions") or [])
+        if str(p.get("strategy") or "") == "D"
+    )
+
+
+def _gainers_open_count(state: Dict[str, Any]) -> int:
+    return sum(
+        1 for p in (state.get("positions") or []) if str(p.get("strategy") or "") == "D"
+    )
+
+
+def _can_buy_gainers(
+    state: Dict[str, Any],
+    product_id: str,
+    order_usd: float,
+    usd_balance: float,
+) -> Tuple[bool, str]:
+    budget = _env_float("COINBASE_GAINERS_BUDGET", 15.0)
+    max_n = max(1, int(_env_float("COINBASE_GAINERS_MAX_POSITIONS", 5.0)))
+    if _gainers_open_count(state) >= max_n:
+        return False, f"gainers max positions ({max_n})"
+    if _gainers_deployed_usd(state) + order_usd > budget + 1e-6:
+        return False, f"gainers budget ${budget:.0f} would be exceeded"
+    has_d = any(
+        p.get("product_id") == product_id and str(p.get("strategy") or "") == "D"
+        for p in (state.get("positions") or [])
+    )
+    if has_d:
+        return False, "already have gainers position on product"
+    return _can_buy(state, product_id, order_usd, usd_balance)
+
+
+def _mid_at_or_before(
+    hist: List[Tuple[float, float]], ts: float
+) -> Optional[float]:
+    old = [(t, p) for t, p in hist if t <= ts]
+    if not old:
+        return None
+    return float(old[-1][1])
+
+
+def _quote_volume_24h_usd(row: Dict[str, Any]) -> float:
+    for k in (
+        "approximate_quote_24h_volume",
+        "quote_volume_24h",
+        "volume_24h",
+    ):
+        v = row.get(k)
+        if v is None or str(v).strip() == "":
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+# ── sizing & safety ───────────────────────────────────────────────────────────
 
 
 def _total_open_cost(state: Dict[str, Any]) -> float:
@@ -311,47 +264,50 @@ def _product_open_cost(state: Dict[str, Any], product_id: str) -> float:
     )
 
 
+def _has_open_position(state: Dict[str, Any], product_id: str) -> bool:
+    return any(
+        str(p.get("product_id")) == product_id for p in (state.get("positions") or [])
+    )
+
+
+def _max_per_coin_usd() -> float:
+    return _env_float("COINBASE_MAX_PER_COIN_USD", 6.0)
+
+
 def _can_buy(
     state: Dict[str, Any], product_id: str, usd_amount: float, usd_balance: float
 ) -> Tuple[bool, str]:
-    """Check all hard safety gates. Returns (allowed, reason)."""
     max_total = _env_float("COINBASE_MAX_TOTAL_USD", 2000.0)
-    max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 20.0)
+    max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 200.0)
     raw_max = os.environ.get("COINBASE_MAX_POSITIONS")
     if raw_max is not None and str(raw_max).strip() != "":
         max_open = int(float(raw_max))
     else:
-        max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 10.0))
+        max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 20.0))
     min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
 
-    # 1. Daily loss gate
     daily_loss = -(float(state.get("daily_pnl_usd") or 0.0))
     if daily_loss >= max_daily_loss:
         return False, f"daily loss limit ${max_daily_loss:.0f} hit (${daily_loss:.2f} today)"
 
-    # 2. Minimum order size
     if usd_amount < min_order:
         return False, f"order ${usd_amount:.2f} below minimum ${min_order:.2f}"
 
-    # 3. Max open positions (all coins)
     open_count = len(state.get("positions") or [])
     if open_count >= max_open:
         return False, f"max open positions ({max_open}) reached"
 
-    # 4. Max total USD exposure
     current_exposure = _total_open_cost(state)
     if current_exposure + usd_amount > max_total:
         return False, f"would exceed COINBASE_MAX_TOTAL_USD ${max_total:.0f}"
 
-    # 4b. Max fraction of cash deployed (default 80%)
     max_deploy_pct = _env_float("COINBASE_MAX_DEPLOY_PCT", 0.80)
     if usd_balance > 0 and current_exposure + usd_amount > usd_balance * max_deploy_pct:
         return False, (
             f"max deploy {max_deploy_pct*100:.0f}% of ${usd_balance:.2f} balance would be exceeded"
         )
 
-    # 5. Per-instrument cap (tier budget + COINBASE_MAX_PER_COIN_USD)
-    cap = _max_position_value_usd(state, product_id)
+    cap = _max_per_coin_usd()
     product_cost = _product_open_cost(state, product_id)
     if cap > 0 and product_cost + usd_amount > cap:
         return False, (
@@ -359,7 +315,6 @@ def _can_buy(
             f"(${product_cost:.2f} already open)"
         )
 
-    # 6. 20% cash reserve
     reserve = usd_balance * 0.20
     available = usd_balance - reserve
     if usd_amount > available:
@@ -371,16 +326,54 @@ def _can_buy(
     return True, "ok"
 
 
-# ── base-size formatting ──────────────────────────────────────────────────────
-
-
 def _fmt_base_size(product_id: str, size: float) -> str:
-    """Decimal precision required by Coinbase for each asset."""
     if product_id.startswith("BTC"):
         return f"{size:.8f}"
     if product_id.startswith("ETH"):
         return f"{size:.6f}"
     return f"{size:.6f}"
+
+
+def _parse_csv_products(raw: Optional[str]) -> List[str]:
+    if not raw or not str(raw).strip():
+        return []
+    return [x.strip() for x in str(raw).split(",") if x.strip()]
+
+
+def _hf_scan_product_ids(client: CoinbaseClient, state: Dict[str, Any], now: float) -> List[str]:
+    """
+    Product ids to poll every tick: **all online USD pairs** from Coinbase Exchange
+    ``GET /products`` (cached), unless ``COINBASE_HF_SCAN_PRODUCTS`` is set (CSV override).
+    """
+    max_n = max(10, int(_env_float("COINBASE_HF_MAX_SCAN_PRODUCTS", 2500.0)))
+    cache_ttl = _env_float("COINBASE_HF_PRODUCT_LIST_CACHE_SEC", 60.0)
+
+    csv = (os.environ.get("COINBASE_HF_SCAN_PRODUCTS") or "").strip()
+    if csv:
+        return _parse_csv_products(csv)[:max_n]
+
+    last = float(state.get("hf_product_cache_ts") or 0.0)
+    if now - last >= cache_ttl or not state.get("hf_product_cache"):
+        try:
+            rows = client.list_exchange_usd_products()
+            pids = [str(r.get("product_id") or "") for r in rows if r.get("product_id")]
+            pids = [p for p in pids if p.endswith("-USD")][:max_n]
+            state["hf_product_cache"] = pids
+            state["hf_product_cache_ts"] = now
+            logger.info("Coinbase: Exchange /products — tracking %d USD pairs", len(pids))
+        except Exception as exc:
+            logger.warning("Coinbase HF Exchange product list: %s", exc)
+    return list(state.get("hf_product_cache") or [])
+
+
+def collect_price_product_ids(state: Dict[str, Any]) -> List[str]:
+    """Open positions only (full universe comes from :func:`_hf_scan_product_ids`)."""
+    ids: List[str] = []
+    for p in state.get("positions") or []:
+        pid = p.get("product_id")
+        if pid:
+            ids.append(str(pid))
+    return ids
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -390,27 +383,16 @@ def _fmt_base_size(product_id: str, size: float) -> str:
 
 class CoinbaseAccumulator:
     """
-    24/7 spot engine — tiered products + optional dynamic momentum scanner.
-
-    Usage::
-
-        acc = CoinbaseAccumulator()
-        acc.load_and_check_positions_on_startup()   # call once at boot
-        acc.scan_and_trade()
+    HF scalp engines (A/B/C). One scan per scheduler tick (default 60s).
     """
 
     def __init__(self, client: Optional[CoinbaseClient] = None) -> None:
         self._client = client or CoinbaseClient()
         self._rate_limiter = _RateLimiter()
-        # price_history: product_id → deque of (unix_ts, mid_price)
         self._price_history: Dict[str, deque[Tuple[float, float]]] = {}
-        # Throttle strategies A/C to ~60s if scheduler runs faster (grid + holder each tick).
-        self._last_ac_tick: float = -1e9  # first scan always runs A/C
-
-    # ── public API ────────────────────────────────────────────────────────────
+        self._last_ac_tick: float = -1e9
 
     def scan_and_trade(self) -> Optional[Dict[str, Any]]:
-        """Main entry — safe wrapper; swallows non-auth exceptions. Returns a small status dict."""
         if not coinbase_enabled():
             return None
         if not self._client.has_credentials():
@@ -426,7 +408,6 @@ class CoinbaseAccumulator:
             return None
 
     def get_summary(self) -> Dict[str, Any]:
-        """Snapshot for hourly reports — reads state file directly."""
         state = load_coinbase_state()
         _reset_daily_pnl_if_needed(state)
         positions = state.get("positions") or []
@@ -444,279 +425,44 @@ class CoinbaseAccumulator:
         }
 
     def load_and_check_positions_on_startup(self) -> None:
-        """
-        On restart: sync native BTC holder (entry = spot), reload state, price positions,
-        close any that already hit profit / stop-loss targets.
-        """
         if not coinbase_enabled():
             return
         if not self._client.has_credentials():
             return
-        logger.info("Coinbase: startup position check ...")
+        logger.info("Coinbase HF: startup exit check ...")
         try:
             state = load_coinbase_state()
             _reset_daily_pnl_if_needed(state)
             now = time.time()
-            pids = collect_price_product_ids(state)
+            scan_ids = _hf_scan_product_ids(self._client, state, now)
+            pids = list(set(scan_ids) | set(collect_price_product_ids(state)))
             prices = self._client.get_prices_batched(pids)
             if not prices:
-                logger.warning("Coinbase startup: no prices — skipping holder sync / exits")
+                logger.warning("Coinbase startup: no prices")
                 return
-            self._sync_btc_holder_position(state, prices, now, reset_entry=True)
+            self._ingest_prices_into_history(prices, now)
             self._check_exits(state, prices, now)
             save_coinbase_state(state)
-            n0 = len(state.get("positions") or [])
             logger.info(
-                "Coinbase startup: holder synced, %d open positions after exit scan",
-                n0,
+                "Coinbase startup: %d positions after exit scan",
+                len(state.get("positions") or []),
             )
         except Exception as exc:
-            logger.warning("Coinbase startup position check failed (non-fatal): %s", exc)
-
-    def _sync_btc_holder_position(
-        self,
-        state: Dict[str, Any],
-        prices: Dict[str, Tuple[float, float]],
-        now: float,
-        *,
-        reset_entry: bool,
-    ) -> None:
-        """
-        Track native BTC = wallet BTC minus open A/B/C lots. Strategy ``H`` — long-term holder.
-        On startup (reset_entry=True), entry_price and cost_usd are set to the current mid.
-        """
-        pid = "BTC-USD"
-        if pid not in prices:
-            return
-        bid, ask = prices[pid]
-        if bid <= 0 and ask <= 0:
-            return
-        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
-        if mid <= 0:
-            return
-
-        try:
-            wallet_btc = self._client.get_available_balance("BTC")
-        except Exception:
-            wallet_btc = 0.0
-
-        positions = state.setdefault("positions", [])
-        tracked_abc = sum(
-            float(p.get("size_base") or 0.0)
-            for p in positions
-            if p.get("product_id") == pid
-            and str(p.get("strategy") or "") in ("A", "B", "C")
-        )
-        holder_btc = max(0.0, wallet_btc - tracked_abc)
-        dust = 1e-8
-
-        others = [
-            p
-            for p in positions
-            if not (p.get("product_id") == pid and str(p.get("strategy") or "") == "H")
-        ]
-        h_rows = [
-            p
-            for p in positions
-            if p.get("product_id") == pid and str(p.get("strategy") or "") == "H"
-        ]
-
-        if holder_btc <= dust:
-            state["positions"] = others
-            return
-
-        entry = mid if reset_entry else None
-        cost_usd = holder_btc * mid
-        if h_rows:
-            h = dict(h_rows[0])
-            h["size_base"] = holder_btc
-            h["product_id"] = pid
-            h["strategy"] = "H"
-            h["grid_level"] = None
-            if reset_entry or float(h.get("entry_price") or 0.0) <= 0:
-                h["entry_price"] = mid
-                h["cost_usd"] = cost_usd
-            else:
-                ep = float(h.get("entry_price") or mid)
-                h["cost_usd"] = ep * holder_btc
-            h["entry_time"] = float(h.get("entry_time") or now)
-            others.append(h)
-        else:
-            others.append(
-                {
-                    "order_id": "account_sync",
-                    "product_id": pid,
-                    "entry_price": entry if entry is not None else mid,
-                    "size_base": holder_btc,
-                    "cost_usd": cost_usd,
-                    "entry_time": now,
-                    "strategy": "H",
-                    "grid_level": None,
-                    "source": "account_sync",
-                }
-            )
-        state["positions"] = others
-
-    def _maybe_btc_holder_rebuy(
-        self,
-        state: Dict[str, Any],
-        prices: Dict[str, Tuple[float, float]],
-        usd_balance: float,
-        now: float,
-    ) -> None:
-        """After an H take-profit sell, rebuy when spot dips ≥1% from the sell reference."""
-        br = state.get("btc_holder_rebuy")
-        if not isinstance(br, dict):
-            return
-        ref = float(br.get("ref_price") or 0.0)
-        if ref <= 0:
-            state["btc_holder_rebuy"] = None
-            return
-        pid = "BTC-USD"
-        if pid not in prices:
-            return
-        bid, ask = prices[pid]
-        if bid <= 0 or ask <= 0:
-            return
-        mid = (bid + ask) / 2.0
-        dip_pct = _env_float("COINBASE_HOLDER_REBUY_DIP_PCT", 0.01)
-        if mid > ref * (1.0 - dip_pct):
-            return
-
-        rebuy_usd = _env_float("COINBASE_HOLDER_REBUY_USD", 15.0)
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        order_usd = max(min_order, rebuy_usd)
-        ok, reason = _can_buy(state, pid, order_usd, usd_balance)
-        if not ok:
-            logger.debug("Coinbase H rebuy blocked: %s", reason)
-            return
-        if not self._rate_limiter.allow():
-            return
-
-        result = self._client.place_market_buy(pid, order_usd)
-        if not result.success:
-            return
-
-        state["btc_holder_rebuy"] = None
-        pos: Dict[str, Any] = {
-            "order_id": result.order_id,
-            "product_id": pid,
-            "entry_price": mid,
-            "size_base": order_usd / mid,
-            "cost_usd": order_usd,
-            "entry_time": now,
-            "strategy": "H",
-            "grid_level": None,
-            "source": "holder_rebuy",
-        }
-        state.setdefault("positions", []).append(pos)
-        _log_trade(
-            {
-                "ts": now,
-                "type": "buy",
-                "strategy": "H",
-                "reason": "rebuy_after_dip",
-                "order_id": result.order_id,
-                "product_id": pid,
-                "entry_price": mid,
-                "cost_usd": order_usd,
-                "size_base": pos["size_base"],
-            }
-        )
-        logger.info(
-            "Coinbase H rebuy BUY: %s $%.2f @ $%.2f (dip from ref $%.2f)",
-            pid,
-            order_usd,
-            mid,
-            ref,
-        )
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram(_telegram_buy_line(_cb_sym(pid), order_usd, mid))
-        except Exception:
-            pass
+            logger.warning("Coinbase startup check failed (non-fatal): %s", exc)
 
     def _ingest_prices_into_history(
         self, prices: Dict[str, Tuple[float, float]], now: float
     ) -> None:
-        """Append mids to rolling 10-minute deques (dip / momentum / dynamic scoring)."""
+        keep = int(_env_float("COINBASE_PRICE_HISTORY_SEC", 4200.0))
         for pid, (bid, ask) in prices.items():
             if bid <= 0 and ask <= 0:
                 continue
             mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
             hist = self._price_history.setdefault(pid, deque())
             hist.append((now, mid))
-            cutoff = now - 600
+            cutoff = now - keep
             while hist and hist[0][0] < cutoff:
                 hist.popleft()
-
-    def _maybe_refresh_dynamic_movers(self, state: Dict[str, Any], now: float) -> None:
-        """List all products, filter liquid USD pairs, rank by |5m % move|, keep top N."""
-        if not _env_bool("COINBASE_DYNAMIC_SCAN", True):
-            return
-        interval = _env_float("COINBASE_DYNAMIC_SCAN_INTERVAL", 300.0)
-        last = float(state.get("dynamic_scan_ts") or 0.0)
-        if now - last < interval:
-            return
-        min_vol = _env_float("COINBASE_DYNAMIC_MIN_VOLUME_USD", 1_000_000.0)
-        try:
-            rows = self._client.list_brokerage_products()
-        except Exception as exc:
-            logger.warning("Coinbase dynamic scan list products: %s", exc)
-            return
-
-        filtered: List[str] = []
-        for row in rows:
-            pid = str(row.get("product_id") or "")
-            if not pid.endswith("-USD"):
-                continue
-            qc = str(row.get("quote_currency_id") or row.get("quote_currency") or "")
-            if qc and qc.upper() != "USD":
-                continue
-            if _quote_volume_24h_usd(row) < min_vol:
-                continue
-            filtered.append(pid)
-
-        if not filtered:
-            state["dynamic_scan_ts"] = now
-            state["dynamic_momentum_ids"] = []
-            logger.info("Coinbase dynamic scan: no USD products above volume threshold")
-            return
-
-        try:
-            pmap = self._client.get_prices_batched(filtered)
-        except Exception as exc:
-            logger.warning("Coinbase dynamic scan prices: %s", exc)
-            return
-
-        self._ingest_prices_into_history(pmap, now)
-
-        win = _env_float("COINBASE_DYNAMIC_MOVE_LOOKBACK_SEC", 300.0)
-        scored: List[Tuple[str, float]] = []
-        for pid, (bid, ask) in pmap.items():
-            if bid <= 0 and ask <= 0:
-                continue
-            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
-            hist = list(self._price_history.get(pid) or [])
-            ref = _mid_at_or_before(hist, now - win)
-            if ref is None or ref <= 0:
-                continue
-            move = abs((mid - ref) / ref)
-            scored.append((pid, move))
-
-        scored.sort(key=lambda x: -x[1])
-        topn = max(1, int(_env_float("COINBASE_DYNAMIC_TOP_N", 5.0)))
-        top_ids = [p for p, _ in scored[:topn]]
-        state["dynamic_momentum_ids"] = top_ids
-        state["dynamic_scan_ts"] = now
-        logger.info(
-            "Coinbase dynamic scan: %d ranked, top movers: %s",
-            len(scored),
-            top_ids,
-        )
-
-    # ── internal scan ─────────────────────────────────────────────────────────
 
     def _scan(self) -> Dict[str, Any]:
         state = load_coinbase_state()
@@ -728,86 +474,386 @@ class CoinbaseAccumulator:
             usd_balance = 0.0
 
         now = time.time()
-        self._maybe_refresh_dynamic_movers(state, now)
+        run = (now - self._last_ac_tick) >= 60.0
+        if run:
+            self._last_ac_tick = now
+
+        scan_ids = _hf_scan_product_ids(self._client, state, now)
+        pids = list(set(scan_ids) | set(collect_price_product_ids(state)))
 
         try:
-            pids = collect_price_product_ids(state)
             prices = self._client.get_prices_batched(pids)
         except Exception as exc:
             logger.warning("Coinbase price fetch failed: %s", exc)
             return {"ok": False, "error": "price_fetch"}
 
         if not prices:
-            logger.debug("Coinbase: no price data returned")
             return {"ok": False, "error": "no_prices"}
-
-        run_ac_strategies = (now - self._last_ac_tick) >= 60.0
-        if run_ac_strategies:
-            self._last_ac_tick = now
 
         self._ingest_prices_into_history(prices, now)
 
-        self._sync_btc_holder_position(state, prices, now, reset_entry=False)
-
         self._check_exits(state, prices, now)
 
-        self._maybe_btc_holder_rebuy(state, prices, usd_balance, now)
-
-        t1 = set(_tier1_list())
-        t2o = set(_tier2_only_ids())
-        t3o = set(_tier3_only_ids())
-        dyn_ids = list(state.get("dynamic_momentum_ids") or [])
-
-        for pid in sorted(prices.keys()):
-            bid, ask = prices[pid]
-            if bid <= 0 or ask <= 0:
-                continue
-            mid = (bid + ask) / 2.0
-
-            if pid in t1:
-                if run_ac_strategies:
-                    self._strategy_a(state, pid, mid, usd_balance, now, tier="1")
-                if _env_bool("COINBASE_GRID_ENABLED", True):
-                    self._strategy_b(state, pid, mid, usd_balance)
-                if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
-                    mo = _env_float("COINBASE_MOMENTUM_ORDER_USD", 3.0)
-                    self._strategy_c(
-                        state, pid, mid, usd_balance, now, momentum_order_usd=mo
-                    )
-            elif pid in t2o:
-                if run_ac_strategies:
-                    self._strategy_a(state, pid, mid, usd_balance, now, tier="2")
-            elif pid in t3o:
-                if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
-                    mo = _env_float("COINBASE_TIER3_ORDER_USD", 1.5)
-                    self._strategy_c(
-                        state, pid, mid, usd_balance, now, momentum_order_usd=mo
-                    )
-
-        for pid in dyn_ids:
-            if pid not in prices:
-                continue
-            if pid in t1 or pid in t2o:
-                continue
-            bid, ask = prices[pid]
-            if bid <= 0 or ask <= 0:
-                continue
-            mid = (bid + ask) / 2.0
-            if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
-                mo = _env_float("COINBASE_DYNAMIC_ORDER_USD", 2.0)
-                self._strategy_c(
-                    state, pid, mid, usd_balance, now, momentum_order_usd=mo
-                )
+        if run:
+            if _gainers_enabled():
+                self._engine_d_gainers(state, prices, usd_balance, now)
+            else:
+                self._engine_a_gainers(state, prices, usd_balance, now)
+            self._engine_b_micro(state, prices, usd_balance, now)
+            self._engine_c_mean_reversion(state, prices, usd_balance, now)
 
         save_coinbase_state(state)
         return {
             "ok": True,
             "products": list(prices.keys()),
             "usd_balance": round(usd_balance, 2),
-            "dynamic_top": list(state.get("dynamic_momentum_ids") or []),
+            "scan_ids": len(scan_ids),
         }
 
-    # ── exit checker ──────────────────────────────────────────────────────────
+    def _place_buy(
+        self,
+        state: Dict[str, Any],
+        product_id: str,
+        mid: float,
+        usd_balance: float,
+        now: float,
+        *,
+        engine: str,
+        order_usd: float,
+        tp_pct: float,
+        sl_pct: float,
+        max_hold_sec: float,
+        label: str,
+    ) -> bool:
+        if _has_open_position(state, product_id):
+            return False
+        ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
+        if not ok:
+            logger.debug("Coinbase %s blocked (%s): %s", engine, product_id, reason)
+            return False
+        if not self._rate_limiter.allow():
+            return False
+        result = self._client.place_market_buy(product_id, order_usd)
+        if not result.success:
+            return False
+        pos: Dict[str, Any] = {
+            "order_id": result.order_id,
+            "product_id": product_id,
+            "entry_price": mid,
+            "size_base": order_usd / mid,
+            "cost_usd": order_usd,
+            "entry_time": now,
+            "strategy": engine,
+            "hf_engine": engine,
+            "take_profit_pct": tp_pct,
+            "stop_loss_pct": sl_pct,
+            "max_hold_sec": max_hold_sec,
+            "grid_level": None,
+            "label": label,
+        }
+        state.setdefault("positions", []).append(pos)
+        _log_trade(
+            {
+                "ts": now,
+                "type": "buy",
+                "strategy": engine,
+                "order_id": result.order_id,
+                "product_id": product_id,
+                "entry_price": mid,
+                "cost_usd": order_usd,
+                "size_base": pos["size_base"],
+                "label": label,
+            }
+        )
+        logger.info(
+            "Coinbase %s BUY: %s $%.2f @ $%.2f | %s",
+            engine,
+            product_id,
+            order_usd,
+            mid,
+            label,
+        )
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            send_telegram(_telegram_buy_line(_cb_sym(product_id), order_usd, mid))
+        except Exception:
+            pass
+        return True
+
+    def _engine_b_micro(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        """BTC/ETH: +0.1% vs 2m → buy, TP +0.3%, SL −0.2%, hold ≤3m."""
+        tp = _env_float("COINBASE_HF_B_TP_PCT", 0.003)
+        sl = _env_float("COINBASE_HF_B_SL_PCT", 0.002)
+        hold = _env_float("COINBASE_HF_B_MAX_HOLD_SEC", 180.0)
+        trig = _env_float("COINBASE_HF_B_TRIG_PCT", 0.001)
+        order_usd = _env_float("COINBASE_HF_B_ORDER_USD", 3.0)
+
+        for pid in ("BTC-USD", "ETH-USD"):
+            if pid not in prices:
+                continue
+            bid, ask = prices[pid]
+            if bid <= 0 and ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref = _mid_at_or_before(hist, now - 120.0)
+            if ref is None or ref <= 0:
+                continue
+            ch = (mid - ref) / ref
+            if ch < trig:
+                continue
+            self._place_buy(
+                state,
+                pid,
+                mid,
+                usd_balance,
+                now,
+                engine="B",
+                order_usd=max(_env_float("COINBASE_MIN_ORDER_USD", 2.0), order_usd),
+                tp_pct=tp,
+                sl_pct=sl,
+                max_hold_sec=hold,
+                label=f"micro +{ch*100:.2f}% vs 2m",
+            )
+
+    def _engine_c_mean_reversion(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        """Drop ≥0.2% in 2m → buy, TP +0.3%, SL −0.5%, hold ≤5m."""
+        tp = _env_float("COINBASE_HF_C_TP_PCT", 0.003)
+        sl = _env_float("COINBASE_HF_C_SL_PCT", 0.005)
+        hold = _env_float("COINBASE_HF_C_MAX_HOLD_SEC", 300.0)
+        drop = _env_float("COINBASE_HF_C_DROP_PCT", 0.002)
+        order_usd = _env_float("COINBASE_HF_C_ORDER_USD", 2.0)
+
+        for pid in list(prices.keys()):
+            if pid in ("BTC-USD", "ETH-USD"):
+                continue
+            if pid not in prices:
+                continue
+            bid, ask = prices[pid]
+            if bid <= 0 and ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref = _mid_at_or_before(hist, now - 120.0)
+            if ref is None or ref <= 0:
+                continue
+            ch = (mid - ref) / ref
+            if ch > -drop:
+                continue
+            self._place_buy(
+                state,
+                pid,
+                mid,
+                usd_balance,
+                now,
+                engine="C",
+                order_usd=max(_env_float("COINBASE_MIN_ORDER_USD", 2.0), order_usd),
+                tp_pct=tp,
+                sl_pct=sl,
+                max_hold_sec=hold,
+                label=f"reversion {ch*100:.2f}% vs 2m",
+            )
+
+    def _engine_d_gainers(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        """
+        Top **60m** % gainers (configurable lookback), optional 24h volume filter, 5m uptrend.
+        Buys use strategy ``D`` (exits: +3%, trail 5% from peak, time stop).
+        """
+        interval = _env_float("COINBASE_GAINERS_SCAN_INTERVAL", 60.0)
+        last = float(state.get("gainers_scan_ts") or 0.0)
+        if last > 0 and (now - last) < interval:
+            return
+
+        lookback = _env_float("COINBASE_GAINERS_LOOKBACK_SEC", 3600.0)
+        min_pct = _env_float("COINBASE_GAINERS_MIN_PCT", 0.05)
+        min_vol = _env_float("COINBASE_GAINERS_MIN_VOLUME_USD", 10_000.0)
+        strict_vol = _env_bool("COINBASE_GAINERS_STRICT_VOLUME", False)
+        top_n = max(1, int(_env_float("COINBASE_GAINERS_TOP_N", 5.0)))
+        trend_sec = _env_float("COINBASE_GAINERS_TREND_LOOKBACK_SEC", 300.0)
+        order_usd = _env_float("COINBASE_GAINERS_ORDER_USD", 5.0)
+        lo = _env_float("COINBASE_GAINERS_ORDER_MIN_USD", 3.0)
+        hi = _env_float("COINBASE_GAINERS_ORDER_MAX_USD", 5.0)
+        order_usd = min(hi, max(lo, order_usd))
+        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
+        order_usd = max(min_order, order_usd)
+
+        try:
+            rows = self._client.list_brokerage_products()
+        except Exception as exc:
+            logger.warning("Coinbase D: list products failed: %s", exc)
+            return
+
+        vol_map = {
+            str(r.get("product_id") or ""): _quote_volume_24h_usd(r)
+            for r in rows
+            if r.get("product_id")
+        }
+
+        scored: List[Tuple[str, float, float]] = []
+        for pid, (bid, ask) in prices.items():
+            if bid <= 0 and ask <= 0:
+                continue
+            v24 = vol_map.get(pid)
+            if v24 is not None and v24 < min_vol:
+                continue
+            if v24 is None and strict_vol:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref_h = _mid_at_or_before(hist, now - lookback)
+            if ref_h is None or ref_h <= 0:
+                continue
+            hg = (mid - ref_h) / ref_h
+            if hg < min_pct:
+                continue
+            ref_tr = _mid_at_or_before(hist, now - trend_sec)
+            if ref_tr is not None and mid <= float(ref_tr):
+                continue
+            scored.append((pid, hg, mid))
+
+        scored.sort(key=lambda x: -x[1])
+        state["gainers_scan_ts"] = now
+
+        bought = 0
+        for pid, hg, mid in scored:
+            if bought >= top_n:
+                break
+            ok, reason = _can_buy_gainers(state, pid, order_usd, usd_balance)
+            if not ok:
+                logger.debug("Coinbase D skip %s: %s", pid, reason)
+                continue
+            if not self._rate_limiter.allow():
+                break
+            result = self._client.place_market_buy(pid, order_usd)
+            if not result.success:
+                continue
+            pos: Dict[str, Any] = {
+                "order_id": result.order_id,
+                "product_id": pid,
+                "entry_price": mid,
+                "size_base": order_usd / mid,
+                "cost_usd": order_usd,
+                "entry_time": now,
+                "strategy": "D",
+                "hf_engine": "D",
+                "peak_price": mid,
+                "momentum_1h_pct": hg,
+                "grid_level": None,
+                "label": f"gainers +{hg*100:.1f}% {lookback/60:.0f}m",
+            }
+            state.setdefault("positions", []).append(pos)
+            usd_balance = max(0.0, usd_balance - order_usd)
+            bought += 1
+            _log_trade(
+                {
+                    "ts": now,
+                    "type": "buy",
+                    "strategy": "D",
+                    "order_id": result.order_id,
+                    "product_id": pid,
+                    "entry_price": mid,
+                    "cost_usd": order_usd,
+                    "size_base": pos["size_base"],
+                    "label": pos["label"],
+                }
+            )
+            logger.info(
+                "Coinbase D BUY: %s $%.2f @ $%.2f | +%.2f%% vs %.0fm",
+                pid,
+                order_usd,
+                mid,
+                hg * 100,
+                lookback / 60.0,
+            )
+            try:
+                from trading_ai.shark.reporting import send_telegram
+
+                send_telegram(
+                    _telegram_gainer_buy(_cb_sym(pid), hg, order_usd, mid)
+                )
+            except Exception:
+                pass
+
+    def _engine_a_gainers(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        """Top hour gainers (>2%), trending, buy $2–3, TP/SL/time per env."""
+        min_h = _env_float("COINBASE_HF_A_MIN_HOUR_GAIN", 0.02)
+        top_n = int(_env_float("COINBASE_HF_A_TOP_N", 13.0))
+        tp = _env_float("COINBASE_HF_A_TP_PCT", 0.005)
+        sl = _env_float("COINBASE_HF_A_SL_PCT", 0.003)
+        hold = _env_float("COINBASE_HF_A_MAX_HOLD_SEC", 300.0)
+        trend_sec = _env_float("COINBASE_HF_A_TREND_LOOKBACK_SEC", 300.0)
+        cooldown = _env_float("COINBASE_HF_A_COOLDOWN_SEC", 300.0)
+        lo = _env_float("COINBASE_HF_A_ORDER_MIN_USD", 2.0)
+        hi = _env_float("COINBASE_HF_A_ORDER_MAX_USD", 3.0)
+
+        scored: List[Tuple[str, float, float]] = []
+        for pid, (bid, ask) in prices.items():
+            if bid <= 0 and ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref_h = _mid_at_or_before(hist, now - 3600.0)
+            if ref_h is None or ref_h <= 0:
+                continue
+            hg = (mid - ref_h) / ref_h
+            if hg < min_h:
+                continue
+            ref_tr = _mid_at_or_before(hist, now - trend_sec)
+            if ref_tr is not None and mid <= float(ref_tr):
+                continue
+            scored.append((pid, hg, mid))
+
+        scored.sort(key=lambda x: -x[1])
+        last_a = state.setdefault("hf_last_buy_a", {})
+
+        for pid, _hg, mid in scored[:top_n]:
+            if _has_open_position(state, pid):
+                continue
+            lt = float(last_a.get(pid) or 0.0)
+            if now - lt < cooldown:
+                continue
+            order_usd = min(hi, max(lo, (lo + hi) / 2.0))
+            order_usd = max(_env_float("COINBASE_MIN_ORDER_USD", 2.0), order_usd)
+            if self._place_buy(
+                state,
+                pid,
+                mid,
+                usd_balance,
+                now,
+                engine="A",
+                order_usd=order_usd,
+                tp_pct=tp,
+                sl_pct=sl,
+                max_hold_sec=hold,
+                label="gainers scalp",
+            ):
+                last_a[pid] = now
+                state["hf_last_buy_a"] = last_a
 
     def _check_exits(
         self,
@@ -815,59 +861,74 @@ class CoinbaseAccumulator:
         prices: Dict[str, Tuple[float, float]],
         now: float,
     ) -> None:
-        profit_target = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.03)
-        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.10)
-
         remaining: List[Dict[str, Any]] = []
         for pos in list(state.get("positions") or []):
-            pid = pos.get("product_id") or ""
+            pid = str(pos.get("product_id") or "")
             if pid not in prices:
                 remaining.append(pos)
                 continue
 
             bid, _ask = prices[pid]
-            current = bid  # sell at bid
+            current = bid
             entry = float(pos.get("entry_price") or 0.0)
             size_base = float(pos.get("size_base") or 0.0)
             cost_usd = float(pos.get("cost_usd") or 0.0)
-            strategy = str(pos.get("strategy") or "A")
+            strategy = str(pos.get("hf_engine") or pos.get("strategy") or "A")
 
             if entry <= 0 or size_base <= 0:
                 remaining.append(pos)
                 continue
 
             gain_pct = (current - entry) / entry
+            entry_t = float(pos.get("entry_time") or 0.0)
 
-            # H = native BTC holder: take-profit only (no stop-loss on long-term hold)
-            if strategy == "H":
-                take_profit = profit_target
-                should_sell = gain_pct >= take_profit
-            elif strategy == "C":
-                take_profit = 0.01  # +1%
-                stop = -0.005  # -0.5%
-                should_sell = gain_pct >= take_profit or gain_pct <= stop
+            profit_exit = False
+            stop_exit = False
+            trail_exit = False
+            time_exit = False
+
+            if strategy == "D":
+                peak = max(float(pos.get("peak_price") or entry), current)
+                take_pct = _env_float("COINBASE_GAINERS_PROFIT_PCT", 0.03)
+                trail = _env_float("COINBASE_GAINERS_TRAILING_STOP", 0.05)
+                tstop_sec = _env_float("COINBASE_GAINERS_TIME_STOP_MIN", 30.0) * 60.0
+                profit_exit = gain_pct >= take_pct
+                trail_exit = current < peak * (1.0 - trail)
+                time_exit = (now - entry_t) >= tstop_sec
+                should_sell = profit_exit or trail_exit or time_exit
+                if not should_sell:
+                    upd = dict(pos)
+                    upd["peak_price"] = peak
+                    remaining.append(upd)
+                    continue
+                if profit_exit:
+                    sell_reason = f"gainer tp +{gain_pct*100:.2f}%"
+                elif trail_exit:
+                    sell_reason = f"gainer trail −{trail*100:.0f}% from peak"
+                else:
+                    sell_reason = f"gainer time {((now - entry_t)/60):.1f}m"
             else:
-                take_profit = profit_target
-                stop = -stop_loss_pct
-                should_sell = gain_pct >= take_profit or gain_pct <= stop
-
-            if not should_sell:
-                remaining.append(pos)
-                continue
+                tp = float(pos.get("take_profit_pct") or _env_float("COINBASE_PROFIT_TARGET_PCT", 0.02))
+                sl = float(pos.get("stop_loss_pct") or _env_float("COINBASE_STOP_LOSS_PCT", 0.01))
+                max_hold = float(pos.get("max_hold_sec") or 999999.0)
+                time_exit = (now - entry_t) >= max_hold
+                profit_exit = gain_pct >= tp
+                stop_exit = gain_pct <= -sl
+                should_sell = time_exit or profit_exit or stop_exit
+                if not should_sell:
+                    remaining.append(pos)
+                    continue
+                if time_exit:
+                    sell_reason = f"time_stop {((now - entry_t)/60):.1f}m"
+                elif profit_exit:
+                    sell_reason = f"tp +{gain_pct*100:.2f}%"
+                else:
+                    sell_reason = f"sl {gain_pct*100:.2f}%"
 
             if not self._rate_limiter.allow():
-                logger.warning("Coinbase rate limit — deferring exit for %s", pid)
                 remaining.append(pos)
                 continue
 
-            if strategy == "H":
-                sell_reason = f"holder profit +{gain_pct*100:.2f}%"
-            else:
-                sell_reason = (
-                    f"profit +{gain_pct*100:.2f}%"
-                    if gain_pct >= take_profit
-                    else f"stop {gain_pct*100:.2f}%"
-                )
             base_str = _fmt_base_size(pid, size_base)
             result = self._client.place_market_sell(pid, base_str)
 
@@ -896,350 +957,37 @@ class CoinbaseAccumulator:
                         "gain_pct": gain_pct,
                     }
                 )
-
-                sign = "+" if pnl >= 0 else ""
                 logger.info(
-                    "Coinbase %s SELL: %s %s @ $%.2f | entry $%.2f | PnL %s$%.2f (%s)",
+                    "Coinbase %s SELL: %s @ $%.4f | PnL $%.4f (%s)",
                     strategy,
                     pid,
-                    base_str,
                     current,
-                    entry,
-                    sign,
-                    abs(pnl),
+                    pnl,
                     sell_reason,
                 )
-
                 try:
                     from trading_ai.shark.reporting import send_telegram
 
                     sym = _cb_sym(pid)
-                    if gain_pct >= take_profit:
-                        send_telegram(_telegram_sell_profit_line(sym, gain_pct, pnl))
-                    else:
+                    if strategy == "D":
+                        if trail_exit:
+                            tr = _env_float("COINBASE_GAINERS_TRAILING_STOP", 0.05)
+                            send_telegram(_telegram_gainer_trailing_stop(sym, tr))
+                        else:
+                            send_telegram(
+                                _telegram_gainer_sell_profit(sym, gain_pct, pnl)
+                            )
+                    elif stop_exit or (time_exit and pnl < 0):
                         send_telegram(_telegram_stop_line(sym, gain_pct, pnl))
+                    else:
+                        send_telegram(_telegram_sell_profit_line(sym, gain_pct, pnl))
                 except Exception:
                     pass
-
-                if strategy == "H":
-                    state["btc_holder_rebuy"] = {
-                        "ref_price": current,
-                        "ts": now,
-                    }
-
-                # Remove from grid filled_levels for B positions
-                if strategy == "B":
-                    grid_level = pos.get("grid_level")
-                    if grid_level is not None:
-                        gs = (
-                            state.setdefault("grid_state", {})
-                            .setdefault(pid, {})
-                        )
-                        fl: List[float] = gs.get("filled_levels") or []
-                        try:
-                            fl.remove(grid_level)
-                        except ValueError:
-                            pass
-                        gs["filled_levels"] = fl
             else:
                 logger.warning(
                     "Coinbase SELL failed (%s): %s — keeping position", pid, result.reason
                 )
                 remaining.append(pos)
+                continue
 
         state["positions"] = remaining
-
-    # ── Strategy A: dip accumulator ───────────────────────────────────────────
-
-    def _strategy_a(
-        self,
-        state: Dict[str, Any],
-        product_id: str,
-        current_price: float,
-        usd_balance: float,
-        now: float,
-        *,
-        tier: str = "1",
-    ) -> None:
-        """Buy when price drops ≥1% in the last 5 minutes (tier 1 or tier 2 sizing)."""
-        hist = list(self._price_history.get(product_id) or [])
-        if len(hist) < 2:
-            return
-
-        cutoff = now - 300  # 5-minute lookback
-        old = [(t, p) for t, p in hist if t <= cutoff]
-        if not old:
-            return
-        ref_price = old[-1][1]
-        if ref_price <= 0:
-            return
-
-        change_pct = (current_price - ref_price) / ref_price
-        dip_pct = _env_float("COINBASE_DIP_PCT", 0.01)
-        if change_pct > -dip_pct:
-            return
-
-        # Don't stack A positions opened in the last 10 minutes on the same product
-        recent_cutoff = now - 600
-        has_recent = any(
-            p.get("product_id") == product_id
-            and p.get("strategy") == "A"
-            and float(p.get("entry_time") or 0) >= recent_cutoff
-            for p in (state.get("positions") or [])
-        )
-        if has_recent:
-            return
-
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        cap = _max_position_value_usd(state, product_id)
-        if tier == "2":
-            base = _env_float("COINBASE_TIER2_DIP_ORDER_USD", 2.5)
-            order_usd = max(min_order, min(cap, base))
-        else:
-            dip_lo = _env_float("COINBASE_DIP_ORDER_MIN_USD", 5.0)
-            dip_hi = _env_float("COINBASE_DIP_ORDER_MAX_USD", 10.0)
-            order_usd = max(
-                min_order, min(dip_hi, max(dip_lo, min(cap * 0.15, dip_hi)))
-            )
-
-        ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
-        if not ok:
-            logger.debug("Coinbase A blocked (%s): %s", product_id, reason)
-            return
-        if not self._rate_limiter.allow():
-            return
-
-        result = self._client.place_market_buy(product_id, order_usd)
-        if not result.success:
-            return
-
-        pos: Dict[str, Any] = {
-            "order_id": result.order_id,
-            "product_id": product_id,
-            "entry_price": current_price,
-            "size_base": order_usd / current_price,
-            "cost_usd": order_usd,
-            "entry_time": now,
-            "strategy": "A",
-            "grid_level": None,
-            "trigger_pct": change_pct,
-        }
-        state.setdefault("positions", []).append(pos)
-        _log_trade(
-            {
-                "ts": now,
-                "type": "buy",
-                "strategy": "A",
-                "order_id": result.order_id,
-                "product_id": product_id,
-                "entry_price": current_price,
-                "cost_usd": order_usd,
-                "size_base": pos["size_base"],
-                "trigger": f"dip {change_pct*100:.2f}%",
-            }
-        )
-        logger.info(
-            "Coinbase A BUY: %s $%.2f @ $%.2f (dip %.2f%%)",
-            product_id,
-            order_usd,
-            current_price,
-            change_pct * 100,
-        )
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram(_telegram_buy_line(_cb_sym(product_id), order_usd, current_price))
-        except Exception:
-            pass
-
-    # ── Strategy B: grid trading ──────────────────────────────────────────────
-
-    def _strategy_b(
-        self,
-        state: Dict[str, Any],
-        product_id: str,
-        current_price: float,
-        usd_balance: float,
-    ) -> None:
-        """Buy at each new grid level; sell each lot on +3%. BTC/ETH only."""
-        cfg = _PRODUCT_GRID.get(product_id)
-        if cfg is None:
-            return
-        step_env, step_def, ord_env, ord_def = cfg
-        grid_step = _env_float(step_env, step_def)
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        order_usd = max(min_order, _env_float(ord_env, ord_def))
-
-        # Current price level (floor to nearest step)
-        grid_level = math.floor(current_price / grid_step) * grid_step
-
-        gs: Dict[str, Any] = (
-            state.setdefault("grid_state", {}).setdefault(product_id, {})
-        )
-        filled: List[float] = gs.get("filled_levels") or []
-
-        if grid_level in filled:
-            return  # already have a buy at this level
-
-        # Max 5 grid lots per product
-        grid_count = sum(
-            1
-            for p in (state.get("positions") or [])
-            if p.get("product_id") == product_id and p.get("strategy") == "B"
-        )
-        if grid_count >= 5:
-            return
-
-        ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
-        if not ok:
-            logger.debug(
-                "Coinbase B blocked (%s @%.0f): %s", product_id, grid_level, reason
-            )
-            return
-        if not self._rate_limiter.allow():
-            return
-
-        result = self._client.place_market_buy(product_id, order_usd)
-        if not result.success:
-            return
-
-        now = time.time()
-        pos: Dict[str, Any] = {
-            "order_id": result.order_id,
-            "product_id": product_id,
-            "entry_price": current_price,
-            "size_base": order_usd / current_price,
-            "cost_usd": order_usd,
-            "entry_time": now,
-            "strategy": "B",
-            "grid_level": grid_level,
-        }
-        state.setdefault("positions", []).append(pos)
-        filled.append(grid_level)
-        gs["filled_levels"] = filled
-        _log_trade(
-            {
-                "ts": now,
-                "type": "buy",
-                "strategy": "B",
-                "order_id": result.order_id,
-                "product_id": product_id,
-                "entry_price": current_price,
-                "cost_usd": order_usd,
-                "size_base": pos["size_base"],
-                "grid_level": grid_level,
-            }
-        )
-        logger.info(
-            "Coinbase B BUY: %s $%.2f @ $%.2f (grid level %.0f)",
-            product_id,
-            order_usd,
-            current_price,
-            grid_level,
-        )
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram(_telegram_buy_line(_cb_sym(product_id), order_usd, current_price))
-        except Exception:
-            pass
-
-    # ── Strategy C: momentum scalp ────────────────────────────────────────────
-
-    def _strategy_c(
-        self,
-        state: Dict[str, Any],
-        product_id: str,
-        current_price: float,
-        usd_balance: float,
-        now: float,
-        *,
-        momentum_order_usd: Optional[float] = None,
-    ) -> None:
-        """Buy on +0.5% move in 2 minutes; exit at +1% or -0.5%."""
-        hist = list(self._price_history.get(product_id) or [])
-        if len(hist) < 2:
-            return
-
-        cutoff = now - 120  # 2-minute lookback
-        old = [(t, p) for t, p in hist if t <= cutoff]
-        if not old:
-            return
-        ref_price = old[-1][1]
-        if ref_price <= 0:
-            return
-
-        change_pct = (current_price - ref_price) / ref_price
-        mom_trig = _env_float("COINBASE_MOMENTUM_PCT", 0.005)
-        if change_pct < mom_trig:
-            return
-
-        # Only one C position per product at a time
-        has_c = any(
-            p.get("product_id") == product_id and p.get("strategy") == "C"
-            for p in (state.get("positions") or [])
-        )
-        if has_c:
-            return
-
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
-        fixed = (
-            momentum_order_usd
-            if momentum_order_usd is not None
-            else _env_float("COINBASE_MOMENTUM_ORDER_USD", 3.0)
-        )
-        mom_pct = _env_float("COINBASE_MOMENTUM_BUDGET_PCT", 0.20)
-        deployable = max(0.0, usd_balance * 0.80)
-        pct_cap = deployable * mom_pct
-        budget_cap = _max_position_value_usd(state, product_id)
-        order_usd = max(min_order, min(fixed, pct_cap, budget_cap))
-
-        ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
-        if not ok:
-            logger.debug("Coinbase C blocked (%s): %s", product_id, reason)
-            return
-        if not self._rate_limiter.allow():
-            return
-
-        result = self._client.place_market_buy(product_id, order_usd)
-        if not result.success:
-            return
-
-        pos: Dict[str, Any] = {
-            "order_id": result.order_id,
-            "product_id": product_id,
-            "entry_price": current_price,
-            "size_base": order_usd / current_price,
-            "cost_usd": order_usd,
-            "entry_time": now,
-            "strategy": "C",
-            "grid_level": None,
-            "trigger_pct": change_pct,
-        }
-        state.setdefault("positions", []).append(pos)
-        _log_trade(
-            {
-                "ts": now,
-                "type": "buy",
-                "strategy": "C",
-                "order_id": result.order_id,
-                "product_id": product_id,
-                "entry_price": current_price,
-                "cost_usd": order_usd,
-                "size_base": pos["size_base"],
-                "trigger": f"momentum +{change_pct*100:.2f}%",
-            }
-        )
-        logger.info(
-            "Coinbase C BUY: %s $%.2f @ $%.2f (momentum +%.2f%%)",
-            product_id,
-            order_usd,
-            current_price,
-            change_pct * 100,
-        )
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram(_telegram_buy_line(_cb_sym(product_id), order_usd, current_price))
-        except Exception:
-            pass

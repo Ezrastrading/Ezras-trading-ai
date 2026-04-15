@@ -12,8 +12,9 @@ Advanced Trade auth env vars:
 
 Base URL (authenticated orders/accounts): https://api.coinbase.com/api/v3/brokerage
 
-Public prices / product list use **Coinbase Exchange REST** (``api.exchange.coinbase.com``) — no JWT.
-CDP brokerage ``/best_bid_ask`` and ``/products`` return 401 without credentials.
+Public prices and product list use **unauthenticated** Advanced Trade **market** routes
+(``GET .../brokerage/market/products``, ``GET .../brokerage/market/products/{id}/ticker``).
+JWT is used only for ``/accounts`` and ``/orders``. Exchange REST remains a fallback for ticker.
 """
 
 from __future__ import annotations
@@ -48,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 _ADV_BASE_URL = "https://api.coinbase.com/api/v3/brokerage"
 _JWT_HOST = "api.coinbase.com"
-# Coinbase Exchange REST (classic) — public market data, no JWT. Product ids match (e.g. BTC-USD).
+# Public Advanced Trade market data (no JWT) — use ``/market/products``, not ``/products`` (401).
+_ADV_PUBLIC_BASE = "https://api.coinbase.com/api/v3/brokerage"
+# Coinbase Exchange REST (classic) — fallback only; product ids match (e.g. BTC-USD).
 _EXCHANGE_REST_URL = "https://api.exchange.coinbase.com"
 
 # ── Legacy public price constant ─────────────────────────────────────────────
@@ -120,6 +123,27 @@ def _exchange_public_request(path: str) -> Any:
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=30, context=_get_ssl_context()) as resp:
+        raw = resp.read().decode("utf-8")
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def _brokerage_public_request(path: str) -> Any:
+    """
+    Unauthenticated GET under ``/api/v3/brokerage`` — public **market** routes only, e.g.
+    ``/market/products``, ``/market/products/BTC-USD/ticker``.  (``/products`` without
+    ``market`` returns 401.)
+    """
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{_ADV_PUBLIC_BASE}{path}"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "EzrasShark/1.0", "Accept": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=45, context=_get_ssl_context()) as resp:
         raw = resp.read().decode("utf-8")
     if not raw.strip():
         return {}
@@ -362,20 +386,17 @@ class CoinbaseClient:
 
     def get_product_price(self, product_id: str) -> Tuple[float, float]:
         """
-        Return (bid, ask) using the same **public** price path as :meth:`get_prices`.
-
-        Uses Coinbase Exchange REST ``GET /products/{id}/ticker`` (no JWT), then v2 spot.
+        Return (bid, ask) using the same **public** path as :meth:`get_prices`
+        (``/api/v3/brokerage/market/products/{id}/ticker``, then Exchange fallback).
         """
         return self._get_public_ticker_bid_ask(product_id)
 
     def _get_public_ticker_bid_ask(self, product_id: str) -> Tuple[float, float]:
         """
-        Primary price source: **Coinbase Exchange** ``GET /products/{id}/ticker`` (public, no JWT).
+        Primary: **public** ``GET /api/v3/brokerage/market/products/{id}/ticker`` (``best_bid`` /
+        ``best_ask``) — no JWT.
 
-        CDP ``api.coinbase.com/api/v3/brokerage/.../ticker`` returns 401 without credentials;
-        Exchange REST matches the same product ids (e.g. ``BTC-USD``) and returns ``bid``/``ask``.
-
-        Fallback: legacy v2 ``/v2/prices/{id}/spot`` (mid only → duplicate bid/ask).
+        Fallback: Coinbase Exchange ``GET /products/{id}/ticker``, then v2 spot (mid only).
         """
         safe = urllib.parse.quote(str(product_id).strip(), safe="-")
 
@@ -386,6 +407,22 @@ class CoinbaseClient:
                 return float(x)
             except (TypeError, ValueError):
                 return 0.0
+
+        try:
+            j = _brokerage_public_request(f"/market/products/{safe}/ticker")
+            bid = _f(j.get("best_bid"))
+            ask = _f(j.get("best_ask"))
+            if bid > 0 and ask > 0:
+                return bid, ask
+            if bid > 0 or ask > 0:
+                mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+                if bid <= 0:
+                    bid = mid
+                if ask <= 0:
+                    ask = mid
+                return bid, ask
+        except Exception as exc:
+            logger.debug("Coinbase market ticker %s: %s", product_id, exc)
 
         try:
             j = _exchange_public_request(f"/products/{safe}/ticker")
@@ -417,9 +454,9 @@ class CoinbaseClient:
 
     def get_prices(self, product_ids: List[str]) -> Dict[str, Tuple[float, float]]:
         """
-        Fetch bid/ask per product via **public** Exchange REST ``/products/{id}/ticker`` (no JWT).
+        Fetch bid/ask per product via **public** ``/market/products/{id}/ticker`` (no JWT).
 
-        Does not call CDP ``/best_bid_ask`` or brokerage batch endpoints (avoid 401 without JWT).
+        Does not use authenticated CDP ``/best_bid_ask``.
         """
         if not product_ids:
             return {}
@@ -444,33 +481,29 @@ class CoinbaseClient:
             out.update(self.get_prices(chunk))
         return out
 
-    def list_brokerage_products(self) -> List[Dict[str, Any]]:
+    def list_exchange_usd_products(self) -> List[Dict[str, Any]]:
         """
-        Tradable products for the dynamic scanner.
+        Full universe of **online** USD pairs from Coinbase Exchange
+        ``GET https://api.exchange.coinbase.com/products`` — public JSON array, no JWT.
 
-        Uses **Coinbase Exchange** ``GET /products`` (public JSON array, no JWT). CDP brokerage
-        ``GET /api/v3/brokerage/products`` requires authentication (401 otherwise).
-
-        Each row includes ``approximate_quote_24h_volume`` set high enough to pass the
-        accumulator's default $1M liquidity gate (Exchange's static ``/products`` list does
-        not include 24h USD notional per product).
+        Each row includes ``product_id`` (same as Exchange ``id``, e.g. ``BTC-USD``).
         """
         try:
             data = _exchange_public_request("/products")
         except Exception as exc:
-            logger.warning("Coinbase Exchange /products failed: %s", exc)
+            logger.warning("Coinbase Exchange GET /products failed: %s", exc)
             return []
-
         if not isinstance(data, list):
             return []
-
         out: List[Dict[str, Any]] = []
         for row in data:
             if not isinstance(row, dict):
                 continue
             if str(row.get("quote_currency") or "") != "USD":
                 continue
-            if row.get("status") != "online":
+            if str(row.get("status") or "") != "online":
+                continue
+            if row.get("trading_disabled"):
                 continue
             pid = str(row.get("id") or "").strip()
             if not pid.endswith("-USD"):
@@ -478,11 +511,63 @@ class CoinbaseClient:
             out.append(
                 {
                     "product_id": pid,
-                    "quote_currency_id": "USD",
-                    "approximate_quote_24h_volume": 9_000_000.0,
-                    "base_currency_id": row.get("base_currency") or "",
+                    "quote_currency": "USD",
+                    "base_currency": str(row.get("base_currency") or ""),
                 }
             )
+        return out
+
+    def list_brokerage_products(self) -> List[Dict[str, Any]]:
+        """
+        Tradable SPOT USD products for scanners — **public**
+        ``GET /api/v3/brokerage/market/products`` (paginated, no JWT).
+
+        Rows include ``approximate_quote_24h_volume`` from the API (string or float).
+        """
+        out: List[Dict[str, Any]] = []
+        limit = 500
+        offset = 0
+        try:
+            while True:
+                path = f"/market/products?limit={limit}&offset={offset}&product_type=SPOT"
+                j = _brokerage_public_request(path)
+                rows = j.get("products") or []
+                if not isinstance(rows, list) or not rows:
+                    break
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("quote_currency_id") or "").upper() != "USD":
+                        continue
+                    if str(row.get("product_type") or "").upper() != "SPOT":
+                        continue
+                    if row.get("status") != "online":
+                        continue
+                    if row.get("trading_disabled") or row.get("is_disabled"):
+                        continue
+                    pid = str(row.get("product_id") or "").strip()
+                    if not pid.endswith("-USD"):
+                        continue
+                    vol = row.get("approximate_quote_24h_volume")
+                    try:
+                        v24 = float(vol) if vol is not None and str(vol).strip() != "" else 0.0
+                    except (TypeError, ValueError):
+                        v24 = 0.0
+                    out.append(
+                        {
+                            "product_id": pid,
+                            "quote_currency_id": "USD",
+                            "approximate_quote_24h_volume": v24,
+                            "base_currency_id": row.get("base_currency_id") or "",
+                        }
+                    )
+                if len(rows) < limit:
+                    break
+                offset += limit
+        except Exception as exc:
+            logger.warning("Coinbase market /products failed: %s", exc)
+            return []
+
         return out
 
     # ── orders ────────────────────────────────────────────────────────────────
