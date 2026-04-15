@@ -517,6 +517,23 @@ class CoinbaseClient:
             )
         return out
 
+    def get_exchange_product_stats(self, product_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Public ``GET /products/{product_id}/stats`` — open, high, low, last, volume (24h), etc.
+        No authentication.
+        """
+        safe = urllib.parse.quote(str(product_id).strip(), safe="")
+        try:
+            data = _exchange_public_request(f"/products/{safe}/stats")
+        except Exception as exc:
+            logger.debug(
+                "Coinbase Exchange GET /products/%s/stats failed: %s", product_id, exc
+            )
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
+
     def list_brokerage_products(self) -> List[Dict[str, Any]]:
         """
         Tradable SPOT USD products for scanners — **public**
