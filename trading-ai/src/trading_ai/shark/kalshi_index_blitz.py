@@ -64,9 +64,11 @@ def run_kalshi_index_blitz() -> int:
     from trading_ai.shark.reporting import send_telegram
     from trading_ai.shark.state_store import load_capital
 
-    min_prob = _parse_env_float("KALSHI_INDEX_BLITZ_MIN_PROB", 0.90)
+    min_prob = _parse_env_float("KALSHI_INDEX_BLITZ_MIN_PROB", 0.85)
     ttr_min = _parse_env_float("KALSHI_INDEX_BLITZ_TTR_MIN_SEC", 60.0)
-    ttr_max = _parse_env_float("KALSHI_INDEX_BLITZ_TTR_MAX_SEC", 3600.0)
+    # KXINX daily range markets open at ~9:30am ET and close at ~4pm ET (6.5h window).
+    # Set default TTR max to 86400s (24h) so we catch them from open through close.
+    ttr_max = _parse_env_float("KALSHI_INDEX_BLITZ_TTR_MAX_SEC", 86400.0)
     max_trades = max(1, _parse_env_int("KALSHI_INDEX_BLITZ_MAX_TRADES", 30))
     budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_INDEX_BLITZ_BUDGET_PCT", 0.40)))
     trade_min = max(0.50, _parse_env_float("KALSHI_INDEX_BLITZ_MIN_TRADE_USD", 1.00))

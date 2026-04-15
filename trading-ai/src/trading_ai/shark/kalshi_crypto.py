@@ -53,18 +53,25 @@ def kalshi_exclude_crypto_from_hv() -> bool:
 
 
 _NC_HF_PRIORITY_SERIES: Tuple[str, ...] = (
+    # Individual game series (real volume, real prices — not championship/season series)
+    "KXMLBGAME",
+    "KXNBAGAME",
+    "KXNHLGAME",
+    "KXSOCGAME",
+    # Index / economic
     "KXINX",
     "KXNDX",
-    "KXNBA",
-    "KXNFL",
-    "KXMLB",
-    "KXNHL",
     "KXFED",
     "KXECON",
+    # Politics / news / weather
     "KXPOL",
     "KXNWS",
     "KXHIGHTEMP",
     "HIGHTEMP",
+    # Fallback season/championship (rarely short-window)
+    "KXNBA",
+    "KXNFL",
+    "KXNHL",
 )
 
 

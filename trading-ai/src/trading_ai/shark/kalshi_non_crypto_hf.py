@@ -1,4 +1,4 @@
-"""Non-crypto Kalshi HF — full open-market scan (no series-only pool); 5–60m window, high prob."""
+"""Non-crypto Kalshi HF — game series + MVE-filtered broad scan; 5-60min window, high prob."""
 
 from __future__ import annotations
 
@@ -9,6 +9,17 @@ import uuid
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+# MVE/parlay tickers: 1c prices, zero real volume — skip entirely.
+_MVE_SKIP: Tuple[str, ...] = ("MVE", "MULTIGAME", "CROSSCATEGORY", "MULTILEG", "EXTENDED")
+
+# Politics/news: allow wider TTR (up to 2h) and lower min_prob (85%).
+_POL_NEWS_SERIES = frozenset({"KXPOL", "KXNWS"})
+
+
+def _is_mve(ticker: str) -> bool:
+    t = ticker.upper()
+    return any(p in t for p in _MVE_SKIP)
 
 
 def _env_truthy(name: str, default: str = "true") -> bool:
@@ -55,32 +66,37 @@ def _nc_deployed_usd() -> float:
 
 
 def run_kalshi_non_crypto_hf() -> None:
-    """Paginated open-market scan; non-crypto; TTR 5–60m; prob ≥ min; small tickets."""
+    """Game-series scan + MVE-filtered broad scan; non-crypto; TTR 5–60m; small tickets."""
     import os
 
     if not _env_truthy("KALSHI_NC_HF_ENABLED", "true"):
         return
 
     min_prob = _parse_env_float("KALSHI_NC_MIN_PROB", 0.85)
-    ttr_min = _parse_env_float("KALSHI_NC_TTR_MIN_SEC", 300.0)
-    ttr_max = _parse_env_float("KALSHI_NC_TTR_MAX_SEC", 3600.0)
+    pol_min_prob = _parse_env_float("KALSHI_NC_POL_MIN_PROB", 0.85)
+    pol_ttr_max = _parse_env_float("KALSHI_NC_POL_TTR_MAX_SEC", 7200.0)
+    ttr_min_sec = _parse_env_float("KALSHI_NC_TTR_MIN_SEC", 300.0)
+    ttr_max_sec = _parse_env_float("KALSHI_NC_TTR_MAX_SEC", 3600.0)
     max_per_run = max(1, _parse_env_int("KALSHI_NC_MAX_TRADES_PER_RUN", 10))
     deploy_cap_pct = max(0.05, min(1.0, _parse_env_float("KALSHI_NC_DEPLOY_CAP_PCT", 0.60)))
     usd_lo = _parse_env_float("KALSHI_NC_PER_TRADE_MIN_USD", 1.0)
     usd_hi = _parse_env_float("KALSHI_NC_PER_TRADE_MAX_USD", 3.0)
     if usd_hi < usd_lo:
         usd_lo, usd_hi = usd_hi, usd_lo
-    scan_max = max(500, min(20000, _parse_env_int("KALSHI_NC_OPEN_SCAN_MAX_ROWS", 5000)))
+    api_limit = max(50, min(500, _parse_env_int("KALSHI_NC_SERIES_LIMIT", 200)))
+    broad_max = max(500, min(10000, _parse_env_int("KALSHI_NC_OPEN_SCAN_MAX_ROWS", 2000)))
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
     from trading_ai.shark.execution_live import monitor_position
-    from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
+    from trading_ai.shark.kalshi_crypto import kalshi_nc_hf_series_to_scan, kalshi_ticker_is_crypto
+    from trading_ai.shark.kalshi_expiry_tiers import classify_kalshi_expiry_tier
     from trading_ai.shark.kalshi_limits import (
         count_kalshi_open_positions,
         kalshi_max_open_positions_from_env,
         kalshi_max_position_usd,
         kalshi_min_position_usd,
     )
+    from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
     from trading_ai.shark.models import HuntType, OpenPosition
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
@@ -103,31 +119,44 @@ def run_kalshi_non_crypto_hf() -> None:
     if headroom < kalshi_min_position_usd():
         logger.debug(
             "kalshi_nc_hf: no headroom under %.0f%% cap (deployed $%.2f / cap $%.2f)",
-            deploy_cap_pct * 100,
-            already,
-            cap_usd,
+            deploy_cap_pct * 100, already, cap_usd,
         )
         return
 
     now = time.time()
     merged: Dict[str, Dict[str, Any]] = {}
-    try:
-        rows = client.fetch_all_open_markets(max_rows=scan_max)
+
+    # ── 1. Series-targeted scan (game + econ + politics series) ────────────────
+    for ser in kalshi_nc_hf_series_to_scan():
+        try:
+            rows = client.fetch_markets_for_series(ser, limit=api_limit)
+        except Exception as exc:
+            logger.debug("kalshi_nc_hf series %s: %s", ser, exc)
+            continue
         for row in rows:
             if not isinstance(row, dict):
                 continue
             tid = str(row.get("ticker") or "").strip()
-            if tid and not kalshi_ticker_is_crypto(tid):
+            if tid and not kalshi_ticker_is_crypto(tid) and not _is_mve(tid):
                 merged[tid] = row
-        logger.debug("NC_HF full open scan: %s rows (cap %s)", len(rows), scan_max)
+
+    # ── 2. Broad scan (skip MVE parlays which dominate the feed) ───────────────
+    try:
+        broad_rows = client.fetch_all_open_markets(max_rows=broad_max)
+        for row in broad_rows:
+            if not isinstance(row, dict):
+                continue
+            tid = str(row.get("ticker") or "").strip()
+            if tid and not kalshi_ticker_is_crypto(tid) and not _is_mve(tid) and tid not in merged:
+                merged[tid] = row
+        logger.debug("NC_HF broad scan: %s non-MVE rows from %s", len(merged), len(broad_rows))
     except Exception as exc:
-        logger.warning("kalshi_nc_hf open scan failed: %s", exc)
-        return
+        logger.warning("kalshi_nc_hf broad scan failed (non-blocking): %s", exc)
 
     candidates: List[Tuple[Dict[str, Any], float, float, str]] = []
     for m in merged.values():
         tid = str(m.get("ticker") or "").strip()
-        if not tid or kalshi_ticker_is_crypto(tid):
+        if not tid or kalshi_ticker_is_crypto(tid) or _is_mve(tid):
             continue
         if not _kalshi_market_tradeable_core(m, now):
             continue
@@ -137,15 +166,32 @@ def run_kalshi_non_crypto_hf() -> None:
         if end is None:
             continue
         ttr = end - now
-        if ttr <= 0 or not (ttr_min <= ttr <= ttr_max):
+        if ttr <= 0:
             continue
+        # Per-series TTR and probability rules
+        series = str(m.get("series_ticker") or "").strip().upper()
+        is_pol = series in _POL_NEWS_SERIES
+        if is_pol:
+            if ttr > pol_ttr_max:
+                continue
+            eff_min_prob = pol_min_prob
+        else:
+            eff_ttr_max = max(ttr_max_sec, kalshi_max_ttr_seconds())
+            if ttr > eff_ttr_max:
+                continue
+            if not (ttr_min_sec <= ttr):
+                continue
+            tier = classify_kalshi_expiry_tier(ttr)
+            if tier not in ("A", "B", "C"):
+                continue
+            eff_min_prob = min_prob
         try:
             row = client.enrich_market_with_detail_and_orderbook(dict(m))
         except Exception:
             row = m
         y, n, _, _ = _kalshi_yes_no_from_market_row(row)
         mx = max(y, n)
-        if mx < min_prob:
+        if mx < eff_min_prob:
             continue
         side = "yes" if y >= n else "no"
         px = y if side == "yes" else n
@@ -165,7 +211,6 @@ def run_kalshi_non_crypto_hf() -> None:
         return
 
     selected = candidates[:n_take]
-
     pending: List[OpenPosition] = []
     placed = 0
     local_headroom = headroom
@@ -185,11 +230,7 @@ def run_kalshi_non_crypto_hf() -> None:
             continue
         cnt = max(1, int(per / max(px, 0.01)))
         try:
-            res = client.place_order(
-                ticker=ticker,
-                side=side,
-                count=cnt,
-            )
+            res = client.place_order(ticker=ticker, side=side, count=cnt)
         except Exception as exc:
             logger.warning("kalshi_nc_hf order failed %s: %s", ticker, exc)
             continue

@@ -1,4 +1,13 @@
-"""Kalshi sports/politics/news blitz — full open-market scan (no series-only blind spots)."""
+"""Kalshi sports/live-game blitz — scans GAME-specific series + MVE-filtered broad scan.
+
+Strategy:
+- Primary: scan individual-game series (KXMLBGAME, KXNBAGAME, KXNHLGAME, etc.) directly.
+  These have 600k+ volume and are the real tradeable game markets.
+- Secondary: broad open scan filtered to exclude MVE/parlay tickers (junk with 1c prices).
+- TTR default 60-3600s: catches live games in their final hour when one team is heavily favored.
+  Raise KALSHI_SPORTS_BLITZ_TTR_MAX_SEC to 86400 for same-day pre-game trades.
+- Min prob 85%, min volume 50.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +15,32 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Game-specific series (NOT championship/season series which have zero short-window markets).
+# KXMLBGAME = individual MLB game winner (closes when game ends, typically 600k+ volume).
+_DEFAULT_SERIES: Tuple[str, ...] = (
+    "KXMLBGAME",
+    "KXNBAGAME",
+    "KXNHLGAME",
+    "KXSOCGAME",
+    "KXMMGAME",
+    "KXNBATODAY",
+    "KXTENNIS",
+    "KXNBA",
+    "KXNFL",
+    "KXMMA",
+)
+
+# Ticker substrings that identify MVE/parlay markets — 1c prices, essentially untradeable.
+_MVE_SKIP: Tuple[str, ...] = ("MVE", "MULTIGAME", "CROSSCATEGORY", "MULTILEG", "EXTENDED")
+
+
+def _is_mve(ticker: str) -> bool:
+    t = ticker.upper()
+    return any(p in t for p in _MVE_SKIP)
 
 
 def _parse_env_float(name: str, default: float) -> float:
@@ -31,8 +63,15 @@ def _parse_env_int(name: str, default: int) -> int:
         return default
 
 
+def _sports_series() -> Tuple[str, ...]:
+    raw = (os.environ.get("KALSHI_SPORTS_BLITZ_SERIES") or "").strip()
+    if raw:
+        return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+    return _DEFAULT_SERIES
+
+
 def run_kalshi_sports_blitz() -> int:
-    """All non-crypto open markets from a full paginated scan; TTR 1–60m; prob ≥ floor; volume floor."""
+    """Game-series scan + MVE-filtered broad scan; TTR 60-3600s (live game final hour)."""
     if (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() not in (
         "1",
         "true",
@@ -59,7 +98,8 @@ def run_kalshi_sports_blitz() -> int:
     budget_pct = max(0.01, min(1.0, _parse_env_float("KALSHI_SPORTS_BLITZ_BUDGET_PCT", 0.40)))
     trade_min = max(0.50, _parse_env_float("KALSHI_SPORTS_BLITZ_MIN_TRADE_USD", 1.00))
     trade_max = max(trade_min, _parse_env_float("KALSHI_SPORTS_BLITZ_MAX_TRADE_USD", 4.00))
-    scan_max = max(500, min(20000, _parse_env_int("KALSHI_SPORTS_BLITZ_OPEN_SCAN_MAX_ROWS", 5000)))
+    api_limit = max(50, min(500, _parse_env_int("KALSHI_SPORTS_BLITZ_SERIES_LIMIT", 200)))
+    broad_max = max(500, min(10000, _parse_env_int("KALSHI_SPORTS_BLITZ_OPEN_SCAN_MAX_ROWS", 2000)))
 
     client = KalshiClient()
     if not client.has_kalshi_credentials():
@@ -68,26 +108,48 @@ def run_kalshi_sports_blitz() -> int:
 
     now = time.time()
     merged: Dict[str, Dict[str, Any]] = {}
+
+    # ── 1. Series-targeted scan (game-specific series have real prices + volume) ──
+    n_series_found = 0
+    for ser in _sports_series():
+        try:
+            j = client._request(
+                "GET",
+                "/markets",
+                params={"status": "open", "limit": api_limit, "series_ticker": ser},
+            )
+            batch = j.get("markets") or []
+            if isinstance(batch, list):
+                for m in batch:
+                    if not isinstance(m, dict):
+                        continue
+                    tid = str(m.get("ticker") or "").strip()
+                    if tid and not _is_mve(tid):
+                        merged[tid] = m
+                        n_series_found += 1
+        except Exception as exc:
+            logger.debug("Sports blitz series %s: %s", ser, exc)
+
+    # ── 2. Broad open scan (skip MVE parlays which dominate the feed) ─────────
+    n_broad = 0
     try:
-        rows = client.fetch_all_open_markets(max_rows=scan_max)
-        for m in rows:
+        broad_rows = client.fetch_all_open_markets(max_rows=broad_max)
+        for m in broad_rows:
             if not isinstance(m, dict):
                 continue
             tid = str(m.get("ticker") or "").strip()
-            if tid:
+            if tid and not _is_mve(tid) and tid not in merged:
                 merged[tid] = m
-        logger.debug("Sports blitz full open scan: %s rows (cap %s)", len(rows), scan_max)
+                n_broad += 1
+        logger.debug("Sports blitz broad scan: %s non-MVE rows from %s fetched", n_broad, len(broad_rows))
     except Exception as exc:
-        logger.warning("Sports blitz open-market scan failed: %s", exc)
-        return 0
-
-    n_scan = len(merged)
+        logger.warning("Sports blitz broad scan failed: %s", exc)
 
     targets: List[Dict[str, Any]] = []
     for m in merged.values():
         try:
             ticker = str(m.get("ticker") or "").strip()
-            if not ticker or kalshi_ticker_is_crypto(ticker):
+            if not ticker or kalshi_ticker_is_crypto(ticker) or _is_mve(ticker):
                 continue
             row = dict(m)
             y, n, _, _ = _kalshi_yes_no_from_market_row(row)
@@ -125,12 +187,10 @@ def run_kalshi_sports_blitz() -> int:
 
     if not targets:
         logger.info(
-            "SPORTS BLITZ: 0 markets (TTR %.0f–%.0fs, vol≥%.0f, prob≥%.0f%%) — full_scan=%s candidates=0",
-            ttr_min,
-            ttr_max,
-            min_volume,
-            min_prob * 100.0,
-            n_scan,
+            "SPORTS BLITZ: 0 markets (TTR %.0f–%.0fs, vol≥%.0f, prob≥%.0f%%) — "
+            "series=%d broad=%d merged=%d",
+            ttr_min, ttr_max, min_volume, min_prob * 100.0,
+            n_series_found, n_broad, len(merged),
         )
         return 0
 
@@ -148,12 +208,8 @@ def run_kalshi_sports_blitz() -> int:
         return 0
 
     logger.info(
-        "SPORTS BLITZ: %s markets found, placing %s trades $%.2f each, budget $%.2f (full_scan=%s)",
-        len(targets),
-        len(selected),
-        per_trade,
-        budget,
-        n_scan,
+        "SPORTS BLITZ: %s markets, placing %s trades $%.2f each, budget $%.2f (series=%d broad=%d)",
+        len(targets), len(selected), per_trade, budget, n_series_found, n_broad,
     )
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
