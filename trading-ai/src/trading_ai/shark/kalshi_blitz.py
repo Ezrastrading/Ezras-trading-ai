@@ -66,7 +66,7 @@ def run_kalshi_blitz() -> int:
     """Fire at :54:30 — trade BTC/ETH hourly markets closing in the next 6 minutes.
 
     Targets KXBTCD, KXBTC, KXETH, KXETHD markets with TTR 60–360 s and
-    max(yes,no) probability ≥ KALSHI_BLITZ_MIN_PROB (default 90 %).
+    max(yes,no) probability ≥ KALSHI_BLITZ_MIN_PROB (default 85 %).
     Up to KALSHI_BLITZ_MAX_TRADES total trades per run.
     """
     if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
@@ -77,11 +77,12 @@ def run_kalshi_blitz() -> int:
         KalshiClient,
         _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
+        fetch_kalshi_orderbook_best_ask_cents,
     )
     from trading_ai.shark.reporting import send_telegram
     from trading_ai.shark.state_store import load_capital
 
-    min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.90)
+    min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.85)
     ttr_min = _parse_env_float("KALSHI_BLITZ_TTR_MIN_SEC", 60.0)
     ttr_max = _parse_env_float("KALSHI_BLITZ_CLOSE_WINDOW_SEC", 360.0)  # 6-min window default
     max_btc = _parse_env_int("KALSHI_BLITZ_MAX_BTC", 40)
@@ -142,6 +143,8 @@ def run_kalshi_blitz() -> int:
             if bk is None:
                 continue
             side = "yes" if y >= n else "no"
+            yes_cents = max(1, min(99, int(round(y * 100))))
+            no_cents = max(1, min(99, int(round(n * 100))))
             targets.append(
                 {
                     "ticker": ticker,
@@ -150,6 +153,8 @@ def run_kalshi_blitz() -> int:
                     "side": side,
                     "price": prob,
                     "bucket": bk,
+                    "yes_cents": yes_cents,
+                    "no_cents": no_cents,
                 }
             )
         except Exception:
@@ -190,6 +195,7 @@ def run_kalshi_blitz() -> int:
     batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.3))
     max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
     retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
+    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 15.0))
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
         ticker = str(t["ticker"])
@@ -197,7 +203,23 @@ def run_kalshi_blitz() -> int:
         cnt = max(1, int(per_trade / px))
 
         def _do() -> Tuple[bool, str, float]:
-            res = client.place_order(ticker=ticker, side=t["side"], count=cnt, action="buy")
+            side_l = str(t["side"]).strip().lower()
+            ya, na = fetch_kalshi_orderbook_best_ask_cents(ticker, client)
+            if side_l == "yes":
+                lc = ya if ya is not None else int(t["yes_cents"])
+            else:
+                lc = na if na is not None else int(t["no_cents"])
+            lc = max(1, min(99, int(lc)))
+            res = client.place_order(
+                ticker=ticker,
+                side=t["side"],
+                count=cnt,
+                action="buy",
+                order_type="limit",
+                limit_price_cents=lc,
+                fill_timeout_sec=fill_to,
+                min_order_prob=min_prob,
+            )
             fs = float(res.filled_size or 0.0)
             fp = float(res.filled_price or 0.0)
             cost = fs * fp if fs > 0 and fp > 0 else 0.0

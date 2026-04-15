@@ -644,16 +644,21 @@ class KalshiClient:
         side: str,
         count: int,
         action: str = "buy",
+        order_type: str = "market",
+        limit_price_cents: Optional[int] = None,
+        fill_timeout_sec: Optional[float] = None,
+        min_order_prob: Optional[float] = None,
     ) -> OrderResult:
         """
-        Kalshi execution is **market-only**: POST body is ``type: market`` plus **one** of
-        ``yes_price`` / ``no_price`` in **cents** (API requirement — not a limit order).
+        POST ``type: market`` or ``type: limit`` with **one** of ``yes_price`` / ``no_price``
+        in **cents** (Kalshi API requirement for both order types).
 
         **Buys** (last line of defense): TTR ≤ ``KALSHI_MAX_TTR_SECONDS`` and implied prob ≥
-        ``KALSHI_MIN_ORDER_PROB`` (default 0.85), except **crypto** tickers skip the TTR gate
-        (blitz controls horizon). **Sells** skip (profit exit / unwind).
+        ``min_order_prob`` if passed, else ``KALSHI_MIN_ORDER_PROB`` (default 0.85), except
+        **crypto** tickers skip the TTR gate (blitz controls horizon). **Sells** skip.
 
-        After POST, polls GET ``/portfolio/orders/{id}`` for up to 5s; zero fill → cancel.
+        After POST, polls GET ``/portfolio/orders/{id}`` until fill or
+        ``fill_timeout_sec`` (else ``KALSHI_ORDER_FILL_TIMEOUT_SEC`` or 5s); zero fill → cancel.
         """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
@@ -705,10 +710,13 @@ class KalshiClient:
                         reason="ttr_over_max",
                     )
             implied = float(yp if (side or "").lower() == "yes" else npv)
-            min_p = float((os.environ.get("KALSHI_MIN_ORDER_PROB") or "0.85").strip() or "0.85")
+            if min_order_prob is not None:
+                min_p = float(min_order_prob)
+            else:
+                min_p = float((os.environ.get("KALSHI_MIN_ORDER_PROB") or "0.85").strip() or "0.85")
             if implied < min_p:
                 pct = implied * 100.0
-                logger.error("BLOCKED: prob %.1f%% below 85%% minimum", pct)
+                logger.error("BLOCKED: prob %.1f%% below %.0f%% minimum", pct, min_p * 100.0)
                 return OrderResult(
                     order_id="",
                     filled_price=0.0,
@@ -721,14 +729,44 @@ class KalshiClient:
                     reason="prob_below_min",
                 )
 
-        body: Dict[str, Any] = {
-            "ticker": ticker,
-            "action": act,
-            "side": side,
-            "type": "market",
-            "count": cnt,
-            **_kalshi_market_order_price_fields(side, yp, npv),
-        }
+        ot = (order_type or "market").strip().lower()
+        if ot not in ("market", "limit"):
+            ot = "market"
+
+        if ot == "limit":
+            if limit_price_cents is None:
+                return OrderResult(
+                    order_id="",
+                    filled_price=0.0,
+                    filled_size=0.0,
+                    timestamp=time.time(),
+                    status="blocked",
+                    outlet="kalshi",
+                    raw={},
+                    success=False,
+                    reason="limit_price_cents_required",
+                )
+            lc = max(1, min(99, int(limit_price_cents)))
+            price_fields: Dict[str, int] = (
+                {"yes_price": lc} if (side or "").strip().lower() == "yes" else {"no_price": lc}
+            )
+            body = {
+                "ticker": ticker,
+                "action": act,
+                "side": side,
+                "type": "limit",
+                "count": cnt,
+                **price_fields,
+            }
+        else:
+            body = {
+                "ticker": ticker,
+                "action": act,
+                "side": side,
+                "type": "market",
+                "count": cnt,
+                **_kalshi_market_order_price_fields(side, yp, npv),
+            }
         j = self._request("POST", "/portfolio/orders", body=body)
         oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
         if not oid:
@@ -745,7 +783,11 @@ class KalshiClient:
                 reason="missing order_id in Kalshi response",
             )
 
-        deadline = time.time() + 5.0
+        if fill_timeout_sec is not None:
+            wait_s = max(0.5, float(fill_timeout_sec))
+        else:
+            wait_s = float((os.environ.get("KALSHI_ORDER_FILL_TIMEOUT_SEC") or "5").strip() or "5")
+        deadline = time.time() + wait_s
 
         def _fill_metrics(payload: Dict[str, Any]) -> Tuple[float, float, str]:
             root = payload.get("order") if isinstance(payload.get("order"), dict) else payload
@@ -808,7 +850,7 @@ class KalshiClient:
                 fs, fp, status = _fill_metrics(j)
             except Exception:
                 pass
-            logger.warning("Order cancelled — no fill in 5s: [%s]", ticker)
+            logger.warning("Order cancelled — no fill in %.0fs: [%s]", wait_s, ticker)
 
         if fs <= 0:
             return OrderResult(
@@ -820,7 +862,7 @@ class KalshiClient:
                 outlet="kalshi",
                 raw=j,
                 success=False,
-                reason="no fill within 5s",
+                reason=f"no fill within {wait_s:.0f}s",
             )
 
         logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
