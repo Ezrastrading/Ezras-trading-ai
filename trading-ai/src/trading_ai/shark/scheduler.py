@@ -65,6 +65,7 @@ def build_shark_scheduler(
     kalshi_blitz_cron: Optional[Callable[[], None]] = None,
     kalshi_index_blitz: Optional[Callable[[], None]] = None,
     hourly_report: Optional[Callable[[], None]] = None,
+    coinbase_scan: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -178,12 +179,15 @@ def build_shark_scheduler(
             id="kalshi_stale_orders",
             replace_existing=True,
         )
-    if kalshi_blitz is not None:
-        # Every 2 min — safety net; crypto_15min_cron also fires at :00/:15/:30/:45.
+    # ── Crypto blitz: single cron at :54:30 every hour, 24/7 ─────────────────
+    # Fires 5 min 30 s before the hourly close — catches KXBTCD/KXBTC/KXETH/KXETHD
+    # markets with TTR 60–360 s (90%+ probability at this point in the hour).
+    # 24 runs per day, every day including weekends.
+    if kalshi_blitz is not None and CronTrigger is not None:
         sched.add_job(
             kalshi_blitz,
-            IntervalTrigger(seconds=120),
-            id="kalshi_blitz",
+            CronTrigger(minute=54, second=30),
+            id="kalshi_blitz_hourly",
             replace_existing=True,
         )
     if kalshi_sports_blitz is not None:
@@ -217,14 +221,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Crypto blitz: :00/:15/:30/:45 every hour, 24/7 (scheduler TZ, default UTC) ─
-    if kalshi_blitz_cron is not None and CronTrigger is not None:
-        sched.add_job(
-            kalshi_blitz_cron,
-            CronTrigger(minute="0,15,30,45", second=30, timezone=tz),
-            id="crypto_15min_cron",
-            replace_existing=True,
-        )
+    # crypto_15min_cron removed — single :54:30 hourly cron replaces all interval/15-min triggers
 
     # ── Index blitz: every 30 min during NYSE hours ────────────────────────────
     if kalshi_index_blitz is not None and CronTrigger is not None:
@@ -247,6 +244,22 @@ def build_shark_scheduler(
             hourly_report,
             CronTrigger(minute=0),
             id="hourly_report",
+            replace_existing=True,
+        )
+
+    # ── Coinbase 24/7 accumulator scan (every 60 s) ────────────────────────────
+    if coinbase_scan is not None:
+        def _coinbase_scan_wrapper() -> None:
+            if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
+                "1", "true", "yes"
+            ):
+                return
+            coinbase_scan()  # type: ignore[misc]
+
+        sched.add_job(
+            _coinbase_scan_wrapper,
+            IntervalTrigger(seconds=60),
+            id="coinbase_scan",
             replace_existing=True,
         )
 
