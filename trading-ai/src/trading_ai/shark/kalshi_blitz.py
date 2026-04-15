@@ -47,32 +47,15 @@ def _blitz_series() -> Tuple[str, ...]:
     return _DEFAULT_SERIES
 
 
-def _row_yes_no_for_blitz(row: Dict[str, Any]) -> Tuple[float, float, int, int]:
-    """YES/NO probs and cent prices: prefer ``yes_bid_dollars`` / ``no_bid_dollars``, else row parser."""
-    from trading_ai.shark.outlets.kalshi import (
-        _kalshi_field_to_probability,
-        _kalshi_yes_no_from_market_row,
-    )
-
-    y_bd = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
-    n_bd = _kalshi_field_to_probability(row.get("no_bid_dollars"))
-    if y_bd is not None and n_bd is not None:
-        y, n = float(y_bd), float(n_bd)
-    elif y_bd is not None:
-        y = float(y_bd)
-        n = 1.0 - y
-    elif n_bd is not None:
-        n = float(n_bd)
-        y = 1.0 - n
-    else:
-        y, n, _, _ = _kalshi_yes_no_from_market_row(row)
-    if y <= 0 or n <= 0:
-        return 0.0, 0.0, 0, 0
-    y = max(0.01, min(0.99, y))
-    n = max(0.01, min(0.99, n))
-    yes_cents = max(1, min(99, int(round(y * 100))))
-    no_cents = max(1, min(99, int(round(n * 100))))
-    return y, n, yes_cents, no_cents
+def _bid_dollars_float(row: Dict[str, Any], key: str) -> float:
+    """Parse Kalshi ``*_dollars`` field to float; missing or bad → 0.0."""
+    v = row.get(key)
+    if v is None or v == "":
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _bucket(row: Dict[str, Any]) -> Optional[str]:
@@ -92,18 +75,14 @@ def _bucket(row: Dict[str, Any]) -> Optional[str]:
 def run_kalshi_blitz() -> int:
     """Trade BTC/ETH crypto series markets closing in the next ~6 minutes (TTR window).
 
-    Targets KXBTCD, KXBTC, KXETH, KXETHD with at least one of YES / NO bid ≥
-    KALSHI_BLITZ_MIN_PROB (default 90 %). Buys the **high-probability side** (YES or NO).
+    Targets KXBTCD, KXBTC, KXETH, KXETHD using **yes_bid_dollars** / **no_bid_dollars** only
+    (no inferred mids). Side must meet KALSHI_BLITZ_MIN_PROB (default 90 %).
     """
     if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
         return 0
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
-    from trading_ai.shark.outlets.kalshi import (
-        KalshiClient,
-        _kalshi_yes_no_from_market_row,
-        _parse_close_timestamp_unix,
-    )
+    from trading_ai.shark.outlets.kalshi import KalshiClient, _parse_close_timestamp_unix
     from trading_ai.shark.reporting import send_telegram
     from trading_ai.shark.state_store import load_capital
 
@@ -146,32 +125,43 @@ def run_kalshi_blitz() -> int:
             if not ticker:
                 continue
             row = dict(m)
-            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
-            if y <= 0 or n <= 0:
+            yes_bid = _bid_dollars_float(row, "yes_bid_dollars")
+            no_bid = _bid_dollars_float(row, "no_bid_dollars")
+            if yes_bid <= 0.0 and no_bid <= 0.0:
                 try:
                     row = client.enrich_market_with_detail_and_orderbook(dict(m))
-                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+                    yes_bid = _bid_dollars_float(row, "yes_bid_dollars")
+                    no_bid = _bid_dollars_float(row, "no_bid_dollars")
                 except Exception:
                     continue
-            if y <= 0 or n <= 0:
+            if yes_bid <= 0.0 and no_bid <= 0.0:
                 continue
+
+            if yes_bid >= min_prob:
+                side = "yes"
+                prob = yes_bid
+            elif no_bid >= min_prob:
+                side = "no"
+                prob = no_bid
+            else:
+                continue
+
+            if yes_bid > 0.0 and no_bid > 0.0:
+                yes_cents = max(1, min(99, int(round(yes_bid * 100))))
+                no_cents = max(1, min(99, int(round(no_bid * 100))))
+            elif yes_bid > 0.0:
+                yes_cents = max(1, min(99, int(round(yes_bid * 100))))
+                no_cents = max(1, min(99, int(round((1.0 - yes_bid) * 100))))
+            else:
+                no_cents = max(1, min(99, int(round(no_bid * 100))))
+                yes_cents = max(1, min(99, int(round((1.0 - no_bid) * 100))))
+
             close_ts = _parse_close_timestamp_unix(row)
             if close_ts is None:
                 continue
             ttr = close_ts - now
             if not (ttr_min <= ttr <= ttr_max):
                 continue
-            y, n, yes_cents, no_cents = _row_yes_no_for_blitz(row)
-            if y <= 0 or n <= 0:
-                continue
-            candidates: List[Tuple[str, float]] = []
-            if y >= min_prob:
-                candidates.append(("yes", y))
-            if n >= min_prob:
-                candidates.append(("no", n))
-            if not candidates:
-                continue
-            side, p_side = max(candidates, key=lambda x: x[1])
             bk = _bucket(row)
             if bk is None:
                 continue
@@ -179,9 +169,9 @@ def run_kalshi_blitz() -> int:
                 {
                     "ticker": ticker,
                     "ttr": ttr,
-                    "prob": p_side,
+                    "prob": prob,
                     "side": side,
-                    "price": p_side,
+                    "price": prob,
                     "bucket": bk,
                     "yes_cents": yes_cents,
                     "no_cents": no_cents,
@@ -222,7 +212,7 @@ def run_kalshi_blitz() -> int:
     )
 
     batch_size = max(1, _parse_env_int("KALSHI_BLITZ_BATCH_SIZE", 5))
-    batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.3))
+    batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 1.0))
     max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
     retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
     fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 10.0))
