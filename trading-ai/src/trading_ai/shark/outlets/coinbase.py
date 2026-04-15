@@ -26,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -151,15 +152,20 @@ class CoinbaseClient:
 
     # ── JWT ───────────────────────────────────────────────────────────────────
 
-    def _build_jwt(self, method: str, path: str) -> str:
+    def _build_jwt(self, method: str, request_path: str) -> str:
         """
         Build an ES256 JWT per the Coinbase Advanced Trade API v3 specification.
 
-        Header:  ``{"alg":"ES256","kid":"<key_name>","nonce":"<16-hex>"}``
+        Header:  ``{"alg":"ES256","kid":"<key_name>","nonce":"<32-hex>"}``
+                  (``nonce`` is required by CDP; 16 random bytes as hex.)
         Payload: ``{"sub":"<key_name>","iss":"cdp","nbf":<now>,"exp":<now+120>,
-                    "uri":"<METHOD> api.coinbase.com<path>"}``
-        Signature: ECDSA-P256-SHA256, encoded as fixed-length r‖s (32 B each),
-                   base64url without padding.
+                    "uri":"<METHOD> api.coinbase.com<full-path>"}``
+        ``request_path`` must be the **full path on the host**, including
+        ``/api/v3/brokerage``, and for GET requests **including the query string**
+        (e.g. ``/api/v3/brokerage/accounts`` or
+        ``/api/v3/brokerage/best_bid_ask?product_ids=BTC-USD``).
+
+        Signature: ECDSA-P256-SHA256 over r‖s (32 B each), base64url (no padding).
         """
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec
@@ -176,7 +182,7 @@ class CoinbaseClient:
             "iss": "cdp",
             "nbf": now,
             "exp": now + 120,
-            "uri": f"{method.upper()} {_JWT_HOST}{path}",
+            "uri": f"{method.upper()} {_JWT_HOST}{request_path}",
         }
         h64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
         p64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
@@ -187,7 +193,24 @@ class CoinbaseClient:
         )
         r, s = decode_dss_signature(raw_sig)
         sig64 = _b64url_encode(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
-        return f"{h64}.{p64}.{sig64}"
+        jwt_token = f"{h64}.{p64}.{sig64}"
+
+        # Debug (no signature): payload only. Enable with COINBASE_DEBUG_JWT=1.
+        if (os.environ.get("COINBASE_DEBUG_JWT") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            try:
+                payload_b64 = jwt_token.split(".")[1]
+                pad = (-len(payload_b64)) % 4
+                payload_b64 += "=" * pad
+                decoded = json.loads(base64.urlsafe_b64decode(payload_b64))
+                logger.info("Coinbase JWT payload: %s", decoded)
+            except Exception as exc:
+                logger.warning("Coinbase JWT payload decode failed: %s", exc)
+
+        return jwt_token
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
@@ -205,15 +228,7 @@ class CoinbaseClient:
         if not self.has_credentials():
             raise CoinbaseAuthError("Coinbase credentials not configured")
 
-        jwt_token = self._build_jwt(method, path)
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-        # Build query string; support list values for repeated params
-        # (e.g. product_ids=["BTC-USD","ETH-USD"] → ?product_ids=BTC-USD&product_ids=ETH-USD)
+        # Build query string first — JWT `uri` claim must match the full request path + query.
         qs = ""
         if params:
             parts: List[str] = []
@@ -235,6 +250,15 @@ class CoinbaseClient:
                     )
             if parts:
                 qs = "?" + "&".join(parts)
+
+        base_path = urlparse(self.base_url).path.rstrip("/")
+        request_path = f"{base_path}{path}{qs}"
+        jwt_token = self._build_jwt(method, request_path)
+        headers = {
+            "Authorization": f"Bearer {jwt_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
         url = f"{self.base_url}{path}{qs}"
         data: Optional[bytes] = json.dumps(body).encode("utf-8") if body is not None else None
