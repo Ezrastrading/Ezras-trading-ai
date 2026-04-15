@@ -649,6 +649,7 @@ class KalshiClient:
         side_price_cents: Optional[int] = None,
         fill_timeout_sec: Optional[float] = None,
         min_order_prob: Optional[float] = None,
+        blitz_retry_bump_cents: Optional[int] = None,
     ) -> OrderResult:
         """
         POST ``type: market`` or ``type: limit`` with **one** of ``yes_price`` / ``no_price``
@@ -662,6 +663,10 @@ class KalshiClient:
 
         After POST, polls GET ``/portfolio/orders/{id}`` until fill or
         ``fill_timeout_sec`` (else ``KALSHI_ORDER_FILL_TIMEOUT_SEC`` or 5s); zero fill → cancel.
+
+        **Blitz:** With ``side_price_cents`` set and ``blitz_retry_bump_cents`` or
+        ``KALSHI_BLITZ_PRICE_BUMP_CENTS``, may POST a second market order at +1 cent after the first
+        unfilled window (same ``fill_timeout_sec`` each attempt).
         """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
@@ -736,6 +741,8 @@ class KalshiClient:
         if ot not in ("market", "limit"):
             ot = "market"
 
+        side_l = (side or "").strip().lower()
+        order_bodies: List[Dict[str, Any]]
         if ot == "limit":
             if limit_price_cents is None:
                 return OrderResult(
@@ -751,53 +758,56 @@ class KalshiClient:
                 )
             lc = max(1, min(99, int(limit_price_cents)))
             price_fields: Dict[str, int] = (
-                {"yes_price": lc} if (side or "").strip().lower() == "yes" else {"no_price": lc}
+                {"yes_price": lc} if side_l == "yes" else {"no_price": lc}
             )
-            body = {
-                "ticker": ticker,
-                "action": act,
-                "side": side,
-                "type": "limit",
-                "count": cnt,
-                **price_fields,
-            }
+            order_bodies = [
+                {
+                    "ticker": ticker,
+                    "action": act,
+                    "side": side,
+                    "type": "limit",
+                    "count": cnt,
+                    **price_fields,
+                }
+            ]
         else:
             if side_price_cents is not None:
-                sc = max(1, min(99, int(side_price_cents)))
-                m_price_fields: Dict[str, int] = (
-                    {"yes_price": sc} if (side or "").strip().lower() == "yes" else {"no_price": sc}
-                )
+                sc0 = max(1, min(99, int(side_price_cents)))
+                if blitz_retry_bump_cents is not None:
+                    bump_c = max(0, int(blitz_retry_bump_cents))
+                else:
+                    try:
+                        bump_c = max(
+                            0,
+                            int((os.environ.get("KALSHI_BLITZ_PRICE_BUMP_CENTS") or "0").strip() or "0"),
+                        )
+                    except ValueError:
+                        bump_c = 0
+                cents_list = [sc0]
+                if bump_c > 0:
+                    cents_list.append(min(99, sc0 + bump_c))
             else:
                 m_price_fields = _kalshi_market_order_price_fields(side, yp, npv)
-            body = {
-                "ticker": ticker,
-                "action": act,
-                "side": side,
-                "type": "market",
-                "count": cnt,
-                **m_price_fields,
-            }
-        j = self._request("POST", "/portfolio/orders", body=body)
-        oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
-        if not oid:
-            status = str(j.get("status") or j.get("order", {}).get("status") or "error")
-            return OrderResult(
-                order_id="unknown",
-                filled_price=0.0,
-                filled_size=0.0,
-                timestamp=time.time(),
-                status=status,
-                outlet="kalshi",
-                raw=j,
-                success=False,
-                reason="missing order_id in Kalshi response",
-            )
+                pk = "yes_price" if side_l == "yes" else "no_price"
+                cents_list = [max(1, min(99, int(m_price_fields.get(pk) or 50)))]
+            order_bodies = []
+            for pc in cents_list:
+                mf = {"yes_price": pc} if side_l == "yes" else {"no_price": pc}
+                order_bodies.append(
+                    {
+                        "ticker": ticker,
+                        "action": act,
+                        "side": side,
+                        "type": "market",
+                        "count": cnt,
+                        **mf,
+                    }
+                )
 
         if fill_timeout_sec is not None:
             wait_s = max(0.5, float(fill_timeout_sec))
         else:
             wait_s = float((os.environ.get("KALSHI_ORDER_FILL_TIMEOUT_SEC") or "5").strip() or "5")
-        deadline = time.time() + wait_s
 
         def _fill_metrics(payload: Dict[str, Any]) -> Tuple[float, float, str]:
             root = payload.get("order") if isinstance(payload.get("order"), dict) else payload
@@ -825,65 +835,77 @@ class KalshiClient:
             st = str(root.get("status") or payload.get("status") or "submitted").lower()
             return fs, fp, st
 
-        fs, fp, status = _fill_metrics(j)
         terminal = frozenset({"filled", "executed", "closed", "canceled", "cancelled"})
+        j: Dict[str, Any] = {}
+        oid = ""
+        fs, fp, status = 0.0, 0.0, ""
 
-        while fs <= 0 and status not in terminal and time.time() < deadline:
-            time.sleep(0.2)
-            try:
-                poll = self.get_order(oid)
-            except Exception as exc:
-                logger.warning("Kalshi get_order %s failed during fill wait: %s", oid, exc)
-                break
-            j = poll
+        for attempt_idx, body in enumerate(order_bodies):
+            if attempt_idx > 0:
+                pc_log = body.get("yes_price") or body.get("no_price")
+                logger.info("Blitz fill attempt 2: [%s] bumped to %sc", ticker, pc_log)
+            j = self._request("POST", "/portfolio/orders", body=body)
+            oid = str(j.get("order", {}).get("order_id") or j.get("order_id") or j.get("id") or "")
+            if not oid:
+                status = str(j.get("status") or j.get("order", {}).get("status") or "error")
+                return OrderResult(
+                    order_id="unknown",
+                    filled_price=0.0,
+                    filled_size=0.0,
+                    timestamp=time.time(),
+                    status=status,
+                    outlet="kalshi",
+                    raw=j,
+                    success=False,
+                    reason="missing order_id in Kalshi response",
+                )
+
+            deadline = time.time() + wait_s
             fs, fp, status = _fill_metrics(j)
-
-        if fs > 0:
-            logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
-            return OrderResult(
-                order_id=oid,
-                filled_price=fp,
-                filled_size=fs,
-                timestamp=time.time(),
-                status=status or "filled",
-                outlet="kalshi",
-                raw=j,
-            )
-
-        if fs <= 0 and status not in ("canceled", "cancelled"):
-            try:
-                self.cancel_order(oid)
-            except Exception as exc:
-                logger.warning("Kalshi cancel after no fill failed %s: %s", oid, exc)
-            try:
-                j = self.get_order(oid)
+            while fs <= 0 and status not in terminal and time.time() < deadline:
+                time.sleep(0.2)
+                try:
+                    poll = self.get_order(oid)
+                except Exception as exc:
+                    logger.warning("Kalshi get_order %s failed during fill wait: %s", oid, exc)
+                    break
+                j = poll
                 fs, fp, status = _fill_metrics(j)
-            except Exception:
-                pass
-            logger.warning("Order cancelled — no fill in %.0fs: [%s]", wait_s, ticker)
 
-        if fs <= 0:
-            return OrderResult(
-                order_id=oid,
-                filled_price=0.0,
-                filled_size=0.0,
-                timestamp=time.time(),
-                status=status if status in ("canceled", "cancelled") else "canceled",
-                outlet="kalshi",
-                raw=j,
-                success=False,
-                reason=f"no fill within {wait_s:.0f}s",
-            )
+            if fs > 0:
+                logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
+                return OrderResult(
+                    order_id=oid,
+                    filled_price=fp,
+                    filled_size=fs,
+                    timestamp=time.time(),
+                    status=status or "filled",
+                    outlet="kalshi",
+                    raw=j,
+                )
 
-        logger.info("Order filled: [%s] %s@%s", ticker, int(fs), fp)
+            if fs <= 0 and status not in ("canceled", "cancelled"):
+                try:
+                    self.cancel_order(oid)
+                except Exception as exc:
+                    logger.warning("Kalshi cancel after no fill failed %s: %s", oid, exc)
+                try:
+                    j = self.get_order(oid)
+                    fs, fp, status = _fill_metrics(j)
+                except Exception:
+                    pass
+                logger.warning("Order cancelled — no fill in %.0fs: [%s]", wait_s, ticker)
+
         return OrderResult(
             order_id=oid,
-            filled_price=fp,
-            filled_size=fs,
+            filled_price=0.0,
+            filled_size=0.0,
             timestamp=time.time(),
-            status=status,
+            status=status if status in ("canceled", "cancelled") else "canceled",
             outlet="kalshi",
             raw=j,
+            success=False,
+            reason=f"no fill within {wait_s:.0f}s",
         )
 
     def get_order(self, order_id: str) -> Dict[str, Any]:

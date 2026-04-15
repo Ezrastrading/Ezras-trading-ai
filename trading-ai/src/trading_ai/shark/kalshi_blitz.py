@@ -6,9 +6,11 @@ Scheduler: CronTrigger every 15 minutes during US session + 120 s backup interva
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,6 +60,12 @@ def _bid_dollars_float(row: Dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def _blitz_zero_fill_streak_path() -> Path:
+    from trading_ai.governance.storage_architecture import shark_state_path
+
+    return shark_state_path("blitz_zero_fill_streak.json")
+
+
 def _bucket(row: Dict[str, Any]) -> Optional[str]:
     st = str(row.get("series_ticker") or "").strip().upper()
     if st in _BTC_SERIES:
@@ -101,6 +109,8 @@ def run_kalshi_blitz() -> int:
     if not client.has_kalshi_credentials():
         logger.info("Crypto blitz skipped — no Kalshi credentials")
         return 0
+
+    dry_run = (os.environ.get("KALSHI_BLITZ_DRY_RUN") or "false").strip().lower() == "true"
 
     now = time.time()
     series_list = list(_blitz_series())
@@ -175,6 +185,8 @@ def run_kalshi_blitz() -> int:
                     "bucket": bk,
                     "yes_cents": yes_cents,
                     "no_cents": no_cents,
+                    "yes_bid": yes_bid,
+                    "no_bid": no_bid,
                 }
             )
         except Exception:
@@ -183,6 +195,19 @@ def run_kalshi_blitz() -> int:
     if not targets:
         logger.info("CRYPTO BLITZ: 0 markets in %.0f–%.0fs TTR window", ttr_min, ttr_max)
         return 0
+
+    if dry_run:
+        for t in targets[:5]:
+            logger.info(
+                "DRY RUN target: ticker=%s side=%s prob=%.2f yes_bid=%.4f no_bid=%.4f ttr=%.0fmin",
+                t["ticker"],
+                t["side"],
+                float(t["prob"]),
+                float(t.get("yes_bid", 0.0)),
+                float(t.get("no_bid", 0.0)),
+                float(t["ttr"]) / 60.0,
+            )
+        return len(targets)
 
     btc = sorted([t for t in targets if t["bucket"] == "btc"], key=lambda x: x["ttr"])[:max_btc]
     eth = sorted([t for t in targets if t["bucket"] == "eth"], key=lambda x: x["ttr"])[:max_eth]
@@ -212,10 +237,11 @@ def run_kalshi_blitz() -> int:
     )
 
     batch_size = max(1, _parse_env_int("KALSHI_BLITZ_BATCH_SIZE", 5))
-    batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 1.0))
+    batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.5))
     max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
     retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
-    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 10.0))
+    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 30.0))
+    price_bump_cents = max(0, _parse_env_int("KALSHI_BLITZ_PRICE_BUMP_CENTS", 1))
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
         ticker = str(t["ticker"])
@@ -235,6 +261,7 @@ def run_kalshi_blitz() -> int:
                 side_price_cents=side_cents,
                 fill_timeout_sec=fill_to,
                 min_order_prob=min_prob,
+                blitz_retry_bump_cents=price_bump_cents,
             )
             fs = float(res.filled_size or 0.0)
             fp = float(res.filled_price or 0.0)
@@ -276,6 +303,33 @@ def run_kalshi_blitz() -> int:
     logger.info(
         "CRYPTO BLITZ DONE: %s/%s filled, $%.2f deployed", placed, len(selected), deployed
     )
+
+    streak_path = _blitz_zero_fill_streak_path()
+    try:
+        streak_path.parent.mkdir(parents=True, exist_ok=True)
+        streak = 0
+        if streak_path.is_file():
+            raw = json.loads(streak_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                streak = int(raw.get("consecutive_zero_fills", 0) or 0)
+        if len(selected) > 0 and placed == 0:
+            streak += 1
+        elif placed > 0:
+            streak = 0
+        streak_path.write_text(
+            json.dumps({"consecutive_zero_fills": streak}, indent=2),
+            encoding="utf-8",
+        )
+        if streak >= 3:
+            send_telegram(
+                "⚠️ BLITZ FAILING — 0 fills in last 3 runs, needs attention"
+            )
+            streak_path.write_text(
+                json.dumps({"consecutive_zero_fills": 0}, indent=2),
+                encoding="utf-8",
+            )
+    except Exception as exc:
+        logger.warning("Blitz zero-fill streak file failed: %s", exc)
 
     if placed > 0:
         from datetime import datetime, timezone

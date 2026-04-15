@@ -456,6 +456,60 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_blitz failed (non-blocking): %s", exc)
 
+    def crypto_market_open_blitz() -> None:
+        """9:00:00 AM ET — if BTC/ETH series show volume, fire blitz for the first 15m window."""
+        if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
+            return
+        if (os.environ.get("KALSHI_CRYPTO_OPEN_BLITZ_ENABLED") or "true").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return
+        try:
+            from trading_ai.shark.outlets.kalshi import KalshiClient
+
+            client = KalshiClient()
+            if not client.has_kalshi_credentials():
+                return
+            vol_btc = 0.0
+            vol_eth = 0.0
+            for ser in ("KXBTCD", "KXBTC"):
+                j = client._request(
+                    "GET",
+                    "/markets",
+                    params={"status": "open", "limit": 50, "series_ticker": ser},
+                )
+                for m in j.get("markets") or []:
+                    if isinstance(m, dict):
+                        vol_btc += float(m.get("volume_24h") or m.get("volume") or 0)
+            for ser in ("KXETHD", "KXETH"):
+                j = client._request(
+                    "GET",
+                    "/markets",
+                    params={"status": "open", "limit": 50, "series_ticker": ser},
+                )
+                for m in j.get("markets") or []:
+                    if isinstance(m, dict):
+                        vol_eth += float(m.get("volume_24h") or m.get("volume") or 0)
+            if vol_btc < 1.0 and vol_eth < 1.0:
+                log.debug(
+                    "crypto market open check: low volume (BTC vol=%.0f ETH vol=%.0f) — skip blitz",
+                    vol_btc,
+                    vol_eth,
+                )
+                return
+            log.info(
+                "MARKET OPEN DETECTED: BTC volume=$%.0f, ETH volume=$%.0f — blitz firing",
+                vol_btc,
+                vol_eth,
+            )
+            from trading_ai.shark.kalshi_blitz import run_kalshi_blitz
+
+            run_kalshi_blitz()
+        except Exception as exc:
+            log.warning("crypto_market_open_blitz failed (non-blocking): %s", exc)
+
     def kalshi_sports_blitz() -> None:
         if (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() not in (
             "1",
@@ -612,6 +666,7 @@ def main() -> None:
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,
         coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
+        crypto_market_open_blitz=crypto_market_open_blitz,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)
@@ -620,7 +675,7 @@ def main() -> None:
     log.info("Shark scheduler started — 24/7")
     for job in sched.get_jobs():
         jid = job.id.lower()
-        if "blitz" in jid or "crypto_15min" in jid:
+        if "blitz" in jid or "crypto_15min" in jid or "crypto_market_open" in jid:
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 
     def _send_bot_online_telegram() -> None:

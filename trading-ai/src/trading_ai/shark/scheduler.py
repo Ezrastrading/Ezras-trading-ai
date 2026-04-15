@@ -66,6 +66,7 @@ def build_shark_scheduler(
     kalshi_index_blitz: Optional[Callable[[], None]] = None,
     hourly_report: Optional[Callable[[], None]] = None,
     coinbase_scan: Optional[Callable[[], None]] = None,
+    crypto_market_open_blitz: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -199,6 +200,19 @@ def build_shark_scheduler(
             kalshi_blitz,
             IntervalTrigger(seconds=120),
             id="kalshi_blitz_backup_120s",
+            replace_existing=True,
+        )
+    if crypto_market_open_blitz is not None and CronTrigger is not None:
+        sched.add_job(
+            crypto_market_open_blitz,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=9,
+                minute=0,
+                second=0,
+                timezone="America/New_York",
+            ),
+            id="crypto_market_open_blitz",
             replace_existing=True,
         )
     if kalshi_sports_blitz is not None:
