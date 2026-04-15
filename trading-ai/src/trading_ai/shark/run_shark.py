@@ -463,6 +463,96 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi non-crypto HF failed (non-blocking): %s", exc)
 
+    # ── Schedule-awareness helpers ─────────────────────────────────────────────
+
+    def is_crypto_market_hours() -> bool:
+        """True Mon-Fri 9:00am–5:00pm ET (when crypto markets are active on Kalshi)."""
+        try:
+            from datetime import datetime
+
+            from zoneinfo import ZoneInfo
+
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            if now_et.weekday() >= 5:
+                return False
+            return 9 <= now_et.hour < 17
+        except Exception:
+            return True
+
+    def market_open_alert() -> None:
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            send_telegram("🌅 MARKET OPEN IN 1 MIN — crypto blitz ready")
+            log.info("MARKET_OPEN_ALERT: sent")
+        except Exception as exc:
+            log.warning("market_open_alert failed: %s", exc)
+
+    def market_close_alert() -> None:
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            send_telegram("🔔 MARKET CLOSING IN 5 MIN — final blitz firing")
+            log.info("MARKET_CLOSE_ALERT: sent")
+        except Exception as exc:
+            log.warning("market_close_alert failed: %s", exc)
+
+    def kalshi_index_blitz() -> None:
+        if (os.environ.get("KALSHI_INDEX_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from trading_ai.shark.kalshi_index_blitz import run_kalshi_index_blitz
+
+            run_kalshi_index_blitz()
+        except Exception as exc:
+            log.warning("kalshi_index_blitz failed (non-blocking): %s", exc)
+
+    def hourly_report() -> None:
+        try:
+            from datetime import datetime
+
+            from trading_ai.shark.reporting import send_telegram, trading_capital_usd_for_alerts
+            from trading_ai.shark.trade_journal import get_summary_stats
+
+            try:
+                from zoneinfo import ZoneInfo
+
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+            except Exception:
+                now_et = datetime.utcnow()
+
+            rec = load_capital()
+            bal = trading_capital_usd_for_alerts(fallback=rec.current_capital)
+            date_str = now_et.strftime("%Y-%m-%d")
+            try:
+                stats = get_summary_stats(date_str)
+                trades_today = stats.get("total_trades", 0)
+                wins = stats.get("wins", 0)
+                losses = stats.get("losses", 0)
+                pnl = float(stats.get("pnl_usd", 0.0) or 0.0)
+            except Exception:
+                trades_today = rec.total_trades
+                wins = rec.winning_trades
+                losses = max(0, trades_today - wins)
+                pnl = 0.0
+            pnl_pct = (pnl / bal * 100) if bal > 0 else 0.0
+            crypto_status = "OPEN" if is_crypto_market_hours() else "CLOSED"
+            sports_enabled = (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
+            sports_status = "ACTIVE" if sports_enabled else "QUIET"
+            msg = (
+                f"⏰ EZRAS HOURLY:\n"
+                f"💰 Balance: ${bal:.2f}\n"
+                f"📊 Trades today: {trades_today}\n"
+                f"✅ Wins: {wins} | ❌ Losses: {losses}\n"
+                f"🚀 P&L today: ${pnl:+.2f} ({pnl_pct:+.1f}%)\n"
+                f"📈 Crypto: {crypto_status}\n"
+                f"🏀 Sports: {sports_status}"
+            )
+            send_telegram(msg)
+            log.info("HOURLY_REPORT: sent")
+        except Exception as exc:
+            log.warning("hourly_report failed: %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -493,6 +583,11 @@ def main() -> None:
         kalshi_blitz=kalshi_blitz,
         kalshi_sports_blitz=kalshi_sports_blitz,
         kalshi_non_crypto_hf=kalshi_non_crypto_hf,
+        market_open_alert=market_open_alert,
+        market_close_alert=market_close_alert,
+        kalshi_blitz_cron=kalshi_blitz,
+        kalshi_index_blitz=kalshi_index_blitz,
+        hourly_report=hourly_report,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

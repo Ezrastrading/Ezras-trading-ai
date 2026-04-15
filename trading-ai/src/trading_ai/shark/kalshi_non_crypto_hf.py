@@ -1,4 +1,4 @@
-"""Non-crypto Kalshi high-frequency scan — Tier A only, small tickets, capped deployment."""
+"""Non-crypto Kalshi high-frequency scan — Tiers A/B/C (5-60min) + politics/news up to 2h."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Politics/news series get relaxed TTR (up to 2h) and lower min_prob (85%).
+_POL_NEWS_SERIES = frozenset({"KXPOL", "KXNWS"})
 
 
 def _env_truthy(name: str, default: str = "true") -> bool:
@@ -41,6 +44,14 @@ def run_kalshi_non_crypto_hf() -> None:
         min_prob = float((os.environ.get("KALSHI_NC_MIN_PROB") or "0.88").strip() or "0.88")
     except ValueError:
         min_prob = 0.88
+    try:
+        pol_min_prob = float((os.environ.get("KALSHI_NC_POL_MIN_PROB") or "0.85").strip() or "0.85")
+    except ValueError:
+        pol_min_prob = 0.85
+    try:
+        pol_ttr_max = float((os.environ.get("KALSHI_NC_POL_TTR_MAX_SEC") or "7200").strip() or "7200")
+    except ValueError:
+        pol_ttr_max = 7200.0
     try:
         max_per_run = max(1, int(float((os.environ.get("KALSHI_NC_MAX_TRADES_PER_RUN") or "10").strip() or "10")))
     except ValueError:
@@ -121,18 +132,26 @@ def run_kalshi_non_crypto_hf() -> None:
         ttr = end - now
         if ttr <= 0:
             continue
-        if ttr > kalshi_max_ttr_seconds():
-            continue
-        tier = classify_kalshi_expiry_tier(ttr)
-        if tier != "A":
-            continue
+        series = str(m.get("series_ticker") or "").strip().upper()
+        is_pol = series in _POL_NEWS_SERIES
+        if is_pol:
+            if ttr > pol_ttr_max:
+                continue
+            eff_min_prob = pol_min_prob
+        else:
+            if ttr > kalshi_max_ttr_seconds():
+                continue
+            tier = classify_kalshi_expiry_tier(ttr)
+            if tier not in ("A", "B", "C"):
+                continue
+            eff_min_prob = min_prob
         try:
             row = client.enrich_market_with_detail_and_orderbook(dict(m))
         except Exception:
             row = m
         y, n, _, _ = _kalshi_yes_no_from_market_row(row)
         mx = max(y, n)
-        if mx < min_prob:
+        if mx < eff_min_prob:
             continue
         side = "yes" if y >= n else "no"
         px = y if side == "yes" else n

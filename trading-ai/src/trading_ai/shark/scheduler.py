@@ -60,6 +60,11 @@ def build_shark_scheduler(
     kalshi_blitz: Optional[Callable[[], None]] = None,
     kalshi_sports_blitz: Optional[Callable[[], None]] = None,
     kalshi_non_crypto_hf: Optional[Callable[[], None]] = None,
+    market_open_alert: Optional[Callable[[], None]] = None,
+    market_close_alert: Optional[Callable[[], None]] = None,
+    kalshi_blitz_cron: Optional[Callable[[], None]] = None,
+    kalshi_index_blitz: Optional[Callable[[], None]] = None,
+    hourly_report: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -195,4 +200,68 @@ def build_shark_scheduler(
             id="kalshi_nc_hf",
             replace_existing=True,
         )
+
+    # ── Market-open / market-close alerts ──────────────────────────────────────
+    if market_open_alert is not None and CronTrigger is not None:
+        sched.add_job(
+            market_open_alert,
+            CronTrigger(day_of_week="mon-fri", hour=8, minute=59, timezone="America/New_York"),
+            id="market_open_alert",
+            replace_existing=True,
+        )
+    if market_close_alert is not None and CronTrigger is not None:
+        sched.add_job(
+            market_close_alert,
+            CronTrigger(day_of_week="mon-fri", hour=16, minute=55, timezone="America/New_York"),
+            id="market_close_alert",
+            replace_existing=True,
+        )
+
+    # ── Cron-precise crypto blitz: 9am ET open blast + :00/:15/:30/:45 ─────────
+    if kalshi_blitz_cron is not None and CronTrigger is not None:
+        # Force-fire at 9:00 AM ET market open
+        sched.add_job(
+            kalshi_blitz_cron,
+            CronTrigger(day_of_week="mon-fri", hour=9, minute=0, second=0, timezone="America/New_York"),
+            id="kalshi_blitz_market_open",
+            replace_existing=True,
+        )
+        # Every 15 min during market hours (aligns with :00/:15/:30/:45 BTC/ETH closes)
+        sched.add_job(
+            kalshi_blitz_cron,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour="9-16",
+                minute="0,15,30,45",
+                second=30,
+                timezone="America/New_York",
+            ),
+            id="crypto_15min_cron",
+            replace_existing=True,
+        )
+
+    # ── Index blitz: every 30 min during NYSE hours ────────────────────────────
+    if kalshi_index_blitz is not None and CronTrigger is not None:
+        sched.add_job(
+            kalshi_index_blitz,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour="9-15",
+                minute="0,30",
+                second=30,
+                timezone="America/New_York",
+            ),
+            id="kalshi_index_blitz",
+            replace_existing=True,
+        )
+
+    # ── Hourly status report ───────────────────────────────────────────────────
+    if hourly_report is not None and CronTrigger is not None:
+        sched.add_job(
+            hourly_report,
+            CronTrigger(minute=0),
+            id="hourly_report",
+            replace_existing=True,
+        )
+
     return sched

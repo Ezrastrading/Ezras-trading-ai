@@ -10,9 +10,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SERIES = ("KXBTCD", "KXBTC", "KXETH", "KXETHD")
-_BTC_SERIES = frozenset({"KXBTCD", "KXBTC"})
-_ETH_SERIES = frozenset({"KXETH", "KXETHD"})
+_DEFAULT_SERIES = (
+    "KXBTCD", "KXBTC", "KXETH", "KXETHD",
+    "KXBTCUSD", "KXETHUSD", "KXBTC15", "BTC15", "KXBTCRANGE", "KXETHRANGE",
+)
+_BTC_SERIES = frozenset({"KXBTCD", "KXBTC", "KXBTCUSD", "KXBTC15", "BTC15", "KXBTCRANGE", "BTCUSD", "BTCZ", "KXBTCZ"})
+_ETH_SERIES = frozenset({"KXETH", "KXETHD", "KXETHUSD", "KXETHRANGE", "ETHUSD"})
 
 
 def _parse_env_float(name: str, default: float) -> float:

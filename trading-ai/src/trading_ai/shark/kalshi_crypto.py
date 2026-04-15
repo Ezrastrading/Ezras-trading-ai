@@ -54,6 +54,7 @@ def kalshi_exclude_crypto_from_hv() -> bool:
 
 _NC_HF_PRIORITY_SERIES: Tuple[str, ...] = (
     "KXINX",
+    "KXNDX",
     "KXNBA",
     "KXNFL",
     "KXMLB",
@@ -61,6 +62,9 @@ _NC_HF_PRIORITY_SERIES: Tuple[str, ...] = (
     "KXFED",
     "KXECON",
     "KXPOL",
+    "KXNWS",
+    "KXHIGHTEMP",
+    "HIGHTEMP",
 )
 
 
