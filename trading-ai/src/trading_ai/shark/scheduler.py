@@ -270,7 +270,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Coinbase 24/7 accumulator scan (every 60 s: prices, dip/momentum, grid, holder)
+    # ── Coinbase 4-engine scan (30s: exits every tick; E4 micro; E1–E3 buys on 60s cadence inside)
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
@@ -281,7 +281,7 @@ def build_shark_scheduler(
 
         sched.add_job(
             _coinbase_scan_wrapper,
-            IntervalTrigger(seconds=60),
+            IntervalTrigger(seconds=30),
             id="coinbase_scan",
             replace_existing=True,
         )
