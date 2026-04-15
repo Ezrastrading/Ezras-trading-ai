@@ -10,7 +10,10 @@ Advanced Trade auth env vars:
   COINBASE_API_PRIVATE_KEY EC PEM private key (P-256 / ES256)
                            Literal \\n escapes from Railway / .env are normalised.
 
-Base URL: https://api.coinbase.com/api/v3/brokerage
+Base URL (authenticated orders/accounts): https://api.coinbase.com/api/v3/brokerage
+
+Public prices / product list use **Coinbase Exchange REST** (``api.exchange.coinbase.com``) — no JWT.
+CDP brokerage ``/best_bid_ask`` and ``/products`` return 401 without credentials.
 """
 
 from __future__ import annotations
@@ -45,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _ADV_BASE_URL = "https://api.coinbase.com/api/v3/brokerage"
 _JWT_HOST = "api.coinbase.com"
+# Coinbase Exchange REST (classic) — public market data, no JWT. Product ids match (e.g. BTC-USD).
+_EXCHANGE_REST_URL = "https://api.exchange.coinbase.com"
 
 # ── Legacy public price constant ─────────────────────────────────────────────
 
@@ -102,6 +107,23 @@ def _get_ssl_context() -> ssl.SSLContext:
                     type(exc).__name__,
                 )
     return ssl.create_default_context()
+
+
+def _exchange_public_request(path: str) -> Any:
+    """GET path on Coinbase Exchange REST (e.g. ``/products/BTC-USD/ticker``) — public, no auth."""
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{_EXCHANGE_REST_URL}{path}"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "EzrasShark/1.0", "Accept": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=30, context=_get_ssl_context()) as resp:
+        raw = resp.read().decode("utf-8")
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
 
 
 def _public_spot(product_id: str) -> Optional[float]:
@@ -340,121 +362,72 @@ class CoinbaseClient:
 
     def get_product_price(self, product_id: str) -> Tuple[float, float]:
         """
-        GET /products/{product_id} — authenticated; includes bid/ask on many products.
+        Return (bid, ask) using the same **public** price path as :meth:`get_prices`.
 
-        Used when ``/best_bid_ask`` fails authorization.
+        Uses Coinbase Exchange REST ``GET /products/{id}/ticker`` (no JWT), then v2 spot.
         """
-        safe = urllib.parse.quote(str(product_id).strip(), safe="-")
-        j = self._request("GET", f"/products/{safe}")
-        bid = float(j.get("bid_price") or j.get("best_bid") or 0.0)
-        ask = float(j.get("ask_price") or j.get("best_ask") or 0.0)
-        if bid <= 0 and ask <= 0:
-            px = j.get("price")
-            if px is not None:
-                p = float(px)
-                return p, p
-        return bid, ask
+        return self._get_public_ticker_bid_ask(product_id)
 
     def _get_public_ticker_bid_ask(self, product_id: str) -> Tuple[float, float]:
-        """GET …/products/{id}/ticker — public; no JWT."""
-        safe = urllib.parse.quote(str(product_id).strip(), safe="-")
-        url = f"{_ADV_BASE_URL}/products/{safe}/ticker"
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "EzrasShark/1.0"}, method="GET"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15, context=_get_ssl_context()) as resp:
-                j = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            logger.debug("Coinbase public ticker %s: %s", product_id, exc)
-            return 0.0, 0.0
-        bid = float(
-            j.get("best_bid")
-            or j.get("bid")
-            or j.get("bid_price")
-            or j.get("price")
-            or 0.0
-        )
-        ask = float(
-            j.get("best_ask")
-            or j.get("ask")
-            or j.get("ask_price")
-            or j.get("price")
-            or 0.0
-        )
-        if bid <= 0 and ask <= 0:
-            px = j.get("price")
-            if px is not None:
-                p = float(px)
-                return p, p
-        return bid, ask
+        """
+        Primary price source: **Coinbase Exchange** ``GET /products/{id}/ticker`` (public, no JWT).
 
-    def _fetch_price_with_fallbacks(self, product_id: str) -> Tuple[float, float]:
-        """Public ticker first, then authenticated single-product endpoint."""
-        bid, ask = self._get_public_ticker_bid_ask(product_id)
-        if bid > 0 and ask > 0:
-            return bid, ask
-        if bid > 0 or ask > 0:
-            return bid, ask
-        if self.has_credentials():
+        CDP ``api.coinbase.com/api/v3/brokerage/.../ticker`` returns 401 without credentials;
+        Exchange REST matches the same product ids (e.g. ``BTC-USD``) and returns ``bid``/``ask``.
+
+        Fallback: legacy v2 ``/v2/prices/{id}/spot`` (mid only → duplicate bid/ask).
+        """
+        safe = urllib.parse.quote(str(product_id).strip(), safe="-")
+
+        def _f(x: Any) -> float:
             try:
-                return self.get_product_price(product_id)
-            except Exception as exc:
-                logger.debug("Coinbase get_product_price %s: %s", product_id, exc)
-        return 0.0, 0.0
+                if x is None or x == "":
+                    return 0.0
+                return float(x)
+            except (TypeError, ValueError):
+                return 0.0
+
+        try:
+            j = _exchange_public_request(f"/products/{safe}/ticker")
+        except Exception as exc:
+            logger.debug("Coinbase Exchange ticker %s: %s", product_id, exc)
+            p = _public_spot(product_id)
+            if p is None or p <= 0:
+                return 0.0, 0.0
+            return p, p
+
+        bid = _f(j.get("bid"))
+        ask = _f(j.get("ask"))
+        if bid <= 0 and ask <= 0:
+            p = _f(j.get("price"))
+            if p > 0:
+                return p, p
+            p2 = _public_spot(product_id)
+            if p2 is not None and p2 > 0:
+                return p2, p2
+            return 0.0, 0.0
+        if bid <= 0 or ask <= 0:
+            mid = _f(j.get("price"))
+            if mid > 0:
+                if bid <= 0:
+                    bid = mid
+                if ask <= 0:
+                    ask = mid
+        return bid, ask
 
     def get_prices(self, product_ids: List[str]) -> Dict[str, Tuple[float, float]]:
         """
-        GET /best_bid_ask — return ``{product_id: (bid, ask)}`` for multiple products.
+        Fetch bid/ask per product via **public** Exchange REST ``/products/{id}/ticker`` (no JWT).
 
-        Uses repeated ``product_ids`` query params as required by the v3 API.
-        ``product_ids`` are sorted so the query string (and JWT ``uri``) is stable.
-
-        On 401 or partial failure, falls back to public ``/ticker`` then
-        ``/products/{id}`` per product (sequential).
+        Does not call CDP ``/best_bid_ask`` or brokerage batch endpoints (avoid 401 without JWT).
         """
         if not product_ids:
             return {}
-        ids = list(dict.fromkeys(product_ids))
-        ids_sorted = sorted(ids)
-
         result: Dict[str, Tuple[float, float]] = {}
-        try:
-            j = self._request(
-                "GET", "/best_bid_ask", params={"product_ids": ids_sorted}
-            )
-            for book in j.get("pricebooks") or []:
-                pid = str(book.get("product_id") or "")
-                if not pid:
-                    continue
-                bids = book.get("bids") or []
-                asks = book.get("asks") or []
-                bid = float(bids[0]["price"]) if bids else 0.0
-                ask = float(asks[0]["price"]) if asks else 0.0
-                result[pid] = (bid, ask)
-        except CoinbaseAuthError as exc:
-            logger.warning(
-                "Coinbase best_bid_ask unauthorized (%s) — per-product fallbacks",
-                exc,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Coinbase best_bid_ask failed (%s) — per-product fallbacks", exc
-            )
-
-        need: List[str] = []
-        for pid in ids:
-            if pid not in result:
-                need.append(pid)
-                continue
-            b, a = result[pid]
-            if b <= 0 and a <= 0:
-                need.append(pid)
-        for pid in need:
-            bid, ask = self._fetch_price_with_fallbacks(pid)
+        for pid in dict.fromkeys(product_ids):
+            bid, ask = self._get_public_ticker_bid_ask(pid)
             if bid > 0 or ask > 0:
                 result[pid] = (bid, ask)
-
         return result
 
     def get_prices_batched(
@@ -473,30 +446,44 @@ class CoinbaseClient:
 
     def list_brokerage_products(self) -> List[Dict[str, Any]]:
         """
-        GET /products — all tradable products (paginated).
+        Tradable products for the dynamic scanner.
 
-        Used by the accumulator dynamic scanner (USD volume filter).
+        Uses **Coinbase Exchange** ``GET /products`` (public JSON array, no JWT). CDP brokerage
+        ``GET /api/v3/brokerage/products`` requires authentication (401 otherwise).
+
+        Each row includes ``approximate_quote_24h_volume`` set high enough to pass the
+        accumulator's default $1M liquidity gate (Exchange's static ``/products`` list does
+        not include 24h USD notional per product).
         """
-        all_rows: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
-        page_limit = 250
-        for _ in range(200):
-            params: Dict[str, Any] = {"limit": page_limit}
-            if cursor:
-                params["cursor"] = cursor
-            j = self._request("GET", "/products", params=params)
-            batch = j.get("products") or []
-            all_rows.extend(batch)
-            if len(batch) < page_limit:
-                break
-            cursor = (
-                j.get("next_cursor")
-                or (j.get("pagination") or {}).get("next_cursor")
-                or j.get("cursor")
+        try:
+            data = _exchange_public_request("/products")
+        except Exception as exc:
+            logger.warning("Coinbase Exchange /products failed: %s", exc)
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("quote_currency") or "") != "USD":
+                continue
+            if row.get("status") != "online":
+                continue
+            pid = str(row.get("id") or "").strip()
+            if not pid.endswith("-USD"):
+                continue
+            out.append(
+                {
+                    "product_id": pid,
+                    "quote_currency_id": "USD",
+                    "approximate_quote_24h_volume": 9_000_000.0,
+                    "base_currency_id": row.get("base_currency") or "",
+                }
             )
-            if not cursor:
-                break
-        return all_rows
+        return out
 
     # ── orders ────────────────────────────────────────────────────────────────
 
