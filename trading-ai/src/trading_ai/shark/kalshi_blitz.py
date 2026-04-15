@@ -1,8 +1,7 @@
-"""Kalshi crypto blitz — BTC/ETH hourly markets, fires once at :54:30 every hour 24/7.
+"""Kalshi crypto blitz — BTC/ETH 15-minute Kalshi windows (Mon–Fri ~9am–5pm ET).
 
-Targets KXBTCD, KXBTC, KXETH, KXETHD markets with TTR 60–360 s (the last 6 minutes
-before the hourly close).  At :54:30 these markets are sitting at 90–99 % probability.
-Single CronTrigger(minute=54, second=30) — 24 runs per day, all hours, 7 days a week.
+Targets KXBTCD, KXBTC, KXETH, KXETHD with TTR 60–360 s (≈6 minutes to close).
+Scheduler: CronTrigger every 15 minutes during US session + 120 s backup interval.
 """
 
 from __future__ import annotations
@@ -48,12 +47,32 @@ def _blitz_series() -> Tuple[str, ...]:
     return _DEFAULT_SERIES
 
 
-def _yes_bid_prob_from_row(row: Dict[str, Any], _kalshi_field_to_probability: Any) -> Optional[float]:
-    """Implied YES bid probability from ``yes_bid_dollars`` (0–1). None if missing/unparseable."""
-    p = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
-    if p is None:
-        return None
-    return float(max(0.0, min(1.0, p)))
+def _row_yes_no_for_blitz(row: Dict[str, Any]) -> Tuple[float, float, int, int]:
+    """YES/NO probs and cent prices: prefer ``yes_bid_dollars`` / ``no_bid_dollars``, else row parser."""
+    from trading_ai.shark.outlets.kalshi import (
+        _kalshi_field_to_probability,
+        _kalshi_yes_no_from_market_row,
+    )
+
+    y_bd = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
+    n_bd = _kalshi_field_to_probability(row.get("no_bid_dollars"))
+    if y_bd is not None and n_bd is not None:
+        y, n = float(y_bd), float(n_bd)
+    elif y_bd is not None:
+        y = float(y_bd)
+        n = 1.0 - y
+    elif n_bd is not None:
+        n = float(n_bd)
+        y = 1.0 - n
+    else:
+        y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+    if y <= 0 or n <= 0:
+        return 0.0, 0.0, 0, 0
+    y = max(0.01, min(0.99, y))
+    n = max(0.01, min(0.99, n))
+    yes_cents = max(1, min(99, int(round(y * 100))))
+    no_cents = max(1, min(99, int(round(n * 100))))
+    return y, n, yes_cents, no_cents
 
 
 def _bucket(row: Dict[str, Any]) -> Optional[str]:
@@ -71,11 +90,10 @@ def _bucket(row: Dict[str, Any]) -> Optional[str]:
 
 
 def run_kalshi_blitz() -> int:
-    """Fire at :54:30 — trade BTC/ETH hourly markets closing in the next 6 minutes.
+    """Trade BTC/ETH crypto series markets closing in the next ~6 minutes (TTR window).
 
-    Targets KXBTCD, KXBTC, KXETH, KXETHD markets with TTR 60–360 s and at least one
-    of YES / NO bid ≥ KALSHI_BLITZ_MIN_PROB (default 85 %). Trades the **high-probability
-    side** (YES or NO), e.g. T-threshold markets where only NO is ~99 %.
+    Targets KXBTCD, KXBTC, KXETH, KXETHD with at least one of YES / NO bid ≥
+    KALSHI_BLITZ_MIN_PROB (default 90 %). Buys the **high-probability side** (YES or NO).
     """
     if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
         return 0
@@ -89,7 +107,7 @@ def run_kalshi_blitz() -> int:
     from trading_ai.shark.reporting import send_telegram
     from trading_ai.shark.state_store import load_capital
 
-    min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.85)
+    min_prob = _parse_env_float("KALSHI_BLITZ_MIN_PROB", 0.90)
     ttr_min = _parse_env_float("KALSHI_BLITZ_TTR_MIN_SEC", 60.0)
     ttr_max = _parse_env_float("KALSHI_BLITZ_CLOSE_WINDOW_SEC", 360.0)  # 6-min window default
     max_btc = _parse_env_int("KALSHI_BLITZ_MAX_BTC", 40)
@@ -173,7 +191,7 @@ def run_kalshi_blitz() -> int:
             continue
 
     if not targets:
-        logger.info("CRYPTO BLITZ: 0 markets in %.0f–%.0fs window at :54:30", ttr_min, ttr_max)
+        logger.info("CRYPTO BLITZ: 0 markets in %.0f–%.0fs TTR window", ttr_min, ttr_max)
         return 0
 
     btc = sorted([t for t in targets if t["bucket"] == "btc"], key=lambda x: x["ttr"])[:max_btc]
@@ -193,7 +211,7 @@ def run_kalshi_blitz() -> int:
     n_btc = len([t for t in selected if t["bucket"] == "btc"])
     n_eth = len([t for t in selected if t["bucket"] == "eth"])
     logger.info(
-        "CRYPTO BLITZ :54:30 — %s markets found, placing %s trades $%.2f each, "
+        "CRYPTO BLITZ — %s markets found, placing %s trades $%.2f each, "
         "budget $%.2f (BTC %s + ETH %s)",
         len(targets),
         len(selected),
@@ -207,7 +225,7 @@ def run_kalshi_blitz() -> int:
     batch_delay = max(0.0, _parse_env_float("KALSHI_BLITZ_BATCH_DELAY_SEC", 0.3))
     max_workers = max(1, min(5, _parse_env_int("KALSHI_BLITZ_MAX_WORKERS", 5)))
     retry_429_sleep = max(0.0, _parse_env_float("KALSHI_BLITZ_429_RETRY_SLEEP_SEC", 2.0))
-    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 3.0))
+    fill_to = max(0.5, _parse_env_float("KALSHI_BLITZ_FILL_TIMEOUT_SEC", 10.0))
 
     def _place(t: Dict[str, Any]) -> Tuple[bool, str, float]:
         ticker = str(t["ticker"])

@@ -446,7 +446,7 @@ def main() -> None:
             log.warning("kalshi stale order sweep failed: %s", exc)
 
     def kalshi_blitz() -> None:
-        """Crypto blitz: runs every 2 minutes with a rolling close window (15m + hourly BTC markets)."""
+        """Crypto blitz: 15-min cron Mon–Fri 9am–5pm ET + 120s backup; KXBTCD/KXBTC/KXETH/KXETHD."""
         if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
             return
         try:
@@ -619,7 +619,8 @@ def main() -> None:
     sched.start()
     log.info("Shark scheduler started — 24/7")
     for job in sched.get_jobs():
-        if "blitz" in job.id.lower():
+        jid = job.id.lower()
+        if "blitz" in jid or "crypto_15min" in jid:
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 
     def _send_bot_online_telegram() -> None:

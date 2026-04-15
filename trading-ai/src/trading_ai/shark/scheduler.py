@@ -179,15 +179,26 @@ def build_shark_scheduler(
             id="kalshi_stale_orders",
             replace_existing=True,
         )
-    # ── Crypto blitz: single cron at :54:30 every hour, 24/7 ─────────────────
-    # Fires 5 min 30 s before the hourly close — catches KXBTCD/KXBTC/KXETH/KXETHD
-    # markets with TTR 60–360 s (90%+ probability at this point in the hour).
-    # 24 runs per day, every day including weekends.
+    # ── Crypto blitz: every 15 min Mon–Fri 9:00–4:45 PM ET (:00/:15/:30/:45 + 30 s) ─
+    # KXBTCD/KXBTC/KXETH/KXETHD 15-minute windows; TTR 60–360 s (90%+ near close).
     if kalshi_blitz is not None and CronTrigger is not None:
         sched.add_job(
             kalshi_blitz,
-            CronTrigger(minute=54, second=30),
-            id="kalshi_blitz_hourly",
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour="9-16",
+                minute="0,15,30,45",
+                second=30,
+                timezone="America/New_York",
+            ),
+            id="crypto_15min_cron",
+            replace_existing=True,
+        )
+    if kalshi_blitz is not None and IntervalTrigger is not None:
+        sched.add_job(
+            kalshi_blitz,
+            IntervalTrigger(seconds=120),
+            id="kalshi_blitz_backup_120s",
             replace_existing=True,
         )
     if kalshi_sports_blitz is not None:
@@ -220,8 +231,6 @@ def build_shark_scheduler(
             id="market_close_alert",
             replace_existing=True,
         )
-
-    # crypto_15min_cron removed — single :54:30 hourly cron replaces all interval/15-min triggers
 
     # ── Index blitz: every 30 min during NYSE hours ────────────────────────────
     if kalshi_index_blitz is not None and CronTrigger is not None:
