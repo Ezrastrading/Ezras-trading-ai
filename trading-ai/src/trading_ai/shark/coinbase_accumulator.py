@@ -1,22 +1,17 @@
 """
-Coinbase 24/7 spot accumulation engine.
+Coinbase 24/7 spot engine — three strategies (see env toggles).
 
-Three strategies run on every 60-second scan:
+  A  Dip buyer (each scan) — price drops ≥1% vs ~5 min ago; exits +3% / stop (COINBASE_STOP_LOSS_PCT).
+     Order size $5–10 typical; budget from per-product COINBASE_*_BUDGET.
+  B  Grid (each scan; use COINBASE_GRID_STEP_BTC / _ETH for $ step; COINBASE_GRID_ORDER_* for $/buy).
+     Max 5 lots per coin; +3% take-profit; COINBASE_GRID_ENABLED.
+  C  Momentum — +0.5% in 2 min; +1% / −0.5% exits; COINBASE_MOMENTUM_ENABLED.
 
-  A  Dip accumulator  — buy when price drops ≥1% in 5 min; sell at +3% or stop.
-  B  Grid trading     — buy every COINBASE_GRID_STEP_USD price move; sell each
-                        lot at +3%.  Max 5 grid lots per instrument.
-  C  Momentum scalp   — buy when price rises ≥0.5% in 2 min; sell at +1%/-0.5%.
+Safety: 20% USD reserve, COINBASE_MAX_DEPLOY_PCT (default 0.80), COINBASE_MAX_TOTAL_USD cap,
+COINBASE_MAX_DAILY_LOSS (default $20), COINBASE_MIN_ORDER_USD (default $2),
+COINBASE_MAX_ORDERS_PER_MIN (default 5).
 
-Hard safety limits (cannot be overridden):
-  COINBASE_MAX_TOTAL_USD   — max total open-position cost (default $500)
-  COINBASE_MAX_DAILY_LOSS  — halt all trading if daily realised loss hits this (default $50)
-  20% cash reserve         — never deploy more than 80% of account USD balance
-  10 orders / minute       — Coinbase Advanced Trade rate limit
-  All orders logged to ~/.ezras-runtime/shark/logs/coinbase_trade_log.jsonl
-
-State persists across restarts in:
-  ~/.ezras-runtime/shark/state/coinbase_positions.json
+State: shark/state/coinbase_positions.json; logs: shark/data/logs/coinbase_trade_log.jsonl
 """
 
 from __future__ import annotations
@@ -128,7 +123,12 @@ def _log_trade(record: Dict[str, Any]) -> None:
 class _RateLimiter:
     """Token bucket: at most ``max_per_minute`` order calls per rolling 60-second window."""
 
-    def __init__(self, max_per_minute: int = 10) -> None:
+    def __init__(self, max_per_minute: Optional[int] = None) -> None:
+        if max_per_minute is None:
+            try:
+                max_per_minute = max(1, int(float(os.environ.get("COINBASE_MAX_ORDERS_PER_MIN") or "5")))
+            except (TypeError, ValueError):
+                max_per_minute = 5
         self._max = max_per_minute
         self._calls: deque[float] = deque()
 
@@ -170,6 +170,13 @@ def _all_products() -> List[str]:
     return list(_PRODUCT_BUDGETS.keys())
 
 
+# Grid only on BTC/ETH — step USD and order USD per product (env overrides).
+_PRODUCT_GRID: Dict[str, Tuple[str, float, str, float]] = {
+    "BTC-USD": ("COINBASE_GRID_STEP_BTC", 500.0, "COINBASE_GRID_ORDER_BTC", 10.0),
+    "ETH-USD": ("COINBASE_GRID_STEP_ETH", 50.0, "COINBASE_GRID_ORDER_ETH", 5.0),
+}
+
+
 # ── safety checks ─────────────────────────────────────────────────────────────
 
 
@@ -189,10 +196,10 @@ def _can_buy(
     state: Dict[str, Any], product_id: str, usd_amount: float, usd_balance: float
 ) -> Tuple[bool, str]:
     """Check all hard safety gates. Returns (allowed, reason)."""
-    max_total = _env_float("COINBASE_MAX_TOTAL_USD", 500.0)
-    max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 50.0)
+    max_total = _env_float("COINBASE_MAX_TOTAL_USD", 2000.0)
+    max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 20.0)
     max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 10.0))
-    min_order = _env_float("COINBASE_MIN_ORDER_USD", 5.0)
+    min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
 
     # 1. Daily loss gate
     daily_loss = -(float(state.get("daily_pnl_usd") or 0.0))
@@ -212,6 +219,13 @@ def _can_buy(
     current_exposure = _total_open_cost(state)
     if current_exposure + usd_amount > max_total:
         return False, f"would exceed COINBASE_MAX_TOTAL_USD ${max_total:.0f}"
+
+    # 4b. Max fraction of cash deployed (default 80%)
+    max_deploy_pct = _env_float("COINBASE_MAX_DEPLOY_PCT", 0.80)
+    if usd_balance > 0 and current_exposure + usd_amount > usd_balance * max_deploy_pct:
+        return False, (
+            f"max deploy {max_deploy_pct*100:.0f}% of ${usd_balance:.2f} balance would be exceeded"
+        )
 
     # 5. Per-instrument budget
     budget = _get_budget(product_id)
@@ -260,15 +274,17 @@ class CoinbaseAccumulator:
 
         acc = CoinbaseAccumulator()
         acc.load_and_check_positions_on_startup()   # call once at boot
-        # APScheduler calls every 60 s:
+        # APScheduler calls every 30 s (grid); dip/momentum evaluate at most every 60 s.
         acc.scan_and_trade()
     """
 
     def __init__(self, client: Optional[CoinbaseClient] = None) -> None:
         self._client = client or CoinbaseClient()
-        self._rate_limiter = _RateLimiter(max_per_minute=10)
+        self._rate_limiter = _RateLimiter()
         # price_history: product_id → deque of (unix_ts, mid_price)
         self._price_history: Dict[str, deque[Tuple[float, float]]] = {}
+        # Throttle strategies A/C to ~60s while scheduler may run every 30s (B uses every tick).
+        self._last_ac_tick: float = -1e9  # first scan always runs A/C
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -358,6 +374,9 @@ class CoinbaseAccumulator:
             usd_balance = 0.0
 
         now = time.time()
+        run_ac_strategies = (now - self._last_ac_tick) >= 60.0
+        if run_ac_strategies:
+            self._last_ac_tick = now
 
         # ── update rolling price history (10-minute window) ───────────────────
         for pid, (bid, ask) in prices.items():
@@ -382,15 +401,16 @@ class CoinbaseAccumulator:
                 continue
             mid = (bid + ask) / 2.0
 
-            # Strategy A: dip buy (always active when COINBASE_ENABLED)
-            self._strategy_a(state, pid, mid, usd_balance, now)
+            # Strategy A: dip buy (~60s cadence)
+            if run_ac_strategies:
+                self._strategy_a(state, pid, mid, usd_balance, now)
 
-            # Strategy B: grid (COINBASE_GRID_ENABLED, default true)
+            # Strategy B: grid (~30s cadence — every scan)
             if _env_bool("COINBASE_GRID_ENABLED", True):
                 self._strategy_b(state, pid, mid, usd_balance)
 
-            # Strategy C: momentum scalp (COINBASE_MOMENTUM_ENABLED, default true)
-            if _env_bool("COINBASE_MOMENTUM_ENABLED", True):
+            # Strategy C: momentum scalp (~60s cadence)
+            if run_ac_strategies and _env_bool("COINBASE_MOMENTUM_ENABLED", True):
                 self._strategy_c(state, pid, mid, usd_balance, now)
 
         save_coinbase_state(state)
@@ -404,7 +424,7 @@ class CoinbaseAccumulator:
         now: float,
     ) -> None:
         profit_target = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.03)
-        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.15)
+        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.10)
 
         remaining: List[Dict[str, Any]] = []
         for pos in list(state.get("positions") or []):
@@ -491,17 +511,18 @@ class CoinbaseAccumulator:
                     sell_reason,
                 )
 
-                # Telegram alert
                 try:
                     from trading_ai.shark.reporting import send_telegram
 
-                    emoji = "✅" if pnl >= 0 else "❌"
-                    send_telegram(
-                        f"{emoji} COINBASE {strategy} EXIT: {pid}\n"
-                        f"  Exit ${current:,.2f} | Entry ${entry:,.2f}\n"
-                        f"  PnL {sign}${abs(pnl):.2f} ({gain_pct*100:+.2f}%)\n"
-                        f"  Reason: {sell_reason}"
-                    )
+                    sym = pid.replace("-USD", "")
+                    if gain_pct >= take_profit:
+                        send_telegram(
+                            f"💰 CB SELL: +{gain_pct*100:.1f}% ${abs(pnl):.2f} profit | {sym} @ ${current:,.2f}"
+                        )
+                    else:
+                        send_telegram(
+                            f"🛑 CB STOP: {gain_pct*100:.1f}% cut ${abs(pnl):.2f} | {sym} @ ${current:,.2f}"
+                        )
                 except Exception:
                     pass
 
@@ -566,8 +587,11 @@ class CoinbaseAccumulator:
             return
 
         budget = _get_budget(product_id)
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 5.0)
-        order_usd = max(min_order, min(budget * 0.25, 25.0))
+        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
+        dip_lo = _env_float("COINBASE_DIP_ORDER_MIN_USD", 5.0)
+        dip_hi = _env_float("COINBASE_DIP_ORDER_MAX_USD", 10.0)
+        # Engine A: $5–10 per trade, scaled down if budget is tiny
+        order_usd = max(min_order, min(dip_hi, max(dip_lo, min(budget * 0.15, dip_hi))))
 
         ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
         if not ok:
@@ -615,10 +639,9 @@ class CoinbaseAccumulator:
         try:
             from trading_ai.shark.reporting import send_telegram
 
+            sym = product_id.replace("-USD", "")
             send_telegram(
-                f"🟢 COINBASE A BUY: {product_id}\n"
-                f"  Price ${current_price:,.2f} (dip {change_pct*100:.2f}%)\n"
-                f"  Size ${order_usd:.2f} | Target ${current_price*1.03:,.2f}"
+                f"🟢 CB BUY: {sym} ${order_usd:.2f} @ ${current_price:,.2f}"
             )
         except Exception:
             pass
@@ -632,9 +655,14 @@ class CoinbaseAccumulator:
         current_price: float,
         usd_balance: float,
     ) -> None:
-        """Buy at each new grid level; sell each lot on +3%."""
-        grid_step = _env_float("COINBASE_GRID_STEP_USD", 500.0)
-        order_usd = _env_float("COINBASE_GRID_ORDER_USD", 25.0)
+        """Buy at each new grid level; sell each lot on +3%. BTC/ETH only."""
+        cfg = _PRODUCT_GRID.get(product_id)
+        if cfg is None:
+            return
+        step_env, step_def, ord_env, ord_def = cfg
+        grid_step = _env_float(step_env, step_def)
+        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
+        order_usd = max(min_order, _env_float(ord_env, ord_def))
 
         # Current price level (floor to nearest step)
         grid_level = math.floor(current_price / grid_step) * grid_step
@@ -703,6 +731,15 @@ class CoinbaseAccumulator:
             current_price,
             grid_level,
         )
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            sym = product_id.replace("-USD", "")
+            send_telegram(
+                f"🟢 CB BUY: {sym} ${order_usd:.2f} @ ${current_price:,.2f}"
+            )
+        except Exception:
+            pass
 
     # ── Strategy C: momentum scalp ────────────────────────────────────────────
 
@@ -739,8 +776,16 @@ class CoinbaseAccumulator:
         if has_c:
             return
 
-        min_order = _env_float("COINBASE_MIN_ORDER_USD", 5.0)
-        order_usd = max(min_order, 10.0)
+        min_order = _env_float("COINBASE_MIN_ORDER_USD", 2.0)
+        # Engine C: up to COINBASE_MOMENTUM_BUDGET_PCT of deployable cash (balance × 80%)
+        mom_pct = _env_float("COINBASE_MOMENTUM_BUDGET_PCT", 0.20)
+        deployable = max(0.0, usd_balance * 0.80)
+        cap = deployable * mom_pct
+        budget = _get_budget(product_id)
+        if budget > 0:
+            order_usd = max(min_order, min(cap, budget))
+        else:
+            order_usd = max(min_order, cap)
 
         ok, reason = _can_buy(state, product_id, order_usd, usd_balance)
         if not ok:
@@ -785,3 +830,12 @@ class CoinbaseAccumulator:
             current_price,
             change_pct * 100,
         )
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            sym = product_id.replace("-USD", "")
+            send_telegram(
+                f"🟢 CB BUY: {sym} ${order_usd:.2f} @ ${current_price:,.2f}"
+            )
+        except Exception:
+            pass
