@@ -48,32 +48,12 @@ def _blitz_series() -> Tuple[str, ...]:
     return _DEFAULT_SERIES
 
 
-def _row_yes_no_for_blitz(row: Dict[str, Any]) -> Tuple[float, float, int, int]:
-    """YES/NO probs and cent prices: prefer ``yes_bid_dollars`` / ``no_bid_dollars``, else row parser."""
-    from trading_ai.shark.outlets.kalshi import (
-        _kalshi_field_to_probability,
-        _kalshi_yes_no_from_market_row,
-    )
-
-    y_bd = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
-    n_bd = _kalshi_field_to_probability(row.get("no_bid_dollars"))
-    if y_bd is not None and n_bd is not None:
-        y, n = float(y_bd), float(n_bd)
-    elif y_bd is not None:
-        y = float(y_bd)
-        n = 1.0 - y
-    elif n_bd is not None:
-        n = float(n_bd)
-        y = 1.0 - n
-    else:
-        y, n, _, _ = _kalshi_yes_no_from_market_row(row)
-    if y <= 0 or n <= 0:
-        return 0.0, 0.0, 0, 0
-    y = max(0.01, min(0.99, y))
-    n = max(0.01, min(0.99, n))
-    yes_cents = max(1, min(99, int(round(y * 100))))
-    no_cents = max(1, min(99, int(round(n * 100))))
-    return y, n, yes_cents, no_cents
+def _yes_bid_prob_from_row(row: Dict[str, Any], _kalshi_field_to_probability: Any) -> Optional[float]:
+    """Implied YES bid probability from ``yes_bid_dollars`` (0–1). None if missing/unparseable."""
+    p = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
+    if p is None:
+        return None
+    return float(max(0.0, min(1.0, p)))
 
 
 def _bucket(row: Dict[str, Any]) -> Optional[str]:
@@ -103,7 +83,7 @@ def run_kalshi_blitz() -> int:
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
-        _kalshi_field_to_probability,
+        _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
     )
     from trading_ai.shark.reporting import send_telegram
@@ -148,16 +128,14 @@ def run_kalshi_blitz() -> int:
             if not ticker:
                 continue
             row = dict(m)
-            yes_prob = _yes_bid_prob_from_row(row, _kalshi_field_to_probability)
-            if yes_prob is None:
+            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+            if y <= 0 or n <= 0:
                 try:
                     row = client.enrich_market_with_detail_and_orderbook(dict(m))
-                    yes_prob = _yes_bid_prob_from_row(row, _kalshi_field_to_probability)
+                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
                 except Exception:
                     continue
-            if yes_prob is None:
-                continue
-            if yes_prob < min_prob:
+            if y <= 0 or n <= 0:
                 continue
             close_ts = _parse_close_timestamp_unix(row)
             if close_ts is None:
@@ -165,18 +143,27 @@ def run_kalshi_blitz() -> int:
             ttr = close_ts - now
             if not (ttr_min <= ttr <= ttr_max):
                 continue
+            y, n, yes_cents, no_cents = _row_yes_no_for_blitz(row)
+            if y <= 0 or n <= 0:
+                continue
+            candidates: List[Tuple[str, float]] = []
+            if y >= min_prob:
+                candidates.append(("yes", y))
+            if n >= min_prob:
+                candidates.append(("no", n))
+            if not candidates:
+                continue
+            side, p_side = max(candidates, key=lambda x: x[1])
             bk = _bucket(row)
             if bk is None:
                 continue
-            yes_cents = max(1, min(99, int(round(yes_prob * 100))))
-            no_cents = max(1, min(99, int(round((1.0 - yes_prob) * 100))))
             targets.append(
                 {
                     "ticker": ticker,
                     "ttr": ttr,
-                    "prob": yes_prob,
-                    "side": "yes",
-                    "price": yes_prob,
+                    "prob": p_side,
+                    "side": side,
+                    "price": p_side,
                     "bucket": bk,
                     "yes_cents": yes_cents,
                     "no_cents": no_cents,
