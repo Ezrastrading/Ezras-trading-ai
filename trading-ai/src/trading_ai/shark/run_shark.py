@@ -466,7 +466,7 @@ def main() -> None:
     # ── Schedule-awareness helpers ─────────────────────────────────────────────
 
     def is_crypto_market_hours() -> bool:
-        """True Mon-Fri 9:00am–5:00pm ET (when crypto markets are active on Kalshi)."""
+        """Legacy helper for hourly Telegram: US weekday 9–5 ET (Kalshi crypto runs 24/7)."""
         try:
             from datetime import datetime
 
@@ -478,24 +478,6 @@ def main() -> None:
             return 9 <= now_et.hour < 17
         except Exception:
             return True
-
-    def market_open_alert() -> None:
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram("🌅 MARKET OPEN IN 1 MIN — crypto blitz ready")
-            log.info("MARKET_OPEN_ALERT: sent")
-        except Exception as exc:
-            log.warning("market_open_alert failed: %s", exc)
-
-    def market_close_alert() -> None:
-        try:
-            from trading_ai.shark.reporting import send_telegram
-
-            send_telegram("🔔 MARKET CLOSING IN 5 MIN — final blitz firing")
-            log.info("MARKET_CLOSE_ALERT: sent")
-        except Exception as exc:
-            log.warning("market_close_alert failed: %s", exc)
 
     def kalshi_index_blitz() -> None:
         if (os.environ.get("KALSHI_INDEX_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
@@ -583,8 +565,8 @@ def main() -> None:
         kalshi_blitz=kalshi_blitz,
         kalshi_sports_blitz=kalshi_sports_blitz,
         kalshi_non_crypto_hf=kalshi_non_crypto_hf,
-        market_open_alert=market_open_alert,
-        market_close_alert=market_close_alert,
+        market_open_alert=None,
+        market_close_alert=None,
         kalshi_blitz_cron=kalshi_blitz,
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,

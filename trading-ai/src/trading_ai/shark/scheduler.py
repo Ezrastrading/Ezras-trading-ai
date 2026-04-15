@@ -179,7 +179,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
     if kalshi_blitz is not None:
-        # Every 2 min (~30 runs/h) — aligns with 15m BTC/ETH windows (:00/:15/:30/:45); e.g. :13/:28/:43/:58 catches next close.
+        # Every 2 min — safety net; crypto_15min_cron also fires at :00/:15/:30/:45.
         sched.add_job(
             kalshi_blitz,
             IntervalTrigger(seconds=120),
@@ -201,7 +201,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Market-open / market-close alerts ──────────────────────────────────────
+    # ── Optional stock-session alerts (disabled by default — crypto runs 24/7) ─
     if market_open_alert is not None and CronTrigger is not None:
         sched.add_job(
             market_open_alert,
@@ -217,25 +217,11 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Cron-precise crypto blitz: 9am ET open blast + :00/:15/:30/:45 ─────────
+    # ── Crypto blitz: :00/:15/:30/:45 every hour, 24/7 (scheduler TZ, default UTC) ─
     if kalshi_blitz_cron is not None and CronTrigger is not None:
-        # Force-fire at 9:00 AM ET market open
         sched.add_job(
             kalshi_blitz_cron,
-            CronTrigger(day_of_week="mon-fri", hour=9, minute=0, second=0, timezone="America/New_York"),
-            id="kalshi_blitz_market_open",
-            replace_existing=True,
-        )
-        # Every 15 min during market hours (aligns with :00/:15/:30/:45 BTC/ETH closes)
-        sched.add_job(
-            kalshi_blitz_cron,
-            CronTrigger(
-                day_of_week="mon-fri",
-                hour="9-16",
-                minute="0,15,30,45",
-                second=30,
-                timezone="America/New_York",
-            ),
+            CronTrigger(minute="0,15,30,45", second=30, timezone=tz),
             id="crypto_15min_cron",
             replace_existing=True,
         )
