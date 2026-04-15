@@ -395,6 +395,32 @@ class KalshiClient:
                 break
         return rows[:limit]
 
+    def fetch_all_open_markets(self, max_rows: int = 5000) -> List[Dict[str, Any]]:
+        """Paginated ``GET /markets`` with ``status=open`` — every open market (sports blitz, NC HF)."""
+        out: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        cap = max(100, min(20000, int(max_rows)))
+        while len(out) < cap:
+            lim = min(1000, cap - len(out))
+            if lim <= 0:
+                break
+            params: Dict[str, Any] = {"status": "open", "limit": lim}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                j = self._request("GET", "/markets", params=params)
+            except Exception:
+                break
+            batch = j.get("markets") or j.get("data") or []
+            if not isinstance(batch, list):
+                break
+            out.extend(m for m in batch if isinstance(m, dict))
+            cur = j.get("cursor") or j.get("next_cursor")
+            if not cur or len(batch) == 0:
+                break
+            cursor = str(cur)
+        return out[:cap]
+
     def fetch_markets_for_series(self, series_ticker: str, *, limit: int = 80) -> List[Dict[str, Any]]:
         """GET /markets with ``series_ticker`` (single-event series). Returns [] on error."""
         lim = max(1, min(int(limit), 200))
