@@ -48,6 +48,34 @@ def _blitz_series() -> Tuple[str, ...]:
     return _DEFAULT_SERIES
 
 
+def _row_yes_no_for_blitz(row: Dict[str, Any]) -> Tuple[float, float, int, int]:
+    """YES/NO probs and cent prices: prefer ``yes_bid_dollars`` / ``no_bid_dollars``, else row parser."""
+    from trading_ai.shark.outlets.kalshi import (
+        _kalshi_field_to_probability,
+        _kalshi_yes_no_from_market_row,
+    )
+
+    y_bd = _kalshi_field_to_probability(row.get("yes_bid_dollars"))
+    n_bd = _kalshi_field_to_probability(row.get("no_bid_dollars"))
+    if y_bd is not None and n_bd is not None:
+        y, n = float(y_bd), float(n_bd)
+    elif y_bd is not None:
+        y = float(y_bd)
+        n = 1.0 - y
+    elif n_bd is not None:
+        n = float(n_bd)
+        y = 1.0 - n
+    else:
+        y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+    if y <= 0 or n <= 0:
+        return 0.0, 0.0, 0, 0
+    y = max(0.01, min(0.99, y))
+    n = max(0.01, min(0.99, n))
+    yes_cents = max(1, min(99, int(round(y * 100))))
+    no_cents = max(1, min(99, int(round(n * 100))))
+    return y, n, yes_cents, no_cents
+
+
 def _bucket(row: Dict[str, Any]) -> Optional[str]:
     st = str(row.get("series_ticker") or "").strip().upper()
     if st in _BTC_SERIES:
@@ -65,9 +93,9 @@ def _bucket(row: Dict[str, Any]) -> Optional[str]:
 def run_kalshi_blitz() -> int:
     """Fire at :54:30 — trade BTC/ETH hourly markets closing in the next 6 minutes.
 
-    Targets KXBTCD, KXBTC, KXETH, KXETHD markets with TTR 60–360 s and
-    max(yes,no) probability ≥ KALSHI_BLITZ_MIN_PROB (default 85 %).
-    Up to KALSHI_BLITZ_MAX_TRADES total trades per run.
+    Targets KXBTCD, KXBTC, KXETH, KXETHD markets with TTR 60–360 s and at least one
+    of YES / NO bid ≥ KALSHI_BLITZ_MIN_PROB (default 85 %). Trades the **high-probability
+    side** (YES or NO), e.g. T-threshold markets where only NO is ~99 %.
     """
     if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
         return 0
@@ -75,7 +103,7 @@ def run_kalshi_blitz() -> int:
     from trading_ai.shark.capital_effective import effective_capital_for_outlet
     from trading_ai.shark.outlets.kalshi import (
         KalshiClient,
-        _kalshi_yes_no_from_market_row,
+        _kalshi_field_to_probability,
         _parse_close_timestamp_unix,
     )
     from trading_ai.shark.reporting import send_telegram
@@ -120,14 +148,16 @@ def run_kalshi_blitz() -> int:
             if not ticker:
                 continue
             row = dict(m)
-            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
-            if y <= 0 or n <= 0:
+            yes_prob = _yes_bid_prob_from_row(row, _kalshi_field_to_probability)
+            if yes_prob is None:
                 try:
                     row = client.enrich_market_with_detail_and_orderbook(dict(m))
-                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+                    yes_prob = _yes_bid_prob_from_row(row, _kalshi_field_to_probability)
                 except Exception:
                     continue
-            if y <= 0 or n <= 0:
+            if yes_prob is None:
+                continue
+            if yes_prob < min_prob:
                 continue
             close_ts = _parse_close_timestamp_unix(row)
             if close_ts is None:
@@ -135,22 +165,18 @@ def run_kalshi_blitz() -> int:
             ttr = close_ts - now
             if not (ttr_min <= ttr <= ttr_max):
                 continue
-            prob = max(y, n)
-            if prob < min_prob:
-                continue
             bk = _bucket(row)
             if bk is None:
                 continue
-            side = "yes" if y >= n else "no"
-            yes_cents = max(1, min(99, int(round(y * 100))))
-            no_cents = max(1, min(99, int(round(n * 100))))
+            yes_cents = max(1, min(99, int(round(yes_prob * 100))))
+            no_cents = max(1, min(99, int(round((1.0 - yes_prob) * 100))))
             targets.append(
                 {
                     "ticker": ticker,
                     "ttr": ttr,
-                    "prob": prob,
-                    "side": side,
-                    "price": prob,
+                    "prob": yes_prob,
+                    "side": "yes",
+                    "price": yes_prob,
                     "bucket": bk,
                     "yes_cents": yes_cents,
                     "no_cents": no_cents,
