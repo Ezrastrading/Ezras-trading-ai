@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -69,7 +70,13 @@ def test_filter_accepts_gate_a_same_day_in_range(_env_gate_a):
     from trading_ai.shark import kalshi_simple_scanner as ks_mod
     from trading_ai.shark.kalshi_simple_scanner import _filter_simple_candidates
 
-    close_ts = time.time() + 1800.0
+    # Close time strictly before UTC midnight on the same calendar day as "now".
+    now_dt = datetime.now(timezone.utc)
+    eod = now_dt.replace(hour=23, minute=59, second=50, microsecond=0)
+    target = min(now_dt + timedelta(minutes=30), eod)
+    if target <= now_dt:
+        target = now_dt + timedelta(seconds=5)
+    close_ts = target.timestamp()
     cands = [
         {
             "ticker": "KXBTCD-TEST-T95000",
@@ -98,3 +105,35 @@ def test_kalshi_yes_no_ask_from_row():
     ya, na, _, _ = _kalshi_yes_no_ask_from_market_row(row)
     assert ya == pytest.approx(0.91)
     assert na == pytest.approx(0.10)
+
+
+def test_pick_side_prefers_higher_roi_when_both_qualify():
+    from trading_ai.shark.kalshi_simple_scanner import _pick_kalshi_side_by_prob_roi
+
+    side, px, prob, roi = _pick_kalshi_side_by_prob_roi(0.40, 0.50, 0.35, 20.0)
+    assert side == "yes"
+    assert px == pytest.approx(0.40)
+    assert roi > 100.0
+
+
+def test_gate_a_defaults_min_roi_150():
+    import trading_ai.shark.kalshi_simple_scanner as ks
+
+    assert ks._gate_min_roi_pct("a") == pytest.approx(150.0)
+
+
+def test_gate_b_defaults_min_roi_20():
+    import trading_ai.shark.kalshi_simple_scanner as ks
+
+    assert ks._gate_min_roi_pct("b") == pytest.approx(20.0)
+
+
+def test_contract_bounds_gate_a_wider_than_legacy():
+    import trading_ai.shark.kalshi_simple_scanner as ks
+
+    lo_a, hi_a = ks._contract_cost_bounds("a")
+    assert lo_a == pytest.approx(0.01)
+    assert hi_a == pytest.approx(0.80)
+    lo_l, hi_l = ks._contract_cost_bounds("legacy")
+    assert lo_l == pytest.approx(0.35)
+    assert hi_l == pytest.approx(0.65)

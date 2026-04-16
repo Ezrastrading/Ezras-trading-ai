@@ -1,6 +1,6 @@
 """
 Trade advisor: Claude + GPT review candidates before execution.
-Brief, token-efficient. Returns ranked top 10–20 picks.
+Kalshi simple scan: dual confirmation — bet wins + numbers check (JSON), both models must approve.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -166,58 +166,174 @@ JSON only:
     return {"top5": [], "avoid": [], "source": "fallback"}
 
 
+def _kalshi_dual_prompt(candidate: Dict[str, Any], balance: float) -> str:
+    title = str(candidate.get("title") or candidate.get("ticker") or "")
+    ticker = str(candidate.get("ticker") or "")
+    side = str(candidate.get("side") or "yes").lower()
+    prob = float(candidate.get("prob") or 0.0)
+    ttr_min = max(0, int(float(candidate.get("ttr") or 0.0) / 60.0))
+    px = max(float(candidate.get("price") or 0.01), 0.01)
+    notional = max(5.0, min(float(balance) * 0.1, 250.0))
+    contracts = max(1, int(notional / px))
+    total_cost = contracts * px
+    max_payout = float(contracts) * 1.0
+
+    price_line = ""
+    try:
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+        if "BTC" in ticker.upper():
+            p = CoinbaseClient().get_prices(["BTC-USD"])
+            btc = p.get("BTC-USD", (0, 0))[0]
+            if btc:
+                price_line = f"Current BTC: ${btc:,.0f}"
+        elif "ETH" in ticker.upper():
+            p = CoinbaseClient().get_prices(["ETH-USD"])
+            eth = p.get("ETH-USD", (0, 0))[0]
+            if eth:
+                price_line = f"Current ETH: ${eth:,.2f}"
+    except Exception:
+        pass
+
+    return f"""Kalshi trade check.
+
+MARKET: {title}
+{price_line}
+BET: {side.upper()} side
+TIME LEFT: {ttr_min} minutes
+PROBABILITY: {prob * 100:.0f}%
+
+NUMBERS:
+Contracts: {contracts}
+Cost per contract: ${total_cost / max(contracts, 1):.3f}
+Total cost: ${total_cost:.2f}
+Max payout: ${max_payout:.2f}
+Profit if win: ${max_payout - total_cost:.2f}
+
+Answer these TWO questions only:
+1. Will the {side.upper()} bet win?
+   (Based on title + time + current prices)
+2. Are the numbers correct?
+   (payout > cost, makes sense)
+
+JSON only:
+{{"bet_will_win": true/false,
+  "numbers_correct": true/false,
+  "approve": true/false,
+  "reason": "max 8 words"}}
+
+approve = true only if BOTH are true.
+If any doubt → approve = false."""
+
+
+def confirm_kalshi_trade_dual_llm(
+    candidate: Dict[str, Any],
+    balance: float,
+) -> Tuple[bool, str]:
+    """
+    Ask Claude and GPT two things only: bet wins, numbers check.
+    Both must return approve=true to proceed.
+    """
+    prompt = _kalshi_dual_prompt(candidate, balance)
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return False, "No Claude key"
+    try:
+        import anthropic
+
+        c = anthropic.Anthropic()
+        resp = c.messages.create(
+            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        s = text.find("{")
+        e = text.rfind("}") + 1
+        if s < 0:
+            return False, "Claude: no JSON"
+        data = json.loads(text[s:e])
+        claude_ok = bool(data.get("approve", False))
+        reason = str(data.get("reason", ""))
+        logger.info(
+            "Claude Kalshi check: ok=%s bet_win=%s nums=%s | %s",
+            claude_ok,
+            data.get("bet_will_win"),
+            data.get("numbers_correct"),
+            reason,
+        )
+        if not claude_ok:
+            return False, f"Claude: {reason}"
+    except Exception as exc:
+        logger.debug("Claude Kalshi check: %s", exc)
+        return False, "Claude error"
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return False, "No GPT key"
+    try:
+        import openai
+
+        g = openai.OpenAI()
+        resp = g.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.choices[0].message.content
+        if not text:
+            return False, "GPT empty"
+        s = text.find("{")
+        e = text.rfind("}") + 1
+        if s < 0:
+            return False, "GPT: no JSON"
+        data = json.loads(text[s:e])
+        gpt_ok = bool(data.get("approve", False))
+        gpt_reason = str(data.get("reason", ""))
+        logger.info(
+            "GPT Kalshi check: ok=%s bet_win=%s nums=%s | %s",
+            gpt_ok,
+            data.get("bet_will_win"),
+            data.get("numbers_correct"),
+            gpt_reason,
+        )
+        if not gpt_ok:
+            return False, f"GPT: {gpt_reason}"
+    except Exception as exc:
+        logger.debug("GPT Kalshi check: %s", exc)
+        return False, "GPT error"
+
+    return True, "dual_ok"
+
+
 def get_combined_review(
     candidates: List[Dict[str, Any]],
     balance: float,
     platform: str = "kalshi",
 ) -> List[Dict[str, Any]]:
     """
-    Claude + GPT review candidates. Returns ranked list of best picks.
+    Kalshi: sequential dual LLM approval per candidate (first N).
+    If either API key is missing, returns candidates unchanged (passthrough).
     """
+    _ = platform
     if not candidates:
         return []
 
-    lessons_summary = ""
-    try:
-        from trading_ai.shark.lessons import load_lessons
-
-        lessons = load_lessons()
-        rules = lessons.get("rules", [])
-        dnr = lessons.get("do_not_repeat", [])
-        lessons_summary = (
-            "RULES: " + "; ".join(rules[:5]) + "\nNEVER: " + "; ".join(dnr[:5])
+    if not (os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("OPENAI_API_KEY")):
+        logger.warning(
+            "Kalshi dual AI: missing ANTHROPIC or OPENAI key; passing candidates through",
         )
-    except Exception:
-        pass
+        return candidates[:20]
 
-    claude_result = get_claude_review(candidates, balance, lessons_summary, platform)
-    approved = claude_result.get("approved", candidates[:10])
-
-    gpt_result = get_gpt_research(approved, balance)
-    top5 = gpt_result.get("top5", [])
-    avoid = gpt_result.get("avoid", [])
-
-    final: List[Dict[str, Any]] = []
-    for c in approved:
-        t = str(c.get("ticker", ""))
-        if t in avoid:
-            logger.info("GPT flagged avoid: %s", t)
-            continue
-        if t in top5:
-            c["gpt_boosted"] = True
-            c["combined_rank"] = int(c.get("claude_rank", 5)) - 2
+    out: List[Dict[str, Any]] = []
+    for c in candidates[:20]:
+        ok, reason = confirm_kalshi_trade_dual_llm(c, balance)
+        if ok:
+            out.append(c)
         else:
-            c["gpt_boosted"] = False
-            c["combined_rank"] = int(c.get("claude_rank", 10))
-        final.append(c)
-
-    final.sort(key=lambda x: x.get("combined_rank", 99))
-
-    logger.info(
-        "Combined review: %d final picks (claude=%s gpt=%s)",
-        len(final),
-        claude_result.get("source"),
-        gpt_result.get("source"),
-    )
-
-    return final[:20]
+            logger.info(
+                "Kalshi dual AI rejected %s: %s",
+                c.get("ticker"),
+                reason,
+            )
+    logger.info("Kalshi dual AI: %d / %d approved", len(out), min(20, len(candidates)))
+    return out

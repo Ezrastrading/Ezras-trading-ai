@@ -126,8 +126,94 @@ def _gate_a_series_tickers() -> Tuple[str, ...]:
 
 
 def _gate_min_prob(gate: str) -> float:
-    _ = gate
+    if gate == "a":
+        return max(
+            0.5,
+            min(
+                0.99,
+                _parse_float(
+                    "KALSHI_GA_MIN_PROB",
+                    _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85),
+                ),
+            ),
+        )
+    if gate == "b":
+        return max(
+            0.5,
+            min(
+                0.99,
+                _parse_float(
+                    "KALSHI_GB_MIN_PROB",
+                    _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85),
+                ),
+            ),
+        )
     return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
+
+
+def _gate_min_roi_pct(gate: str) -> float:
+    """Minimum ROI percent on cost: ``(1-ask)/ask*100``. Used for Gate A/B only."""
+    if gate == "a":
+        return max(0.0, _parse_float("KALSHI_GA_MIN_ROI", 150.0))
+    if gate == "b":
+        return max(0.0, _parse_float("KALSHI_GB_MIN_ROI", 20.0))
+    return 0.0
+
+
+def _ask_roi_percent(ask: float) -> float:
+    a = float(ask)
+    if a <= 0.0 or a >= 1.0:
+        return -1.0
+    return (1.0 - a) / a * 100.0
+
+
+def _pick_kalshi_side_by_prob_roi(
+    yes_ask: float,
+    no_ask: float,
+    min_prob: float,
+    min_roi_pct: float,
+) -> Tuple[Optional[str], float, float, float]:
+    """Pick YES or NO by probability + ROI; if both qualify, prefer higher ROI."""
+    y_roi = _ask_roi_percent(yes_ask)
+    n_roi = _ask_roi_percent(no_ask)
+    y_ok = yes_ask >= min_prob and y_roi >= min_roi_pct
+    n_ok = no_ask >= min_prob and n_roi >= min_roi_pct
+    if not y_ok and not n_ok:
+        return None, 0.0, 0.0, 0.0
+    if y_ok and not n_ok:
+        return "yes", float(yes_ask), float(yes_ask), y_roi
+    if n_ok and not y_ok:
+        return "no", float(no_ask), float(no_ask), n_roi
+    if y_roi >= n_roi:
+        return "yes", float(yes_ask), float(yes_ask), y_roi
+    return "no", float(no_ask), float(no_ask), n_roi
+
+
+def _contract_cost_bounds(gate: str) -> Tuple[float, float]:
+    """Allowed ask (cost per contract) for entry — Gate A/B widened vs legacy 35–65¢."""
+    if gate == "a":
+        lo = max(0.01, min(0.99, _parse_float("KALSHI_GA_MIN_CONTRACT_COST", 0.01)))
+        hi = max(lo, min(0.99, _parse_float("KALSHI_GA_MAX_CONTRACT_COST", 0.80)))
+        return lo, hi
+    if gate == "b":
+        lo = max(0.01, min(0.99, _parse_float("KALSHI_GB_MIN_CONTRACT_COST", 0.01)))
+        hi = max(lo, min(0.99, _parse_float("KALSHI_GB_MAX_CONTRACT_COST", 0.80)))
+        return lo, hi
+    elo = max(0.01, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MIN", 0.35)))
+    ehi = max(elo, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MAX", 0.65)))
+    return elo, ehi
+
+
+def _position_fraction_for_gate(gate: str) -> float:
+    if gate == "a":
+        raw = (os.environ.get("KALSHI_GA_ALLOCATION_PCT") or "").strip()
+        if raw:
+            return max(0.001, min(0.5, float(raw)))
+    if gate == "b":
+        raw = (os.environ.get("KALSHI_GB_ALLOCATION_PCT") or "").strip()
+        if raw:
+            return max(0.001, min(0.5, float(raw)))
+    return _position_fraction()
 
 
 def _gate_max_ttr_sec(gate: str) -> float:
@@ -153,6 +239,9 @@ def _gate_max_positions(gate: str) -> int:
     if gate == "a":
         return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 5))
     if gate == "b":
+        raw = (os.environ.get("KALSHI_GB_MAX_CONCURRENT") or "").strip()
+        if raw:
+            return max(1, int(float(raw)))
         return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
     return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
 
@@ -166,7 +255,7 @@ def _position_fraction() -> float:
 
 def _gate_per_order_cap_usd(deployable: float, gate: str) -> float:
     d = max(0.0, float(deployable))
-    pct = _position_fraction()
+    pct = _position_fraction_for_gate(gate)
     cap = max(0.01, _parse_float("KALSHI_SIMPLE_MAX_ORDER_USD", 5.0))
     if gate == "a":
         return min(cap, max(5.0, d * pct))
@@ -382,8 +471,7 @@ def _filter_simple_candidates(
             continue
 
         px = float(c.get("price") or 0.0)
-        elo = max(0.01, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MIN", 0.35)))
-        ehi = max(elo, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MAX", 0.65)))
+        elo, ehi = _contract_cost_bounds(gate)
         if not (elo <= px <= ehi):
             logger.debug("Skip %s: entry ask %.2f outside %.2f–%.2f", t, px, elo, ehi)
             continue
@@ -601,6 +689,10 @@ def _per_position_usd(available: float) -> float:
     return max(0.0, float(available) * _position_fraction())
 
 
+def _per_position_usd_for_gate(available: float, gate: str) -> float:
+    return max(0.0, float(available) * _position_fraction_for_gate(gate))
+
+
 def _profit_pct() -> float:
     return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.0015)))
 
@@ -626,6 +718,7 @@ def _fetch_simple_candidates(
 
     gate = _simple_scan_gate()
     min_prob = _gate_min_prob(gate)
+    min_roi_pct = _gate_min_roi_pct(gate)
     min_net = max(
         0.0,
         _parse_float(
@@ -708,12 +801,30 @@ def _fetch_simple_candidates(
             side: Optional[str] = None
             px = 0.0
             prob = 0.0
-            if yes_ask >= min_prob and (1.0 - yes_ask) >= min_net:
-                side, px, prob = "yes", yes_ask, yes_ask
-            elif no_ask >= min_prob and (1.0 - no_ask) >= min_net:
-                side, px, prob = "no", no_ask, no_ask
-            if side is None:
-                continue
+            roi_pct = 0.0
+            if gate in ("a", "b"):
+                side, px, prob, roi_pct = _pick_kalshi_side_by_prob_roi(
+                    float(yes_ask),
+                    float(no_ask),
+                    min_prob,
+                    min_roi_pct,
+                )
+                if side is None:
+                    continue
+                lo_b, hi_b = _contract_cost_bounds(gate)
+                if not (lo_b <= px <= hi_b):
+                    continue
+            else:
+                if yes_ask >= min_prob and (1.0 - yes_ask) >= min_net:
+                    side, px, prob = "yes", yes_ask, yes_ask
+                elif no_ask >= min_prob and (1.0 - no_ask) >= min_net:
+                    side, px, prob = "no", no_ask, no_ask
+                if side is None:
+                    continue
+                lo_b, hi_b = _contract_cost_bounds(gate)
+                if not (lo_b <= px <= hi_b):
+                    continue
+                roi_pct = _ask_roi_percent(px)
 
             profit_per_contract = 1.0 - px
             out.append(
@@ -729,12 +840,13 @@ def _fetch_simple_candidates(
                     "no_ask": float(no_ask),
                     "close_ts": float(close_ts),
                     "profit_per_contract": float(profit_per_contract),
+                    "roi_pct": float(roi_pct),
                 }
             )
         except Exception:
             continue
 
-    out.sort(key=lambda x: (-x["prob"], x["ttr"]))
+    out.sort(key=lambda x: (-float(x.get("roi_pct") or 0.0), -x["prob"], x["ttr"]))
     return _filter_simple_candidates(out, now, gate)
 
 
@@ -926,6 +1038,11 @@ def _maintain_positions(
     placed = 0
 
     while len(state.get("positions") or []) < max_n:
+        if gate == "a":
+            max_day = max(0, _parse_int("KALSHI_GA_MAX_TRADES_DAY", 5))
+            if max_day > 0 and int(state.get("trades_today") or 0) >= max_day:
+                logger.info("Gate A: daily trade cap %d reached", max_day)
+                break
         available = _available_deployable_usd()
         if gate in ("a", "b"):
             per_slot = _gate_per_order_cap_usd(available, gate)
@@ -1044,7 +1161,7 @@ def _maintain_positions(
             "entry_time": time.time(),
             "entry_prob": float(picked["prob"]),
             "entry_price": fp,
-            "position_pct": _position_fraction(),
+            "position_pct": _position_fraction_for_gate(gate),
             "exit_submitted": False,
             "strategy": str(picked.get("strategy") or "simple_scan"),
         }
