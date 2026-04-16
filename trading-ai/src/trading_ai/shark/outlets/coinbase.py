@@ -5,10 +5,11 @@ Coinbase outlet — two layers:
   CoinbaseClient   Advanced Trade API v3 client — ES256 JWT auth, used by the
                    24/7 accumulator (coinbase_accumulator.py).
 
-Advanced Trade auth env vars:
-  COINBASE_API_KEY_NAME    organizations/{org_id}/apiKeys/{key_id}
-  COINBASE_API_PRIVATE_KEY EC PEM private key (P-256 / ES256)
-                           Literal \\n escapes from Railway / .env are normalised.
+Advanced Trade auth env vars (either name pair works):
+  COINBASE_API_KEY_NAME or COINBASE_API_KEY
+      organizations/{org_id}/apiKeys/{key_id}
+  COINBASE_API_PRIVATE_KEY or COINBASE_API_SECRET
+      EC PEM private key (P-256 / ES256); literal \\n escapes from Railway / .env are normalised.
 
 Base URL (authenticated orders/accounts): https://api.coinbase.com/api/v3/brokerage
 
@@ -184,8 +185,9 @@ class CoinbaseClient:
     Coinbase Advanced Trade API v3 HTTP client.
 
     Each request is authenticated with a fresh ES256 JWT (120 s TTL) generated
-    from ``COINBASE_API_KEY_NAME`` (key name) and ``COINBASE_API_PRIVATE_KEY``
-    (P-256 EC PEM).  No third-party JWT library required — uses ``cryptography``.
+    from the API key name (``COINBASE_API_KEY_NAME`` or ``COINBASE_API_KEY``) and
+    EC PEM (``COINBASE_API_PRIVATE_KEY`` or ``COINBASE_API_SECRET``).
+    No third-party JWT library required — uses ``cryptography``.
     """
 
     def __init__(
@@ -194,31 +196,74 @@ class CoinbaseClient:
         private_key_pem: Optional[str] = None,
         base_url: str = _ADV_BASE_URL,
     ) -> None:
-        self._key_name = (
-            api_key_name or os.environ.get("COINBASE_API_KEY_NAME") or ""
-        ).strip()
-        raw_pem = private_key_pem or os.environ.get("COINBASE_API_PRIVATE_KEY") or ""
-        self._pem = normalize_coinbase_key_material(raw_pem)
+        self._api_key_override = api_key_name
+        self._pem_override = private_key_pem
         self.base_url = base_url.rstrip("/")
+        self._key_name = ""
+        self._pem = ""
         self._private_key: Optional[Any] = None
         self.last_error: Optional[str] = None
         self.marked_down: bool = False
+        self._sync_credentials_from_env()
 
-        if self._pem:
-            try:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_private_key,
-                )
+    def _sync_credentials_from_env(self) -> None:
+        """Load key name + PEM from ctor args or env (both naming conventions)."""
+        api_key = (
+            (self._api_key_override if self._api_key_override is not None else None)
+            or os.environ.get("COINBASE_API_KEY_NAME")
+            or os.environ.get("COINBASE_API_KEY")
+            or ""
+        ).strip()
+        raw_pem = (
+            (self._pem_override if self._pem_override is not None else None)
+            or os.environ.get("COINBASE_API_PRIVATE_KEY")
+            or os.environ.get("COINBASE_API_SECRET")
+            or ""
+        )
+        raw_pem = (raw_pem or "").strip()
+        pem = normalize_coinbase_key_material(raw_pem)
+        prev_k = getattr(self, "_key_name", "")
+        prev_p = getattr(self, "_pem", "")
+        if api_key == prev_k and pem == prev_p and self._private_key is not None:
+            return
+        self._key_name = api_key
+        self._pem = pem
+        self._private_key = None
+        if not pem:
+            return
+        try:
+            from cryptography.hazmat.primitives.serialization import (
+                load_pem_private_key,
+            )
 
-                self._private_key = load_pem_private_key(
-                    self._pem.encode("utf-8"), password=None
-                )
-                logger.info("Coinbase Advanced Trade EC key loaded OK")
-            except Exception as exc:
-                logger.warning("Coinbase: could not load PEM private key: %s", exc)
+            self._private_key = load_pem_private_key(
+                self._pem.encode("utf-8"), password=None
+            )
+            logger.info("Coinbase Advanced Trade EC key loaded OK")
+        except Exception as exc:
+            logger.warning("Coinbase: could not load PEM private key: %s", exc)
 
     def has_credentials(self) -> bool:
-        return bool(self._key_name and self._private_key)
+        self._sync_credentials_from_env()
+        key = (
+            os.environ.get("COINBASE_API_KEY_NAME")
+            or os.environ.get("COINBASE_API_KEY")
+            or ""
+        ).strip()
+        secret = (
+            os.environ.get("COINBASE_API_PRIVATE_KEY")
+            or os.environ.get("COINBASE_API_SECRET")
+            or ""
+        ).strip()
+        logger.info(
+            "Coinbase credentials: key=%s secret=%s",
+            bool(key),
+            bool(secret),
+        )
+        return self._credentials_ready()
+
+    def _credentials_ready(self) -> bool:
+        return bool(self._key_name) and bool(self._pem) and self._private_key is not None
 
     # ── JWT ───────────────────────────────────────────────────────────────────
 
@@ -295,7 +340,8 @@ class CoinbaseClient:
     ) -> Dict[str, Any]:
         if self.marked_down:
             raise RuntimeError("coinbase outlet marked down")
-        if not self.has_credentials():
+        self._sync_credentials_from_env()
+        if not self._credentials_ready():
             raise CoinbaseAuthError("Coinbase credentials not configured")
 
         # Build path + query once — JWT ``uri`` claim and the HTTP URL must match exactly.
@@ -325,7 +371,9 @@ class CoinbaseClient:
             if not raw.strip():
                 return {}
             out = json.loads(raw)
-            return out if isinstance(out, dict) else {"_data": out}
+            out_dict = out if isinstance(out, dict) else {"_data": out}
+            logger.info("API response: %s", str(out_dict)[:200])
+            return out_dict
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 self.last_error = "401"
@@ -466,23 +514,29 @@ class CoinbaseClient:
 
     def get_usd_balance(self) -> float:
         """
-        Trading cash: USD + USDC available (portfolio endpoints or ``/accounts``).
+        Trading cash: USD + USDC available (``/accounts`` sums both; portfolio fallback).
 
         Spot crypto is not converted here — only fiat-stable USD and USDC balances.
         """
+        total = 0.0
+        try:
+            j = self._request("GET", "/accounts")
+            total = self._sum_usd_usdc_from_accounts_json(j)
+            if total > 0:
+                logger.info("get_usd_balance: USD+USDC (accounts) = %.2f", total)
+                return total
+        except Exception as e:
+            logger.warning("get_usd_balance accounts failed: %s", e)
+
         portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
         if portfolio_id:
             try:
-                return float(self.get_portfolio_balance())
-            except Exception as e:
-                logger.warning("get_usd_balance portfolio path failed: %s", e)
-
-        try:
-            j = self._request("GET", "/accounts")
-            return self._sum_usd_usdc_from_accounts_json(j)
-        except Exception as e:
-            logger.warning("get_usd_balance failed: %s", e)
-            return 0.0
+                pf = float(self.get_portfolio_balance())
+                logger.info("get_usd_balance: USD+USDC (portfolio) = %.2f", pf)
+                return pf
+            except Exception as e2:
+                logger.warning("get_usd_balance portfolio path failed: %s", e2)
+        return total
 
     def get_available_balance(self, currency: str) -> float:
         """Available balance for a currency code (e.g. ``USD``, ``BTC``, ``ETH``)."""
