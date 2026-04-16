@@ -445,6 +445,71 @@ def main() -> None:
     def avenue_pulse() -> None:
         scan_and_alert_transitions()
 
+    def _send_pre_session_briefing() -> None:
+        """Send full CEO briefing Telegram sequence before first Kalshi session (9am ET open blitz)."""
+        if (os.environ.get("CEO_PRE_SESSION_BRIEFING_ENABLED") or "true").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return
+        try:
+            from trading_ai.shark.million_tracker import update_balance
+            from trading_ai.shark.mission import generate_full_ceo_briefing
+            from trading_ai.shark.reporting import send_telegram_safe
+            from trading_ai.shark.state_store import load_capital
+            from trading_ai.shark.supabase_logger import get_recent_trades
+            from trading_ai.shark.trade_reports import get_combined_report
+
+            cb_bal = 0.0
+            try:
+                from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+                cb_bal = float(CoinbaseClient().get_usd_balance())
+            except Exception:
+                pass
+
+            ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)
+            total = cb_bal + ka_bal
+            update_balance(cb_bal, ka_bal)
+
+            today = get_combined_report("day")
+            pnl = float(today["combined"]["total_pnl"])
+            trades_n = int(today["combined"]["total_trades"])
+            wr = float(today["coinbase"].get("win_rate", 0) or 0)
+
+            start_ts = 1744761600  # Apr 16 2026 UTC
+            day_num = max(1, int((time.time() - start_ts) / 86400) + 1)
+
+            from trading_ai.shark.lessons import load_lessons
+
+            lessons = load_lessons()
+            book = load_capital()
+            all_time = float(getattr(book, "total_pnl", 0) or 0)
+
+            recent_trades = get_recent_trades(limit=50) or []
+
+            messages = generate_full_ceo_briefing(
+                total_balance=total,
+                coinbase_bal=cb_bal,
+                kalshi_bal=ka_bal,
+                todays_pnl=pnl,
+                todays_trades=trades_n,
+                win_rate=wr,
+                day_number=day_num,
+                all_time_pnl=all_time,
+                lessons=lessons.get("lessons", []),
+                recent_trades=recent_trades,
+            )
+
+            for msg in messages:
+                send_telegram_safe(msg)
+                time.sleep(0.5)
+
+            log.info("Pre-session briefing sent: %d messages", len(messages))
+        except Exception as e:
+            log.warning("Pre-session briefing: %s", e)
+
     def kalshi_stale_order_sweep() -> None:
         try:
             from trading_ai.shark.kalshi_stale_orders import run_kalshi_stale_resting_order_sweep
@@ -512,6 +577,7 @@ def main() -> None:
                 vol_btc,
                 vol_eth,
             )
+            _send_pre_session_briefing()
             from trading_ai.shark.kalshi_blitz import run_kalshi_blitz
 
             run_kalshi_blitz()

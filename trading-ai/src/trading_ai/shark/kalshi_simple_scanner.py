@@ -105,6 +105,75 @@ def _spot_for_kalshi_ticker(
     return btc
 
 
+def _interpret_probability(
+    ticker: str,
+    side: str,
+    prob: float,
+    yes_bid: float,
+    no_bid: float,
+) -> Dict[str, Any]:
+    """
+    Interpret what probability MEANS for this market.
+
+    CRITICAL: High prob = LOW profit per contract
+    (e.g. 95% → ~$0.05 profit per contract if correct).
+
+    DANGER ZONES: range markets vs threshold; one-sided books.
+    """
+    edge = max(0.0, 1.0 - prob)
+    profit_per_contract = edge
+
+    market_type = "unknown"
+    u = ticker.upper()
+    if "KXBTCD" in u or "KXETHD" in u:
+        market_type = "daily_range"
+    elif "KXBTC" in u or "KXETH" in u:
+        market_type = "threshold"
+    elif "KXINX" in u or "KXSPX" in u:
+        market_type = "index"
+    elif any(s in u for s in ("NBA", "NFL", "MLB", "NHL")):
+        market_type = "sports"
+
+    warnings: List[str] = []
+
+    if market_type == "daily_range":
+        warnings.append(
+            "RANGE MARKET: Verify current price is INSIDE this range before buying",
+        )
+
+    if prob >= 0.98:
+        warnings.append(
+            f"VERY HIGH PROB ({prob:.0%}): Only ${profit_per_contract:.3f} profit per contract. "
+            f"Need many contracts for meaningful profit.",
+        )
+
+    if yes_bid == 0.0 and no_bid >= 0.95:
+        warnings.append(
+            "NO SIDE ONLY: YES has no buyers. Betting NO = betting condition FAILS. "
+            "Verify this makes sense.",
+        )
+
+    denom = max(profit_per_contract, 1e-9)
+    contracts_for_50c = max(1, int(0.50 / denom))
+
+    return {
+        "ticker": ticker,
+        "side": side,
+        "probability": prob,
+        "win_condition": (
+            "YES resolves TRUE" if str(side).lower() == "yes" else "NO resolves TRUE (YES FAILS)"
+        ),
+        "cost_per_contract": prob,
+        "payout_per_contract": 1.0,
+        "profit_per_contract": profit_per_contract,
+        "contracts_for_50c_profit": contracts_for_50c,
+        "market_type": market_type,
+        "warnings": warnings,
+        "is_high_confidence": prob >= 0.85,
+        "expected_value": profit_per_contract,
+    }
+
+
 def _filter_simple_candidates(
     candidates: List[Dict[str, Any]],
     now: float,
@@ -125,6 +194,25 @@ def _filter_simple_candidates(
                     t,
                 )
                 continue
+        prob = float(c.get("prob") or 0.0)
+        side = str(c.get("side") or "yes")
+        yes_b = float(c.get("yes_bid") or 0.0)
+        no_b = float(c.get("no_bid") or 0.0)
+        interpretation = _interpret_probability(t, side, prob, yes_b, no_b)
+        c["prob_interpretation"] = interpretation
+        logger.info(
+            "PROB CHECK: %s %s %.0f%% → profit/contract=$%.3f need %d contracts for $0.50 warnings=%s",
+            t,
+            side,
+            prob * 100,
+            interpretation["profit_per_contract"],
+            interpretation["contracts_for_50c_profit"],
+            interpretation["warnings"] or "none",
+        )
+        for w in interpretation["warnings"]:
+            if "RANGE MARKET" in w:
+                # Existing spot/range validation above handles execution safety
+                pass
         out.append(c)
     return out
 
@@ -150,6 +238,10 @@ def _parse_int(name: str, default: int) -> int:
 
 
 def _env_truthy(name: str, default: str = "false") -> bool:
+    return (os.environ.get(name) or default).strip().lower() in ("1", "true", "yes")
+
+
+def _ai_truthy(name: str, default: str = "true") -> bool:
     return (os.environ.get(name) or default).strip().lower() in ("1", "true", "yes")
 
 
@@ -302,6 +394,8 @@ def _fetch_simple_candidates(
                     "prob": prob,
                     "side": side,
                     "price": float(px),
+                    "yes_bid": float(y),
+                    "no_bid": float(n),
                 }
             )
         except Exception:
@@ -503,8 +597,27 @@ def _maintain_positions(
         raw_mx = (os.environ.get("KALSHI_SIMPLE_MAX_ORDER_USD") or "").strip()
         per_order_cap = min(hard_cap, float(raw_mx)) if raw_mx else hard_cap
         cands = _fetch_simple_candidates(client, now)
+        ordered = cands
+        if cands and _ai_truthy("KALSHI_AI_REVIEW_ENABLED", "true"):
+            try:
+                from trading_ai.shark.state_store import load_capital
+                from trading_ai.shark.trade_advisor import get_combined_review
+
+                book = load_capital()
+                bal = float(book.current_capital)
+                reviewed = get_combined_review(cands[:20], bal, "kalshi")
+                if reviewed:
+                    ordered = reviewed
+                    logger.info(
+                        "AI reviewed %d → %d ordered",
+                        len(cands),
+                        len(ordered),
+                    )
+            except Exception as e:
+                logger.warning("AI review failed, using raw order: %s", e)
+                ordered = cands
         picked: Optional[Dict[str, Any]] = None
-        for c in cands:
+        for c in ordered:
             t = str(c["ticker"])
             if t in open_tickers:
                 continue
