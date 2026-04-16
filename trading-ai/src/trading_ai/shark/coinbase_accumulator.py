@@ -1,7 +1,10 @@
 """
 Coinbase — **four engines** (E1–E4), **25% / 25% / 25% / 25%** of deployable capital each,
-or **Gate A + Gate B** when ``COINBASE_GATES_MODE=true`` (percent-sized positions;
-defaults ``COINBASE_GATE_A_POSITIONS`` / ``COINBASE_GATE_B_POSITIONS``).
+or **Gates A–D** when ``COINBASE_GATES_MODE=true`` (default: A+B on; C/D via env):
+**A** dip+momentum on **five** large caps only (BTC/ETH/SOL/XRP/DOGE), **B** gainers +
+momentum fallback with **min price** and **24h quote volume** filters, **C** high hour
+momentum (optional; same min-price rule), **D** BTC/ETH micro scalp (optional). Spot USD pairs from Exchange
+``/products`` (crypto); Kalshi covers predictions/sports separately.
 
 Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reserve via
 ``COINBASE_RESERVE_PCT``). Each engine may deploy up to **25%** of that deployable pool.
@@ -12,7 +15,8 @@ Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reser
 **E4 — Micro HFT**  BTC-USD & ETH-USD only; buy cadence throttled with E1–E3 (default 30s).
 
 Exits: ``_check_exits_only`` / scheduler job ``coinbase_exit_check`` every 5s; ``scan_and_trade`` is buys-only. Per-position: **time stop** (absolute)
-→ take-profit → stop-loss → trail (E2 only). Sells are not gated by the buy rate limiter.
+→ take-profit → stop-loss → trail (E2 only); **no_price_stop** (missing/zero bid) fires
+immediately after ``sell_pending``. Sells are not gated by the buy rate limiter.
 Sells retry once; on failure ``sell_pending`` is set for the next scan.
 
 Logging: ``CB BUY E{n}``, ``CB SELL E{n}``, ``CB CHECK E{n}``, ``CB EXIT E{n}``.
@@ -40,6 +44,16 @@ logger = logging.getLogger(__name__)
 
 _E3_LIQUID = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 _E4_LIQUID = ("BTC-USD", "ETH-USD")
+# Gate A — fixed five products only (ignore env overrides for selection safety).
+_GATE_A_PRODUCTS: Tuple[str, ...] = (
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "XRP-USD",
+    "DOGE-USD",
+)
+# Gate D (when implemented) — BTC/ETH only; documented for exits/sizing symmetry.
+_GATE_D_PRODUCTS: Tuple[str, ...] = ("BTC-USD", "ETH-USD")
 # Gate B momentum fallback when gainer screen is empty (liquid alts).
 _GATE_B_FALLBACK_PRODUCTS: Tuple[str, ...] = (
     "XRP-USD",
@@ -218,6 +232,21 @@ def _mid_at_or_before(
     return float(old[-1][1])
 
 
+def _min_product_price_usd() -> float:
+    """Minimum spot mid/bid for buys and Gate B / E2 candidate screens."""
+    return max(1e-12, _env_float("COINBASE_MIN_PRODUCT_PRICE", 0.01))
+
+
+def _min_volume_usd_24h() -> float:
+    """Minimum 24h quote volume (USD) for buys and Gate B / E2 gainer screen."""
+    return max(0.0, _env_float("COINBASE_MIN_VOLUME_USD", 500_000.0))
+
+
+def _max_buy_spread_ratio() -> float:
+    """Max (ask−bid)/bid for market buys (default 0.5%)."""
+    return max(1e-9, _env_float("COINBASE_MAX_BUY_SPREAD_PCT", 0.005))
+
+
 def _quote_volume_24h_usd(row: Dict[str, Any]) -> float:
     for k in (
         "approximate_quote_24h_volume",
@@ -277,6 +306,30 @@ def _count_gate(state: Dict[str, Any], gate: str) -> int:
         for p in (state.get("positions") or [])
         if str(p.get("gate") or "").strip().upper() == g
     )
+
+
+def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
+    """(take_profit_pct, stop_loss_pct, time_stop_minutes) for gate A/B/C/D; else None."""
+    g = (gate or "").strip().upper()
+    if g in ("A", "B"):
+        return (
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.0025),
+            _env_float("COINBASE_TIME_STOP_MIN", 5.0),
+        )
+    if g == "C":
+        return (
+            _env_float("COINBASE_GATE_C_PROFIT_PCT", 0.01),
+            _env_float("COINBASE_GATE_C_STOP_PCT", 0.005),
+            _env_float("COINBASE_GATE_C_TIME_MIN", 10.0),
+        )
+    if g == "D":
+        return (
+            _env_float("COINBASE_GATE_D_PROFIT_PCT", 0.001),
+            _env_float("COINBASE_GATE_D_STOP_PCT", 0.001),
+            _env_float("COINBASE_GATE_D_TIME_MIN", 3.0),
+        )
+    return None
 
 
 def _gate_order_usd(usd_balance: float, position_pct: float) -> float:
@@ -470,6 +523,8 @@ class CoinbaseAccumulator:
         self._last_ac_tick: float = -1e9
         self._stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._buys_this_scan = 0
+        self._brokerage_vol_cache: Dict[str, float] = {}
+        self._brokerage_vol_cache_ts: float = 0.0
 
     def get_state(self) -> Dict[str, Any]:
         """Latest persisted Coinbase state (same as ``load_coinbase_state()``)."""
@@ -492,6 +547,61 @@ class CoinbaseAccumulator:
             cutoff = now - keep
             while hist and hist[0][0] < cutoff:
                 hist.popleft()
+
+    def _brokerage_volume_map_24h(self, now: float) -> Dict[str, float]:
+        ttl = _env_float("COINBASE_BROKERAGE_VOL_CACHE_SEC", 55.0)
+        if self._brokerage_vol_cache and (now - self._brokerage_vol_cache_ts) < ttl:
+            return self._brokerage_vol_cache
+        try:
+            rows = self._client.list_brokerage_products()
+        except Exception as exc:
+            logger.warning("Coinbase brokerage products (volume map): %s", exc)
+            return self._brokerage_vol_cache
+        self._brokerage_vol_cache = {
+            str(r.get("product_id") or ""): _quote_volume_24h_usd(r)
+            for r in rows
+            if r.get("product_id")
+        }
+        self._brokerage_vol_cache_ts = now
+        return self._brokerage_vol_cache
+
+    def _buy_preflight_ok(
+        self, pid: str, prices: Dict[str, Tuple[float, float]], now: float
+    ) -> Tuple[bool, str]:
+        """Liquidity screen before any market buy: min price, spread, 24h volume."""
+        min_px = _min_product_price_usd()
+        min_vol = _min_volume_usd_24h()
+        max_spread = _max_buy_spread_ratio()
+        if pid not in prices:
+            return False, "no_price"
+        bid, ask = prices[pid]
+        try:
+            bid_f = float(bid or 0.0)
+            ask_f = float(ask or 0.0)
+        except (TypeError, ValueError):
+            return False, "bad_quote"
+        if bid_f <= min_px:
+            logger.debug("Skip %s: bid %.6f at or below min price %.4f", pid, bid_f, min_px)
+            return False, "price_low"
+        mid = (bid_f + ask_f) / 2.0 if bid_f > 0 and ask_f > 0 else bid_f
+        if mid < min_px:
+            logger.debug("Skip %s: mid %.6f below min price %.4f", pid, mid, min_px)
+            return False, "mid_low"
+        if ask_f > 0 and bid_f > 0:
+            spread = (ask_f - bid_f) / bid_f
+            if spread > max_spread:
+                logger.debug(
+                    "Skip %s: spread %.4f > max %.4f", pid, spread, max_spread
+                )
+                return False, "spread_wide"
+        vm = self._brokerage_volume_map_24h(now)
+        qv = float(vm.get(pid) or 0.0)
+        if qv < min_vol:
+            logger.debug(
+                "Skip %s: 24h quote vol %.0f < min %.0f", pid, qv, min_vol
+            )
+            return False, "volume_low"
+        return True, "ok"
 
     def _cached_exchange_stats(
         self, product_id: str, now: float
@@ -538,22 +648,17 @@ class CoinbaseAccumulator:
             "COINBASE_GAINER_MIN_PCT",
             _env_float("COINBASE_E2_MIN_HOUR_PCT", 0.01),
         )
-        min_vol_usd = _env_float("COINBASE_E2_MIN_VOLUME_USD", 10_000.0)
+        min_vol_usd = max(
+            _min_volume_usd_24h(),
+            _env_float("COINBASE_E2_MIN_VOLUME_USD", 10_000.0),
+        )
+        min_px = _min_product_price_usd()
         min_vol_ratio = _env_float(
             "COINBASE_GAINER_VOL_RATIO",
             _env_float("COINBASE_E2_MIN_VOL_RATIO", 1.2),
         )
         max_stats = max(20, int(_env_float("COINBASE_E2_MAX_STATS_FETCH", 80.0)))
-        try:
-            rows = self._client.list_brokerage_products()
-        except Exception as exc:
-            logger.warning("Coinbase E2: brokerage products failed: %s", exc)
-            rows = []
-        vol_map = {
-            str(r.get("product_id") or ""): _quote_volume_24h_usd(r)
-            for r in rows
-            if r.get("product_id")
-        }
+        vol_map = self._brokerage_volume_map_24h(now)
         cd = state.setdefault("hunter_cooldown", {})
         cooldown_sec = _env_float("COINBASE_E2_COOLDOWN_SEC", 1800.0)
         rough: List[Dict[str, Any]] = []
@@ -564,6 +669,8 @@ class CoinbaseAccumulator:
             if lt > 0 and (now - lt) < cooldown_sec:
                 continue
             mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            if mid < min_px:
+                continue
             hist = list(self._price_history.get(pid) or [])
             p60 = _mid_at_or_before(hist, now - 3600.0)
             if p60 is None or p60 <= 0:
@@ -681,11 +788,11 @@ class CoinbaseAccumulator:
         except Exception as exc:
             logger.warning("Coinbase startup check failed (non-fatal): %s", exc)
 
-    def emergency_clear_stale_positions(self) -> int:
-        """On bot restart: market-sell any open position at or past ``COINBASE_TIME_STOP_MIN``.
+    def force_sell_all_positions(self) -> int:
+        """Market-sell every open position immediately and clear local position list.
 
-        Runs before the scheduler so stuck post-deploy positions are flushed immediately.
-        Uses the same sell path as normal exits (no buy rate-limiter gate).
+        Used on startup and for manual ``railway ssh`` / one-off recovery. Does not use
+        the buy rate limiter. Failed sells leave ``sell_pending`` on retained rows.
         """
         if not coinbase_enabled():
             return 0
@@ -694,43 +801,30 @@ class CoinbaseAccumulator:
         state = load_coinbase_state()
         _reset_daily_pnl_if_needed(state)
         positions = list(state.get("positions") or [])
-        now = time.time()
-        time_stop_sec = _env_float("COINBASE_TIME_STOP_MIN", 5.0) * 60.0
-
-        def _is_stale(pos: Dict[str, Any]) -> bool:
-            entry_t = float(pos.get("entry_time") or 0.0)
-            if entry_t <= 0:
-                return True
-            age = now - entry_t
-            return age >= time_stop_sec
-
-        stale = [p for p in positions if _is_stale(p)]
-        fresh = [p for p in positions if not _is_stale(p)]
-        if not stale:
+        logger.info("FORCE SELL ALL: %d position(s)", len(positions))
+        if not positions:
             return 0
 
-        logger.info(
-            "Coinbase EMERGENCY: %d position(s) at/ past time stop (%.0fs) — selling now",
-            len(stale),
-            time_stop_sec,
-        )
+        now = time.time()
         scan_ids = _hf_scan_product_ids(self._client, state, now)
-        stale_ids = [str(p.get("product_id") or "") for p in stale if p.get("product_id")]
-        pids = list(set(scan_ids) | set(collect_price_product_ids(state)) | set(stale_ids))
+        pids = list(
+            set(scan_ids)
+            | set(collect_price_product_ids(state))
+            | {str(p.get("product_id") or "") for p in positions}
+        )
         try:
             prices = self._client.get_prices_batched(pids)
         except Exception as exc:
-            logger.warning("Coinbase EMERGENCY: price fetch failed: %s", exc)
+            logger.warning("FORCE SELL ALL: price fetch failed: %s", exc)
             return 0
         if not prices:
-            logger.warning("Coinbase EMERGENCY: no prices — cannot clear stale positions")
+            logger.warning("FORCE SELL ALL: no prices — aborting")
             return 0
         self._ingest_prices_into_history(prices, now)
 
         sold = 0
-        failures: List[Dict[str, Any]] = []
-        for i, pos in enumerate(stale):
-            tail = stale[i + 1 :]
+        kept: List[Dict[str, Any]] = []
+        for pos in positions:
             pid = str(pos.get("product_id") or "")
             entry = float(pos.get("entry_price") or 0.0)
             size_base = float(pos.get("size_base") or 0.0)
@@ -739,43 +833,31 @@ class CoinbaseAccumulator:
             eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
             age = (now - entry_t) if entry_t > 0 else -1.0
             if not pid or size_base <= 0:
-                logger.warning(
-                    "Coinbase EMERGENCY: skip invalid position %s size=%s",
-                    pid,
-                    size_base,
-                )
-                failures.append(pos)
-                state["positions"] = fresh + failures + tail
-                save_coinbase_state(state)
+                logger.warning("FORCE SELL ALL: skip invalid %s size=%s", pid, size_base)
+                kept.append(pos)
                 continue
             if pid not in prices:
-                logger.warning(
-                    "Coinbase EMERGENCY: no price for %s — keeping position",
-                    pid,
-                )
+                logger.warning("FORCE SELL ALL: no price for %s — keeping row", pid)
                 upd = dict(pos)
                 upd["sell_pending"] = True
-                failures.append(upd)
-                state["positions"] = fresh + failures + tail
-                save_coinbase_state(state)
+                kept.append(upd)
                 continue
 
             bid, _ask = prices[pid]
             current = bid
-            if entry <= 0:
-                pnl_pct = 0.0
-            else:
-                pnl_pct = (current - entry) / entry
-            logger.info(
-                "EMERGENCY EXIT: %s age=%.0fs (time stop=%.0fs)",
-                pid,
-                age,
-                time_stop_sec,
-            )
+            pnl_pct = 0.0 if entry <= 0 else (current - entry) / entry
+            logger.info("FORCE SELL: %s age=%.0fs", pid, age)
             base_str = _fmt_base_size(pid, size_base)
-            result = self._try_market_sell_twice(pid, base_str)
-            profit_usd = current * size_base - cost_usd
+            try:
+                result = self._try_market_sell_twice(pid, base_str)
+            except Exception as exc:
+                logger.warning("FORCE SELL ALL: exception %s: %s", pid, exc)
+                upd = dict(pos)
+                upd["sell_pending"] = True
+                kept.append(upd)
+                continue
 
+            profit_usd = current * size_base - cost_usd
             if result.success:
                 sold += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
@@ -789,11 +871,10 @@ class CoinbaseAccumulator:
                     state["losses"] = int(state.get("losses") or 0) + 1
                 if eng == 2:
                     state.setdefault("hunter_cooldown", {})[pid] = now
-                state["positions"] = fresh + failures + tail
-                save_coinbase_state(state)
                 logger.info(
-                    "Coinbase EMERGENCY SELL ok: %s %+.2f%% $%.4f (emergency_time_stop)",
+                    "FORCE SOLD: %s ok=%s pnl=%+.2f%% $%.4f",
                     pid,
+                    getattr(result, "success", False),
                     pnl_pct * 100.0,
                     profit_usd,
                 )
@@ -802,8 +883,8 @@ class CoinbaseAccumulator:
                         "ts": now,
                         "type": "sell",
                         "engine": eng,
-                        "reason": "emergency_time_stop",
-                        "order_id": result.order_id,
+                        "reason": "force_sell_all",
+                        "order_id": getattr(result, "order_id", ""),
                         "product_id": pid,
                         "entry_price": entry,
                         "exit_price": current,
@@ -814,30 +895,42 @@ class CoinbaseAccumulator:
                     from trading_ai.shark.reporting import send_telegram
 
                     send_telegram(
-                        f"🚨 EMERGENCY CB exit (stale): {_cb_sym(pid)} "
-                        f"{pnl_pct*100:+.2f}% ${profit_usd:+.3f} (restart flush)"
+                        f"🚨 FORCE CB exit: {_cb_sym(pid)} "
+                        f"{pnl_pct*100:+.2f}% ${profit_usd:+.3f}"
                     )
                 except Exception:
                     pass
             else:
                 logger.warning(
-                    "Coinbase EMERGENCY SELL failed %s (%s) — sell_pending=True",
+                    "FORCE SELL failed %s (%s) — sell_pending=True",
                     pid,
-                    result.reason,
+                    getattr(result, "reason", "?"),
                 )
                 upd = dict(pos)
                 upd["sell_pending"] = True
-                failures.append(upd)
-                state["positions"] = fresh + failures + tail
-                save_coinbase_state(state)
+                kept.append(upd)
 
-        remaining = state.get("positions") or []
-        logger.info(
-            "Coinbase EMERGENCY: completed — sold=%d remaining_open=%d",
-            sold,
-            len(remaining),
-        )
+        state["positions"] = kept
+        save_coinbase_state(state)
+        logger.info("FORCE SELL COMPLETE: sold=%d remaining_rows=%d", sold, len(kept))
         return sold
+
+    def emergency_clear_stale_positions(self) -> int:
+        """Restart flush: ``time_stop_sec = 0`` → every position is stale; sell all via force.
+
+        Same implementation as :meth:`force_sell_all_positions` (single code path).
+        """
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        # Treat time stop as zero seconds so *all* positions qualify as stale.
+        time_stop_sec = 0.0
+        logger.info(
+            "Coinbase EMERGENCY: time_stop_sec=%.0f — delegating to force sell all",
+            time_stop_sec,
+        )
+        return self.force_sell_all_positions()
 
     def _try_market_sell_twice(self, product_id: str, base_str: str) -> Any:
         r = self._client.place_market_sell(product_id, base_str)
@@ -904,20 +997,38 @@ class CoinbaseAccumulator:
         if _coinbase_gates_mode():
             gate_a_min = max(0, int(_env_float("COINBASE_GATE_A_MIN_POSITIONS", 10.0)))
             gate_b_min = max(0, int(_env_float("COINBASE_GATE_B_MIN_POSITIONS", 10.0)))
+            gate_c_min = max(0, int(_env_float("COINBASE_GATE_C_MIN_POSITIONS", 5.0)))
+            gate_d_min = max(0, int(_env_float("COINBASE_GATE_D_MIN_POSITIONS", 5.0)))
             a_count = _count_gate(state, "A")
             b_count = _count_gate(state, "B")
-            if a_count < gate_a_min or b_count < gate_b_min:
+            c_count = _count_gate(state, "C")
+            d_count = _count_gate(state, "D")
+            need_c = _env_bool("COINBASE_GATE_C_ENABLED", False) and c_count < gate_c_min
+            need_d = _env_bool("COINBASE_GATE_D_ENABLED", False) and d_count < gate_d_min
+            if a_count < gate_a_min or b_count < gate_b_min or need_c or need_d:
                 logger.info(
-                    "BLITZ JOB: Gate A=%d (min %d) Gate B=%d (min %d) — urgent refill",
-                    a_count, gate_a_min, b_count, gate_b_min,
+                    "BLITZ JOB: Gate A=%d (min %d) B=%d (min %d) C=%d D=%d — urgent refill",
+                    a_count,
+                    gate_a_min,
+                    b_count,
+                    gate_b_min,
+                    c_count,
+                    d_count,
                 )
-                # Fetch prices for gate products + fallbacks only (not full HF cache — too slow for 5s job)
+                # Fetch prices for gate products + fallbacks + slice of HF cache (Gate C)
                 ga_env = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
-                ga_pids = _parse_csv_products(ga_env) if ga_env else []
+                ga_pids = _parse_csv_products(ga_env) if ga_env else list(_GATE_A_PRODUCTS_DEFAULT)
                 fb_env = (os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS") or "").strip()
                 fb_pids = _parse_csv_products(fb_env) if fb_env else list(_GATE_B_FALLBACK_PRODUCTS)
                 open_pids = collect_price_product_ids(state)
-                all_pids = list(set(ga_pids) | set(fb_pids) | set(open_pids))
+                hf_extra = list(state.get("hf_product_cache") or [])[:220]
+                all_pids = list(
+                    set(ga_pids)
+                    | set(fb_pids)
+                    | set(open_pids)
+                    | set(hf_extra)
+                    | set(_E4_LIQUID)
+                )
                 if not all_pids:
                     all_pids = list(_GATE_B_FALLBACK_PRODUCTS)
                 try:
@@ -935,6 +1046,10 @@ class CoinbaseAccumulator:
                         self._gate_a_scan(state, refill_prices, usd_balance, now)
                     if _count_gate(state, "B") < gate_b_min:
                         self._gate_b_gainer(state, refill_prices, usd_balance, now)
+                    if need_c and _count_gate(state, "C") < gate_c_min:
+                        self._gate_c_scan(state, refill_prices, usd_balance, now)
+                    if need_d and _count_gate(state, "D") < gate_d_min:
+                        self._gate_d_scan(state, refill_prices, usd_balance, now)
                     save_coinbase_state(state)
 
         return exits
@@ -993,7 +1108,14 @@ class CoinbaseAccumulator:
             pnl_pct = (current - entry) / entry
             pnl_usd = current * size_base - cost_usd
 
-            if not (pnl_pct >= profit_pct or pnl_usd >= min_profit_usd):
+            gtrip = _gate_tp_sl_tmin(gate)
+            if gtrip:
+                gate_tp, _, _ = gtrip
+                hit_profit = pnl_pct >= gate_tp or pnl_usd >= min_profit_usd
+            else:
+                hit_profit = pnl_pct >= profit_pct or pnl_usd >= min_profit_usd
+
+            if not hit_profit:
                 remaining.append(pos)
                 continue
 
@@ -1035,7 +1157,7 @@ class CoinbaseAccumulator:
                 try:
                     from trading_ai.shark.reporting import send_telegram
 
-                    prefix = f"Gate {gate} " if gate in ("A", "B") else ""
+                    prefix = f"[{gate}] " if _gate_tp_sl_tmin(gate) else ""
                     send_telegram(
                         f"💰 {prefix}PROFIT: {pid} +{pnl_pct*100:.2f}%"
                         f" ${pnl_usd:+.4f} (profit scan)"
@@ -1103,9 +1225,9 @@ class CoinbaseAccumulator:
             sell_pending = bool(pos.get("sell_pending"))
             gate = str(pos.get("gate") or "").strip().upper()
 
-            if pid not in prices:
+            if size_base <= 0:
                 logger.info(
-                    "CB CHECK E%d: %s pnl=n/a age=%ds (no price)",
+                    "CB CHECK E%d: %s pnl=n/a age=%ds (invalid size)",
                     eng,
                     pid,
                     int(now - entry_t) if entry_t else -1,
@@ -1113,11 +1235,22 @@ class CoinbaseAccumulator:
                 remaining.append(pos)
                 continue
 
-            bid, _ask = prices[pid]
+            quote = prices.get(pid)
+            if quote is None or len(quote) < 2:
+                bid = 0.0
+                ask = 0.0
+            else:
+                try:
+                    bid = float(quote[0] or 0.0)
+                    ask = float(quote[1] or 0.0)
+                except (TypeError, ValueError):
+                    bid, ask = 0.0, 0.0
             current = bid
-            if entry <= 0 or size_base <= 0:
+            no_price = quote is None or current <= 0
+
+            if not no_price and entry <= 0:
                 logger.info(
-                    "CB CHECK E%d: %s pnl=n/a age=%ds (invalid entry/size)",
+                    "CB CHECK E%d: %s pnl=n/a age=%ds (invalid entry)",
                     eng,
                     pid,
                     int(now - entry_t) if entry_t else -1,
@@ -1125,45 +1258,53 @@ class CoinbaseAccumulator:
                 remaining.append(pos)
                 continue
 
-            pnl_pct = (current - entry) / entry
+            pnl_pct = 0.0 if no_price else (current - entry) / entry
             age_s = int(now - entry_t) if entry_t > 0 else -1
-            log_label = f"Gate {gate}" if gate in ("A", "B") else f"E{eng}"
+            log_label = f"Gate {gate}" if _gate_tp_sl_tmin(gate) else f"E{eng}"
             logger.info(
-                "CB CHECK %s: %s pnl=%+.3f%% age=%ds pending=%s",
+                "CB CHECK %s: %s pnl=%s age=%ds pending=%s no_price=%s",
                 log_label,
                 pid,
-                pnl_pct * 100.0,
+                "n/a" if no_price else f"{pnl_pct * 100.0:+.3f}%",
                 age_s,
                 sell_pending,
+                no_price,
             )
 
-            if gate in ("A", "B"):
-                tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025)
-                sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.0025)
-                tmin = _env_float("COINBASE_TIME_STOP_MIN", 5.0)
+            gtrip = _gate_tp_sl_tmin(gate)
+            if gtrip:
+                tp, sl, tmin = gtrip
                 trail = 0.0
             else:
                 tp, sl, tmin, trail = self._exit_params(eng)
             tlim = tmin * 60.0
-            peak = max(float(pos.get("peak_price") or entry), current)
+            peak = max(float(pos.get("peak_price") or entry), max(current, 1e-12))
 
-            # Time stop is absolute: fire before take-profit / stop / trail.
+            # sell_pending → no_price_stop → time → TP → stop → trail (E2 only).
             sell_reason = ""
             if sell_pending:
                 sell_reason = "sell_pending_retry"
+            elif no_price:
+                sell_reason = "no_price_stop"
             elif entry_t > 0 and tlim > 0 and (now - entry_t) >= tlim:
                 sell_reason = f"time>={tmin:.0f}m"
             elif pnl_pct >= tp:
                 sell_reason = f"tp +{tp*100:.2f}%"
             elif pnl_pct <= -sl:
                 sell_reason = f"stop -{sl*100:.2f}%"
-            elif eng == 2 and trail > 0 and gate not in ("A", "B") and current < peak * (1.0 - trail):
+            elif (
+                eng == 2
+                and trail > 0
+                and not _gate_tp_sl_tmin(gate)
+                and current > 0
+                and current < peak * (1.0 - trail)
+            ):
                 sell_reason = f"trail -{trail*100:.0f}% peak"
 
             if not sell_reason:
                 upd = dict(pos)
                 upd["peak_price"] = peak
-                if eng == 2 and gate not in ("A", "B") and pnl_pct >= 0.25 and not pos.get("ride2_tg"):
+                if eng == 2 and not _gate_tp_sl_tmin(gate) and pnl_pct >= 0.25 and not pos.get("ride2_tg"):
                     upd["ride2_tg"] = True
                     try:
                         from trading_ai.shark.reporting import send_telegram
@@ -1179,7 +1320,10 @@ class CoinbaseAccumulator:
             # Exits must not be blocked by the per-minute buy rate limiter.
             base_str = _fmt_base_size(pid, size_base)
             result = self._try_market_sell_twice(pid, base_str)
-            profit_usd = current * size_base - cost_usd
+            if no_price:
+                profit_usd = -float(cost_usd)
+            else:
+                profit_usd = current * size_base - cost_usd
 
             if result.success:
                 exits += 1
@@ -1195,7 +1339,7 @@ class CoinbaseAccumulator:
                 if eng == 2:
                     state.setdefault("hunter_cooldown", {})[pid] = now
 
-                xl = f"Gate {gate}" if gate in ("A", "B") else f"E{eng}"
+                xl = f"Gate {gate}" if _gate_tp_sl_tmin(gate) else f"E{eng}"
                 logger.info(
                     "CB EXIT %s: %s %+.2f%% $%.4f profit (%s)",
                     xl,
@@ -1220,7 +1364,7 @@ class CoinbaseAccumulator:
                         "order_id": result.order_id,
                         "product_id": pid,
                         "entry_price": entry,
-                        "exit_price": current,
+                        "exit_price": 0.0 if no_price else current,
                         "pnl_usd": profit_usd,
                     }
                 )
@@ -1228,10 +1372,21 @@ class CoinbaseAccumulator:
                     from trading_ai.shark.reporting import send_telegram
 
                     sym = _cb_sym(pid)
-                    if gate in ("A", "B"):
+                    if _gate_tp_sl_tmin(gate):
+                        if "time" in sell_reason.lower():
+                            emoji = "⏰"
+                        elif (
+                            "stop" in sell_reason.lower()
+                            or "no_price" in sell_reason.lower()
+                            or pnl_pct < 0
+                        ):
+                            emoji = "🔴"
+                        else:
+                            emoji = "💰"
+                        pnl_disp = "n/a" if no_price else f"{pnl_pct*100:+.2f}%"
                         send_telegram(
-                            f"{'💰' if profit_usd >= 0 else '🛑'} Gate {gate}: {sym} "
-                            f"{pnl_pct*100:+.2f}% ${profit_usd:+.3f} ({sell_reason})"
+                            f"{emoji} [{gate}]: {sym} {pnl_disp} "
+                            f"${profit_usd:+.3f} ({sell_reason})"
                         )
                     elif eng == 1:
                         if pnl_pct >= tp:
@@ -1558,16 +1713,16 @@ class CoinbaseAccumulator:
         if gate_a_products_env:
             products = _parse_csv_products(gate_a_products_env)
         else:
-            # Broad scan: all USD pairs in the current price snapshot
-            products = [pid for pid in prices.keys() if str(pid).endswith("-USD")]
+            products = list(_GATE_A_PRODUCTS_DEFAULT)
         max_n = max(1, int(_env_float("COINBASE_GATE_A_POSITIONS", 50.0)))
         gate_a_min = max(0, int(_env_float("COINBASE_GATE_A_MIN_POSITIONS", 10.0)))
-        dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.002)
-        mom_pct = _env_float("COINBASE_GATE_A_MOM_PCT", 0.001)
-        # Dynamic sizing: deployable * 50% / max_positions
+        dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.001)
+        mom_pct = _env_float("COINBASE_GATE_A_MOM_PCT", 0.0005)
+        budget_frac = _env_float("COINBASE_GATE_AB_BUDGET_PCT", 0.40)
+        # Dynamic sizing: deployable * budget_frac / max_positions (A+B+C+D caps elsewhere)
         order_usd = max(
             _min_order_usd(usd_balance),
-            _deployable_usd(usd_balance) * 0.50 / max(1, max_n),
+            _deployable_usd(usd_balance) * max(0.01, min(0.5, budget_frac)) / max(1, max_n),
         )
         eng = 3
 
@@ -1626,7 +1781,7 @@ class CoinbaseAccumulator:
                     from trading_ai.shark.reporting import send_telegram
                     tag = "URGENT " if urgent else ""
                     send_telegram(
-                        f"🟢 Gate A {tag}({signal}): {_cb_sym(pid)} ${order_usd:.2f} @ ${mid:.4f}"
+                        f"🟢 A: {_cb_sym(pid)} {tag}${order_usd:.2f} @ ${mid:,.4f}"
                     )
                 except Exception:
                     pass
@@ -1690,7 +1845,7 @@ class CoinbaseAccumulator:
                 from trading_ai.shark.reporting import send_telegram
 
                 send_telegram(
-                    f"🎯 Gate B (mom): {_cb_sym(pid)} +{(mid - ref60) / ref60 * 100:.2f}%/60s "
+                    f"🎯 B: {_cb_sym(pid)} +{(mid - ref60) / ref60 * 100:.2f}%/60s "
                     f"${order_usd:.2f} @ ${mid:.4f}"
                 )
             except Exception:
@@ -1718,10 +1873,10 @@ class CoinbaseAccumulator:
             return
         state["gate_b_scan_ts"] = now
 
-        # Dynamic sizing: deployable * 50% / max_positions
+        budget_frac = _env_float("COINBASE_GATE_AB_BUDGET_PCT", 0.40)
         order_usd = max(
             _min_order_usd(usd_balance),
-            _deployable_usd(usd_balance) * 0.50 / max(1, max_n),
+            _deployable_usd(usd_balance) * max(0.01, min(0.5, budget_frac)) / max(1, max_n),
         )
         dip_from_high = _env_float("COINBASE_GAINER_DIP_PCT", 0.005)
         ranked = self._e2_candidates(state, prices, now)
@@ -1776,7 +1931,7 @@ class CoinbaseAccumulator:
                     from trading_ai.shark.reporting import send_telegram
                     tag = "URGENT " if urgent else ""
                     send_telegram(
-                        f"🎯 Gate B {tag}: {_cb_sym(pid)} +{hg*100:.1f}%/hr pullback ${order_usd:.2f} @ ${mid:.4f}"
+                        f"🎯 B: {_cb_sym(pid)} +{hg*100:.2f}%/hr ${order_usd:.2f} @ ${mid:.4f} {tag}"
                     )
                 except Exception:
                     pass
@@ -1789,6 +1944,180 @@ class CoinbaseAccumulator:
                 state, prices, usd_balance, now, max_n,
                 order_usd / max(usd_balance, 1e-9), order_usd, eng
             ):
+                break
+
+    def _find_gate_c_gainers(
+        self, state: Dict[str, Any], prices: Dict[str, Tuple[float, float]], now: float
+    ) -> List[Dict[str, Any]]:
+        """Hour movers with strong volume bump (reuses E2-style candidate rows)."""
+        min_pct = _env_float("COINBASE_GATE_C_MIN_HOUR_PCT", 0.05)
+        min_vol_ratio = _env_float("COINBASE_GATE_C_MIN_VOL_RATIO", 3.0)
+        rows = self._e2_candidates(state, prices, now)
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                hp = float(row.get("hour_pct") or 0.0)
+                vr = float(row.get("vol_ratio") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if hp < min_pct or vr < min_vol_ratio:
+                continue
+            out.append(row)
+        out.sort(key=lambda x: (-float(x.get("hour_pct") or 0.0), -float(x.get("vol_ratio") or 0.0)))
+        return out
+
+    def _gate_c_scan(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        if not _coinbase_gates_mode():
+            return
+        if not _env_bool("COINBASE_GATE_C_ENABLED", False):
+            return
+        max_n = max(1, int(_env_float("COINBASE_GATE_C_POSITIONS", 20.0)))
+        gate_c_min = max(0, int(_env_float("COINBASE_GATE_C_MIN_POSITIONS", 5.0)))
+        budget_frac = _env_float("COINBASE_GATE_CD_BUDGET_PCT", 0.10)
+        order_usd = max(
+            _min_order_usd(usd_balance),
+            _deployable_usd(usd_balance) * max(0.01, min(0.25, budget_frac)) / max(1, max_n),
+        )
+        eng = 2
+
+        while _count_gate(state, "C") < max_n:
+            placed = False
+            urgent = _count_gate(state, "C") < gate_c_min
+            if urgent:
+                logger.info(
+                    "Gate C URGENT refill: %d open < min %d",
+                    _count_gate(state, "C"),
+                    gate_c_min,
+                )
+            ranked = self._find_gate_c_gainers(state, prices, now)
+            for row in ranked:
+                if _count_gate(state, "C") >= max_n:
+                    break
+                pid = str(row.get("product_id") or "")
+                if not pid or pid not in prices:
+                    continue
+                mid = float(row.get("mid") or 0.0)
+                if mid <= 0:
+                    bid, ask = prices[pid]
+                    mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+                hg = float(row.get("hour_pct") or 0.0)
+                ok, _ = _can_buy_gate(state, "C", pid, order_usd, usd_balance, max_n)
+                if not ok:
+                    continue
+                if not self._rate_limiter.allow():
+                    return
+                r = self._client.place_market_buy(pid, order_usd)
+                if not r.success:
+                    continue
+                placed = True
+                self._append_buy(
+                    state,
+                    engine=eng,
+                    product_id=pid,
+                    mid=mid,
+                    order_usd=order_usd,
+                    now=now,
+                    order_id=r.order_id,
+                    gate="C",
+                    position_pct=order_usd / max(usd_balance, 1e-9),
+                    strategy="pump",
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    send_telegram(
+                        f"🚀 C: {_cb_sym(pid)} +{hg*100:.1f}%/hr ${order_usd:.2f} @ ${mid:.4f}"
+                    )
+                except Exception:
+                    pass
+                break
+            if not placed:
+                break
+
+    def _gate_d_scan(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        if not _coinbase_gates_mode():
+            return
+        if not _env_bool("COINBASE_GATE_D_ENABLED", False):
+            return
+        max_n = max(1, int(_env_float("COINBASE_GATE_D_POSITIONS", 20.0)))
+        gate_d_min = max(0, int(_env_float("COINBASE_GATE_D_MIN_POSITIONS", 5.0)))
+        move_pct = _env_float("COINBASE_GATE_D_TRIG_PCT", 0.0005)
+        budget_frac = _env_float("COINBASE_GATE_CD_BUDGET_PCT", 0.10)
+        order_usd = max(
+            _min_order_usd(usd_balance),
+            _deployable_usd(usd_balance) * max(0.01, min(0.25, budget_frac)) / max(1, max_n),
+        )
+        eng = 4
+
+        while _count_gate(state, "D") < max_n:
+            placed = False
+            urgent = _count_gate(state, "D") < gate_d_min
+            if urgent:
+                logger.info(
+                    "Gate D URGENT refill: %d open < min %d",
+                    _count_gate(state, "D"),
+                    gate_d_min,
+                )
+            for pid in _E4_LIQUID:
+                if _count_gate(state, "D") >= max_n:
+                    break
+                if pid not in prices:
+                    continue
+                bid, ask = prices[pid]
+                if bid <= 0 and ask <= 0:
+                    continue
+                mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+                hist = list(self._price_history.get(pid) or [])
+                ref30 = _mid_at_or_before(hist, now - 30.0)
+                if ref30 is None or ref30 <= 0:
+                    continue
+                move = (mid - ref30) / ref30
+                sig = abs(move) >= move_pct if not urgent else abs(move) >= move_pct * 0.5
+                if not sig:
+                    continue
+                ok, _ = _can_buy_gate(state, "D", pid, order_usd, usd_balance, max_n)
+                if not ok:
+                    continue
+                if not self._rate_limiter.allow():
+                    return
+                r = self._client.place_market_buy(pid, order_usd)
+                if not r.success:
+                    continue
+                placed = True
+                self._append_buy(
+                    state,
+                    engine=eng,
+                    product_id=pid,
+                    mid=mid,
+                    order_usd=order_usd,
+                    now=now,
+                    order_id=r.order_id,
+                    gate="D",
+                    position_pct=order_usd / max(usd_balance, 1e-9),
+                    strategy="micro",
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    send_telegram(
+                        f"⚡ D: {_cb_sym(pid)} ${order_usd:.2f} @ ${mid:,.0f}"
+                    )
+                except Exception:
+                    pass
+                break
+            if not placed:
                 break
 
     def _scan(self) -> Dict[str, Any]:
@@ -1810,14 +2139,16 @@ class CoinbaseAccumulator:
         scan_ids = _hf_scan_product_ids(self._client, state, now)
         pids = list(set(scan_ids) | set(collect_price_product_ids(state)))
         if _coinbase_gates_mode():
-            ga = _parse_csv_products(
-                os.environ.get("COINBASE_GATE_A_PRODUCTS") or "BTC-USD,ETH-USD,SOL-USD"
-            )
+            ga_raw = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
+            ga = _parse_csv_products(ga_raw) if ga_raw else list(_GATE_A_PRODUCTS_DEFAULT)
             fb = _parse_csv_products(
                 os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS")
                 or ",".join(_GATE_B_FALLBACK_PRODUCTS)
             )
-            pids = list(set(pids) | set(ga) | set(fb))
+            extra = set(ga) | set(fb) | set(_E4_LIQUID)
+            if _env_bool("COINBASE_GATE_C_ENABLED", False):
+                extra |= set(list(state.get("hf_product_cache") or [])[:400])
+            pids = list(set(pids) | extra)
 
         try:
             prices = self._client.get_prices_batched(pids)
@@ -1856,6 +2187,10 @@ class CoinbaseAccumulator:
             if run_buy_tick:
                 self._gate_a_scan(state, prices, usd_balance, now)
                 self._gate_b_gainer(state, prices, usd_balance, now)
+                if _env_bool("COINBASE_GATE_C_ENABLED", False):
+                    self._gate_c_scan(state, prices, usd_balance, now)
+                if _env_bool("COINBASE_GATE_D_ENABLED", False):
+                    self._gate_d_scan(state, prices, usd_balance, now)
         elif run_buy_tick:
             self._engine_4_micro(state, prices, usd_balance, now)
             self._engine_1_dip(state, prices, usd_balance, now)

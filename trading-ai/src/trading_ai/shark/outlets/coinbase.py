@@ -483,10 +483,11 @@ class CoinbaseClient:
 
     def list_exchange_usd_products(self) -> List[Dict[str, Any]]:
         """
-        Full universe of **online** USD pairs from Coinbase Exchange
-        ``GET https://api.exchange.coinbase.com/products`` — public JSON array, no JWT.
+        **Online** USD-quoted products from Coinbase Exchange
+        ``GET https://api.exchange.coinbase.com/products`` (public JSON array, no JWT).
 
-        Each row includes ``product_id`` (same as Exchange ``id``, e.g. ``BTC-USD``).
+        Advanced Trade spot universe is **crypto** pairs here (e.g. ``BTC-USD``). Rows
+        include ``status``, ``quote_currency``, optional ``product_type`` when present.
         """
         try:
             data = _exchange_public_request("/products")
@@ -513,6 +514,9 @@ class CoinbaseClient:
                     "product_id": pid,
                     "quote_currency": "USD",
                     "base_currency": str(row.get("base_currency") or ""),
+                    "product_type": str(
+                        row.get("product_type") or row.get("type") or "SPOT"
+                    ),
                 }
             )
         return out
