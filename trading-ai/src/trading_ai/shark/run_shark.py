@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
 import sys
 import threading
 import time
+import traceback
 
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 
@@ -32,6 +34,7 @@ require_ezras_runtime_root()
 
 from trading_ai.shark.reporting import startup_banner
 from trading_ai.shark.scan_execute import run_gap_confirmed_hook, run_scan_execution_cycle
+from trading_ai.governance.storage_architecture import shark_state_path
 from trading_ai.shark.state_store import (
     backup_all_state_files,
     integrity_check_or_restore,
@@ -133,6 +136,7 @@ def main() -> None:
         from trading_ai.shark.coinbase_accumulator import (
             CoinbaseAccumulator,
             coinbase_enabled,
+            sell_expired_positions_on_startup,
         )
 
         if coinbase_enabled():
@@ -140,6 +144,9 @@ def main() -> None:
             n_fs = _coinbase_accumulator.force_sell_all_positions()
             if n_fs:
                 log.info("Coinbase startup force-sell: sold %s position(s)", n_fs)
+            n_ex = sell_expired_positions_on_startup()
+            if n_ex:
+                log.info("Coinbase startup: sold %s expired position(s)", n_ex)
             _coinbase_accumulator.load_and_check_positions_on_startup()
             log.info("Coinbase accumulator initialised")
         else:
@@ -996,8 +1003,32 @@ def main() -> None:
             rec = load_capital()
             bal = trading_capital_usd_for_alerts(fallback=rec.current_capital)
             t = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            send_telegram(f"✅ EZRAS BOT ONLINE — ${bal:.2f} ready, all systems active, {t}")
-            log.info("ONLINE: startup Telegram sent (EZRAS BOT ONLINE)")
+            rp = shark_state_path("restart_count.json")
+            restarts: dict = {"count": 0, "last_restart": 0.0}
+            if rp.is_file():
+                try:
+                    raw = json.loads(rp.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        restarts.update(raw)
+                except Exception:
+                    pass
+            restarts["count"] = int(restarts.get("count") or 0) + 1
+            restarts["last_restart"] = time.time()
+            try:
+                rp.write_text(json.dumps(restarts, indent=2), encoding="utf-8")
+            except Exception as wexc:
+                log.warning("restart_count.json write failed: %s", wexc)
+            n = int(restarts["count"])
+            if n > 1:
+                send_telegram(
+                    f"⚠️ BOT RESTARTED (#{n}) — selling expired positions — ${bal:.2f}, {t}"
+                )
+                log.info("ONLINE: startup Telegram sent (RESTART #%s)", n)
+            else:
+                send_telegram(
+                    f"✅ EZRAS BOT ONLINE — ${bal:.2f} ready, all systems active, {t}"
+                )
+                log.info("ONLINE: startup Telegram sent (EZRAS BOT ONLINE)")
         except Exception as exc:
             log.warning("ONLINE Telegram failed: %s", exc)
 
@@ -1061,11 +1092,12 @@ def main() -> None:
         time.sleep(60)
 
 
-if __name__ == "__main__":
+def _safe_main() -> None:
+    log = logging.getLogger("shark.run")
     try:
         main()
     except KeyboardInterrupt:
-        raise
+        log.info("Shutdown requested")
     except SystemExit as e:
         code = e.code
         if code not in (0, None, False):
@@ -1076,11 +1108,17 @@ if __name__ == "__main__":
             except Exception:
                 pass
         raise
-    except Exception as exc:
+    except Exception as e:
+        err = traceback.format_exc()
+        log.critical("FATAL CRASH: %s\n%s", e, err)
         try:
-            from trading_ai.shark.reporting import send_telegram_fatal_once
+            from trading_ai.shark.reporting import send_telegram
 
-            send_telegram_fatal_once(f"🛑 SHARK FATAL\n{type(exc).__name__}: {exc}")
+            send_telegram(f"🚨 BOT CRASHED — restarting\n{str(e)[:200]}")
         except Exception:
             pass
-        raise
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    _safe_main()

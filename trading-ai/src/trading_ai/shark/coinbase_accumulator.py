@@ -1,9 +1,10 @@
 """
 Coinbase — **four engines** (E1–E4), **25% / 25% / 25% / 25%** of deployable capital each,
-or **Gates A–D** when ``COINBASE_GATES_MODE=true`` (default: A+B on; C/D via env):
+or **Gates A–E** when ``COINBASE_GATES_MODE=true`` (default: A+B on; C/D/E via env):
 **A** dip+momentum on **five** large caps only (BTC/ETH/SOL/XRP/DOGE), **B** gainers +
 momentum fallback with **min price** and **24h quote volume** filters, **C** high hour
-momentum (optional; same min-price rule), **D** BTC/ETH micro scalp (optional). Spot USD pairs from Exchange
+momentum (optional; same min-price rule), **D** BTC/ETH micro scalp (optional), **E** optional BTC/ETH
+RSI/MACD/EMA entries with optional 50% scale-out hedge at ``COINBASE_HEDGE_TRIGGER_PCT``. Spot USD pairs from Exchange
 ``/products`` (crypto); Kalshi covers predictions/sports separately.
 
 Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reserve via
@@ -77,6 +78,8 @@ _GATE_A_PRODUCTS: Tuple[str, ...] = (
 )
 # Gate D (when implemented) — BTC/ETH only; documented for exits/sizing symmetry.
 _GATE_D_PRODUCTS: Tuple[str, ...] = ("BTC-USD", "ETH-USD")
+# Gate E — same universe as D (BTC/ETH surgical RSI/MACD/EMA entries)
+_GATE_E_PRODUCTS: Tuple[str, ...] = ("BTC-USD", "ETH-USD")
 # Gate B momentum fallback when gainer screen is empty (liquid alts).
 _GATE_B_FALLBACK_PRODUCTS: Tuple[str, ...] = (
     "XRP-USD",
@@ -288,6 +291,55 @@ def _mid_at_or_before(
     return float(old[-1][1])
 
 
+def _ema_series(closes: List[float], period: int) -> List[float]:
+    """Exponential moving average; first value is SMA(seed) over first ``period`` bars."""
+    if len(closes) < period:
+        return []
+    k = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / float(period)
+    out = [ema]
+    for x in closes[period:]:
+        ema = x * k + ema * (1.0 - k)
+        out.append(ema)
+    return out
+
+
+def _ema_last(closes: List[float], period: int) -> float:
+    s = _ema_series(closes, period)
+    return float(s[-1]) if s else 0.0
+
+
+def _rsi_last(closes: List[float], period: int = 14) -> float:
+    """Simple RSI from the last ``period`` one-bar changes (bounded 0–100)."""
+    if len(closes) < period + 1:
+        return 50.0
+    gains = 0.0
+    losses = 0.0
+    for i in range(-period, 0):
+        ch = closes[i] - closes[i - 1]
+        if ch >= 0:
+            gains += ch
+        else:
+            losses -= ch
+    avg_g = gains / float(period)
+    avg_l = losses / float(period)
+    if avg_l <= 1e-12:
+        return 100.0 if avg_g > 0 else 50.0
+    rs = avg_g / avg_l
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _macd_line_last(closes: List[float]) -> Tuple[float, float]:
+    """(macd_now, macd_prev) using EMA12−EMA26 on ``closes`` and ``closes[:-1]``."""
+    if len(closes) < 28:
+        return 0.0, 0.0
+    m_now = _ema_last(closes, 12) - _ema_last(closes, 26)
+    m_prev = (
+        _ema_last(closes[:-1], 12) - _ema_last(closes[:-1], 26) if len(closes) > 28 else m_now
+    )
+    return m_now, m_prev
+
+
 def _min_product_price_usd() -> float:
     """Minimum spot mid/bid for buys and Gate B / E2 candidate screens."""
     return max(1e-12, _env_float("COINBASE_MIN_PRODUCT_PRICE", 0.01))
@@ -365,24 +417,30 @@ def _count_gate(state: Dict[str, Any], gate: str) -> int:
 
 
 def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
-    """(take_profit_pct, stop_loss_pct, time_stop_minutes) for gate A/B/C/D; else None."""
+    """(take_profit_pct, stop_loss_pct, time_stop_minutes) for gates A/B/E/C/D; else None."""
     g = (gate or "").strip().upper()
     if g in ("A", "B"):
         return (
-            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025),
-            _env_float("COINBASE_STOP_LOSS_PCT", 0.00025),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.00015),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.00012),
             _env_float("COINBASE_TIME_STOP_MIN", 3.0),
+        )
+    if g == "E":
+        return (
+            _env_float("COINBASE_GATE_E_PROFIT_PCT", 0.00015),
+            _env_float("COINBASE_GATE_E_STOP_PCT", 0.00012),
+            _env_float("COINBASE_GATE_E_TIME_MIN", 3.0),
         )
     if g == "C":
         return (
-            _env_float("COINBASE_GATE_C_PROFIT_PCT", 0.01),
-            _env_float("COINBASE_GATE_C_STOP_PCT", 0.005),
-            _env_float("COINBASE_GATE_C_TIME_MIN", 10.0),
+            _env_float("COINBASE_GATE_C_PROFIT_PCT", 0.00015),
+            _env_float("COINBASE_GATE_C_STOP_PCT", 0.00012),
+            _env_float("COINBASE_GATE_C_TIME_MIN", 3.0),
         )
     if g == "D":
         return (
-            _env_float("COINBASE_GATE_D_PROFIT_PCT", 0.001),
-            _env_float("COINBASE_GATE_D_STOP_PCT", 0.001),
+            _env_float("COINBASE_GATE_D_PROFIT_PCT", 0.00015),
+            _env_float("COINBASE_GATE_D_STOP_PCT", 0.00012),
             _env_float("COINBASE_GATE_D_TIME_MIN", 3.0),
         )
     return None
@@ -1061,21 +1119,25 @@ class CoinbaseAccumulator:
             gate_b_min = max(0, int(_env_float("COINBASE_GATE_B_MIN_POSITIONS", 10.0)))
             gate_c_min = max(0, int(_env_float("COINBASE_GATE_C_MIN_POSITIONS", 5.0)))
             gate_d_min = max(0, int(_env_float("COINBASE_GATE_D_MIN_POSITIONS", 5.0)))
+            gate_e_min = max(0, int(_env_float("COINBASE_GATE_E_MIN_POSITIONS", 1.0)))
             a_count = _count_gate(state, "A")
             b_count = _count_gate(state, "B")
             c_count = _count_gate(state, "C")
             d_count = _count_gate(state, "D")
+            e_count = _count_gate(state, "E")
             need_c = _env_bool("COINBASE_GATE_C_ENABLED", False) and c_count < gate_c_min
             need_d = _env_bool("COINBASE_GATE_D_ENABLED", False) and d_count < gate_d_min
-            if a_count < gate_a_min or b_count < gate_b_min or need_c or need_d:
+            need_e = _env_bool("COINBASE_GATE_E_ENABLED", False) and e_count < gate_e_min
+            if a_count < gate_a_min or b_count < gate_b_min or need_c or need_d or need_e:
                 logger.info(
-                    "BLITZ JOB: Gate A=%d (min %d) B=%d (min %d) C=%d D=%d — urgent refill",
+                    "BLITZ JOB: Gate A=%d (min %d) B=%d (min %d) C=%d D=%d E=%d — urgent refill",
                     a_count,
                     gate_a_min,
                     b_count,
                     gate_b_min,
                     c_count,
                     d_count,
+                    e_count,
                 )
                 # Fetch prices for gate products + fallbacks + slice of HF cache (Gate C)
                 ga_pids = list(_GATE_A_PRODUCTS)
@@ -1090,6 +1152,7 @@ class CoinbaseAccumulator:
                     | set(hf_extra)
                     | set(_E4_LIQUID)
                     | set(_GATE_D_PRODUCTS)
+                    | set(_GATE_E_PRODUCTS)
                 )
                 if not all_pids:
                     all_pids = list(_GATE_B_FALLBACK_PRODUCTS)
@@ -1112,15 +1175,18 @@ class CoinbaseAccumulator:
                         self._gate_c_scan(state, refill_prices, usd_balance, now)
                     if need_d and _count_gate(state, "D") < gate_d_min:
                         self._gate_d_scan(state, refill_prices, usd_balance, now)
+                    if need_e and _count_gate(state, "E") < gate_e_min:
+                        self._gate_e_scan(state, refill_prices, usd_balance, now)
                     save_coinbase_state(state)
 
         return exits
 
     def _run_profit_scan(self) -> int:
-        """Profit-only scanner — called every 3s (separate from the 5s time/stop exit check).
+        """Profit + optional delta hedge — every 3s (see ``coinbase_loss_scan`` for stops).
 
-        Sells any position that has hit COINBASE_PROFIT_TARGET_PCT (default 0.25%) OR
-        COINBASE_MIN_PROFIT_USD (default $0.025), whichever fires first.
+        Full exit at ``COINBASE_PROFIT_TARGET_PCT`` / ``COINBASE_MIN_PROFIT_USD``. When
+        ``COINBASE_HEDGE_ENABLED``, runs ``_check_hedge_opportunities`` first (50% scale-out
+        at ``COINBASE_HEDGE_TRIGGER_PCT``).
         """
         if not coinbase_enabled():
             return 0
@@ -1130,14 +1196,31 @@ class CoinbaseAccumulator:
         if not state.get("positions"):
             return 0
 
-        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025)
-        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.025)
+        now = time.time()
+        if self._migrate_expiry_fields(state, now):
+            save_coinbase_state(state)
+        if self._any_position_expired(state, now):
+            logger.info(
+                "PROFIT SCAN: expired position(s) — running unified exit check first"
+            )
+            return self._check_exits_only()
+
+        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.00015)
+        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.015)
 
         prices = self._get_prices_for_positions(state)
         if not prices:
             return 0
 
-        now = time.time()
+        hedge_n = 0
+        try:
+            hedge_n = self._check_hedge_opportunities(state, prices)
+            if hedge_n:
+                state = load_coinbase_state()
+                prices = self._get_prices_for_positions(state) or {}
+        except Exception as exc:
+            logger.warning("Hedge check: %s", exc)
+
         exits = 0
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
@@ -1256,13 +1339,13 @@ class CoinbaseAccumulator:
 
         state["positions"] = remaining
         save_coinbase_state(state)
-        return exits
+        return exits + hedge_n
 
     def _run_loss_scan(self) -> int:
-        """Tight stop for **gate** positions (A/B/C/D) — scheduler ``coinbase_loss_scan`` every 3s.
+        """Tight stop for **gate** positions (A–E) — scheduler ``coinbase_loss_scan`` every 3s.
 
-        Uses ``COINBASE_STOP_LOSS_PCT`` (default **0.025%** = 0.00025). Engine-only positions keep
-        their wider stops on the 5s ``coinbase_exit_check`` path.
+        Uses per-gate stop from :func:`_gate_tp_sl_tmin` (default **0.012%** = 0.00012). Engine-only
+        positions keep their wider stops on the 5s ``coinbase_exit_check`` path.
         """
         if not coinbase_enabled():
             return 0
@@ -1272,13 +1355,19 @@ class CoinbaseAccumulator:
         if not state.get("positions"):
             return 0
 
-        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.00025)
+        now = time.time()
+        if self._migrate_expiry_fields(state, now):
+            save_coinbase_state(state)
+        if self._any_position_expired(state, now):
+            logger.info(
+                "LOSS SCAN: expired position(s) — running unified exit check first"
+            )
+            return self._check_exits_only()
 
         prices = self._get_prices_for_positions(state)
         if not prices:
             return 0
 
-        now = time.time()
         exits = 0
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
@@ -1289,9 +1378,11 @@ class CoinbaseAccumulator:
                 continue
 
             gate = str(pos.get("gate") or "").strip().upper()
-            if _gate_tp_sl_tmin(gate) is None:
+            gtrip_loss = _gate_tp_sl_tmin(gate)
+            if gtrip_loss is None:
                 remaining.append(pos)
                 continue
+            _, stop_loss_pct, _ = gtrip_loss
 
             pid = str(pos.get("product_id") or "")
             if pid not in prices:
@@ -1438,7 +1529,7 @@ class CoinbaseAccumulator:
                 try:
                     from trading_ai.shark.reporting import send_telegram
 
-                    prefix = f"Gate {gate} " if gate in ("A", "B", "C", "D") else ""
+                    prefix = f"Gate {gate} " if gate in ("A", "B", "C", "D", "E") else ""
                     send_telegram(
                         f"🛑 {prefix}STOP: {pid} {pnl_pct * 100:+.3f}%"
                         f" ${pnl_usd:+.4f} (loss scan <3s)"
@@ -1453,32 +1544,302 @@ class CoinbaseAccumulator:
         save_coinbase_state(state)
         return exits
 
+    def _calculate_signals(self, pid: str, now: float) -> Dict[str, Any]:
+        """RSI + MACD (EMA12−EMA26) + EMA9 vs EMA21 cross for Gate E (BTC/ETH)."""
+        rsi_lo = _env_float("COINBASE_GATE_E_RSI_LO", 40.0)
+        rsi_hi = _env_float("COINBASE_GATE_E_RSI_HI", 60.0)
+        out: Dict[str, Any] = {
+            "signal": "none",
+            "rsi": 50.0,
+            "macd": 0.0,
+            "macd_prev": 0.0,
+            "ema9": 0.0,
+            "ema21": 0.0,
+            "ema9_prev": 0.0,
+            "ema21_prev": 0.0,
+        }
+        hist = list(self._price_history.get(pid) or [])
+        closes = [float(t[1]) for t in hist[-1200:]]
+        if len(closes) < 60:
+            return out
+        rsi = _rsi_last(closes, 14)
+        e9s = _ema_series(closes, 9)
+        e21s = _ema_series(closes, 21)
+        if len(e9s) < 2 or len(e21s) < 2:
+            return out
+        e9, e9p = e9s[-1], e9s[-2]
+        e21, e21p = e21s[-1], e21s[-2]
+        m_now, m_prev = _macd_line_last(closes)
+        out.update(
+            {
+                "rsi": rsi,
+                "macd": m_now,
+                "macd_prev": m_prev,
+                "ema9": e9,
+                "ema21": e21,
+                "ema9_prev": e9p,
+                "ema21_prev": e21p,
+            }
+        )
+        if _env_bool("COINBASE_GATE_E_MACD_TURN", False):
+            macd_ok = m_now > 0.0 and m_prev <= 0.0
+        else:
+            macd_ok = m_now > 0.0
+        rsi_ok = rsi_lo <= rsi <= rsi_hi
+        if _env_bool("COINBASE_GATE_E_STRICT_CROSS", True):
+            cross = e9 > e21 and e9p <= e21p
+        else:
+            cross = e9 > e21
+        if rsi_ok and macd_ok and cross:
+            out["signal"] = "buy"
+        return out
+
+    def _check_hedge_opportunities(
+        self, state: Dict[str, Any], prices: Dict[str, Tuple[float, float]]
+    ) -> int:
+        """Delta-neutral partial exit: sell 50% when unrealized PnL ≥ ``COINBASE_HEDGE_TRIGGER_PCT``."""
+        if not _env_bool("COINBASE_HEDGE_ENABLED", True):
+            return 0
+        hedge_trigger = _env_float("COINBASE_HEDGE_TRIGGER_PCT", 0.0001)
+        hedged = 0
+        positions = state.get("positions") or []
+        now = time.time()
+
+        for pos in positions:
+            if pos.get("hedge_done"):
+                continue
+            if pos.get("exit_submitted"):
+                continue
+
+            pid = str(pos.get("product_id") or "")
+            if not pid or pid not in prices:
+                continue
+            bid, _ask = prices[pid]
+            if not bid or bid <= 0:
+                continue
+            entry = float(pos.get("entry_price") or 0.0)
+            if not entry:
+                continue
+            pnl_pct = (float(bid) - entry) / entry
+            if pnl_pct < hedge_trigger:
+                continue
+
+            size_base = float(pos.get("size_base") or 0.0)
+            cost_usd = float(pos.get("cost_usd") or 0.0)
+            if size_base <= 0 or cost_usd <= 0:
+                continue
+
+            hedge_size = size_base * 0.5
+            base_str = _fmt_base_size(pid, hedge_size)
+            gate = str(pos.get("gate") or "").upper()
+
+            logger.info(
+                "HEDGE: %s up %.4f%% → selling 50%% to lock profit",
+                pid,
+                pnl_pct * 100.0,
+            )
+            result = self._try_market_sell_twice(pid, base_str)
+            if not result.success:
+                logger.warning("HEDGE: sell failed %s", pid)
+                continue
+
+            hedged += 1
+            pos["hedge_done"] = True
+            pos["hedge_pct"] = pnl_pct
+            pos["hedge_ts"] = now
+            pos["size_base"] = size_base - hedge_size
+            pos["cost_usd"] = cost_usd * 0.5
+            pos["hedge_locked_usd"] = float(bid) * hedge_size - cost_usd * 0.5
+            save_coinbase_state(state)
+            try:
+                from trading_ai.shark.reporting import send_telegram
+
+                send_telegram(
+                    f"🔒 HEDGE LOCKED: {pid} +{pnl_pct * 100:.3f}% → 50% sold, profit secured"
+                    + (f" Gate {gate}" if gate else "")
+                )
+            except Exception:
+                pass
+            logger.info("HEDGE SUCCESS: %s — remaining 50%% still open", pid)
+
+        return hedged
+
+    def _gate_e_scan(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        """Gate E — BTC/ETH only: neutral RSI band, MACD>0, EMA9 vs EMA21 cross."""
+        if not _coinbase_gates_mode():
+            return
+        if not _env_bool("COINBASE_GATE_E_ENABLED", False):
+            return
+        max_n = max(1, int(_env_float("COINBASE_GATE_E_POSITIONS", 10.0)))
+        slice_pct = _env_float("COINBASE_GATE_E_SLICE_PCT", 0.10)
+        order_usd = max(
+            _min_order_usd(usd_balance),
+            _deployable_usd(usd_balance) * max(0.005, min(0.25, slice_pct)) / max(float(max_n), 10.0),
+        )
+        eng = 5
+
+        while _count_gate(state, "E") < max_n:
+            placed = False
+            for pid in _GATE_E_PRODUCTS:
+                if _count_gate(state, "E") >= max_n:
+                    break
+                if pid not in prices:
+                    continue
+                already = any(
+                    str(p.get("product_id")) == pid and str(p.get("gate") or "").upper() == "E"
+                    for p in (state.get("positions") or [])
+                )
+                if already:
+                    continue
+
+                signals = self._calculate_signals(pid, now)
+                if signals.get("signal") != "buy":
+                    continue
+
+                rsi = float(signals.get("rsi") or 50.0)
+                macd = float(signals.get("macd") or 0.0)
+                bid, ask = prices.get(pid, (0.0, 0.0))
+                if not bid or bid <= 0:
+                    continue
+                mid = (float(bid) + float(ask or 0)) / 2.0 if ask and float(ask) > 0 else float(bid)
+
+                ok, _ = _can_buy_gate(state, "E", pid, order_usd, usd_balance, max_n)
+                if not ok:
+                    continue
+                ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+                if not ok_liq:
+                    continue
+                if not self._rate_limiter.allow():
+                    return
+                if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                    continue
+
+                r = self._client.place_market_buy(pid, order_usd)
+                if not r.success:
+                    continue
+                placed = True
+                extra = {
+                    "hedge_done": False,
+                    "rsi_entry": rsi,
+                    "macd_entry": macd,
+                    "signals": signals,
+                }
+                self._append_buy(
+                    state,
+                    engine=eng,
+                    product_id=pid,
+                    mid=mid,
+                    order_usd=order_usd,
+                    now=now,
+                    order_id=r.order_id,
+                    gate="E",
+                    position_pct=order_usd / max(usd_balance, 1e-9),
+                    strategy="rsi_macd_ema",
+                    extra_fields=extra,
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    send_telegram(
+                        f"📡 Gate E (RSI/MACD): {pid} ${order_usd:.2f} @ ${mid:.4f} "
+                        f"RSI={rsi:.0f} MACD={'↑' if macd > 0 else '↓'}"
+                    )
+                except Exception:
+                    pass
+                break
+            if not placed:
+                break
+
+    def _time_stop_limit_sec(self, pos: Dict[str, Any]) -> float:
+        """Seconds until time-stop for this position (gate rules or engine E1–E4)."""
+        eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
+        gate = str(pos.get("gate") or "").strip().upper()
+        gtrip = _gate_tp_sl_tmin(gate)
+        if gtrip:
+            _tp, _sl, tmin = gtrip
+        else:
+            _tp, _sl, tmin, _trail = self._exit_params(eng)
+        return max(0.0, float(tmin) * 60.0)
+
+    def _migrate_expiry_fields(self, state: Dict[str, Any], now: float) -> bool:
+        """Backfill ``expiry_time`` / ``must_sell_by`` from ``entry_time`` + time stop."""
+        changed = False
+        out: List[Dict[str, Any]] = []
+        for pos in state.get("positions") or []:
+            p = dict(pos)
+            ex = p.get("expiry_time")
+            ms = p.get("must_sell_by")
+            if ex is not None and ms is None:
+                p["must_sell_by"] = float(ex)
+                changed = True
+            elif ms is not None and ex is None:
+                p["expiry_time"] = float(ms)
+                changed = True
+            if p.get("expiry_time") is not None:
+                out.append(p)
+                continue
+            tlim = self._time_stop_limit_sec(p)
+            entry_t = float(p.get("entry_time") or 0.0)
+            if entry_t > 0:
+                p["expiry_time"] = entry_t + tlim
+            else:
+                p["expiry_time"] = now
+            p["must_sell_by"] = p["expiry_time"]
+            changed = True
+            out.append(p)
+        if changed:
+            state["positions"] = out
+        return changed
+
+    def _any_position_expired(self, state: Dict[str, Any], now: float) -> bool:
+        """True if any open position is past persisted ``expiry_time`` or age-based time stop."""
+        for pos in state.get("positions") or []:
+            tlim = self._time_stop_limit_sec(pos)
+            if tlim <= 0:
+                continue
+            ex = float(pos.get("expiry_time") or pos.get("must_sell_by") or 0.0)
+            if ex > 0 and now >= ex:
+                return True
+            if ex <= 0:
+                et = float(pos.get("entry_time") or 0.0)
+                if et <= 0:
+                    et = now - 600.0
+                if now - et >= tlim:
+                    return True
+        return False
+
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
         """Returns (profit_pct, stop_pct, time_min, trail_pct). trail only used for E2."""
         if engine == 1:
             return (
-                _env_float("COINBASE_E1_PROFIT_PCT", 0.02),
-                _env_float("COINBASE_E1_STOP_PCT", 0.01),
-                _env_float("COINBASE_E1_TIME_MIN", 10.0),
+                _env_float("COINBASE_E1_PROFIT_PCT", 0.00015),
+                _env_float("COINBASE_E1_STOP_PCT", 0.00012),
+                _env_float("COINBASE_E1_TIME_MIN", 3.0),
                 0.0,
             )
         if engine == 2:
             return (
-                _env_float("COINBASE_E2_PROFIT_PCT", 0.50),
-                _env_float("COINBASE_E2_STOP_PCT", 0.10),
-                _env_float("COINBASE_E2_TIME_MIN", 120.0),
-                _env_float("COINBASE_E2_TRAIL_PCT", 0.10),
+                _env_float("COINBASE_E2_PROFIT_PCT", 0.00015),
+                _env_float("COINBASE_E2_STOP_PCT", 0.00012),
+                _env_float("COINBASE_E2_TIME_MIN", 3.0),
+                _env_float("COINBASE_E2_TRAIL_PCT", 0.00012),
             )
         if engine == 3:
             return (
-                _env_float("COINBASE_E3_PROFIT_PCT", 0.005),
-                _env_float("COINBASE_E3_STOP_PCT", 0.003),
-                _env_float("COINBASE_E3_TIME_MIN", 5.0),
+                _env_float("COINBASE_E3_PROFIT_PCT", 0.00015),
+                _env_float("COINBASE_E3_STOP_PCT", 0.00012),
+                _env_float("COINBASE_E3_TIME_MIN", 3.0),
                 0.0,
             )
         return (
-            _env_float("COINBASE_E4_PROFIT_PCT", 0.0015),
-            _env_float("COINBASE_E4_STOP_PCT", 0.001),
+            _env_float("COINBASE_E4_PROFIT_PCT", 0.00015),
+            _env_float("COINBASE_E4_STOP_PCT", 0.00012),
             _env_float("COINBASE_E4_TIME_MIN", 3.0),
             0.0,
         )
@@ -1491,6 +1852,8 @@ class CoinbaseAccumulator:
     ) -> int:
         # One full pass over all open positions — no break after a successful sell
         # (time-stop and other exits can flush many positions in a single scan).
+        if self._migrate_expiry_fields(state, now):
+            save_coinbase_state(state)
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
         exits = 0
@@ -1588,8 +1951,26 @@ class CoinbaseAccumulator:
                 sell_reason = "sell_pending_retry"
             elif no_price:
                 sell_reason = "no_price_stop"
-            elif tlim > 0 and age >= tlim:
-                sell_reason = "timeout"
+            elif tlim > 0:
+                expiry_ts = float(
+                    pos.get("expiry_time") or pos.get("must_sell_by") or 0.0
+                )
+                if expiry_ts > 0:
+                    if now >= expiry_ts:
+                        sell_reason = "timeout"
+                        logger.info(
+                            "TIMEOUT: %s expired at %.0f now=%.0f (%.0fs overdue)",
+                            pid,
+                            expiry_ts,
+                            now,
+                            max(0.0, now - expiry_ts),
+                        )
+                else:
+                    entry_tf = float(pos.get("entry_time") or 0.0)
+                    if entry_tf <= 0:
+                        entry_tf = now - 600.0
+                    if now - entry_tf >= tlim:
+                        sell_reason = "timeout"
             elif pnl_pct >= tp:
                 sell_reason = f"tp +{tp*100:.2f}%"
             elif pnl_pct <= -sl:
@@ -1601,18 +1982,25 @@ class CoinbaseAccumulator:
                 and current > 0
                 and current < peak * (1.0 - trail)
             ):
-                sell_reason = f"trail -{trail*100:.0f}% peak"
+                sell_reason = f"trail -{trail*100:.3f}% peak"
 
             if not sell_reason:
                 upd = dict(pos)
                 upd["peak_price"] = peak
-                if eng == 2 and not _gate_tp_sl_tmin(gate) and pnl_pct >= 0.25 and not pos.get("ride2_tg"):
+                hedge_tr = _env_float("COINBASE_HEDGE_TRIGGER_PCT", 0.0001)
+                if (
+                    eng == 2
+                    and not _gate_tp_sl_tmin(gate)
+                    and pnl_pct >= hedge_tr
+                    and not pos.get("ride2_tg")
+                ):
                     upd["ride2_tg"] = True
                     try:
                         from trading_ai.shark.reporting import send_telegram
 
                         send_telegram(
-                            f"🚀 E2 RIDING: {_cb_sym(pid)} now +{pnl_pct*100:.0f}% from entry"
+                            f"🚀 E2 HEDGE/LOCK: {_cb_sym(pid)} now +{pnl_pct*100:.3f}% from entry "
+                            f"(trigger {hedge_tr*100:.3f}%)"
                         )
                     except Exception:
                         pass
@@ -1725,10 +2113,12 @@ class CoinbaseAccumulator:
                             )
                     elif eng == 2:
                         if "trail" in sell_reason:
-                            send_telegram(f"🛑 E2 TRAIL: {sym} -10% from peak sold")
+                            send_telegram(
+                                f"🛑 E2 TRAIL: {sym} -{trail*100:.4f}% from peak sold"
+                            )
                         else:
                             send_telegram(
-                                f"💰 E2 WIN: {sym} +{pnl_pct*100:.1f}% profit ${abs(profit_usd):.2f}"
+                                f"💰 E2 WIN: {sym} +{pnl_pct*100:.4f}% profit ${abs(profit_usd):.2f}"
                             )
                     elif eng == 3:
                         alert = cost_usd * _env_float("COINBASE_ALERT_MIN_REALIZED_PCT", 0.01)
@@ -1794,6 +2184,7 @@ class CoinbaseAccumulator:
         gate: str = "",
         position_pct: float = 0.0,
         strategy: str = "",
+        extra_fields: Optional[Dict[str, Any]] = None,
     ) -> None:
         pos: Dict[str, Any] = {
             "order_id": order_id,
@@ -1807,12 +2198,18 @@ class CoinbaseAccumulator:
             "sell_pending": False,
             "exit_submitted": False,
             "exit_notified": False,
+            "hedge_done": False,
         }
         if gate:
             pos["gate"] = gate
             pos["position_pct"] = position_pct
             if strategy:
                 pos["strategy"] = strategy
+        if extra_fields:
+            pos.update(extra_fields)
+        tlim = self._time_stop_limit_sec(pos)
+        pos["expiry_time"] = now + tlim
+        pos["must_sell_by"] = pos["expiry_time"]
         state.setdefault("positions", []).append(pos)
         label = f"Gate {gate}" if gate else f"E{engine}"
         logger.info(
@@ -2045,6 +2442,62 @@ class CoinbaseAccumulator:
             except Exception:
                 pass
 
+    def _calculate_signals(self, pid: str) -> Dict[str, Any]:
+        """RSI, MACD line, MACD histogram proxy, EMA 9/21 — entry signal for Gate A / Gate E."""
+        history = list(self._price_history.get(pid) or [])
+        empty = {
+            "signal": "none",
+            "rsi": 50.0,
+            "ema9": 0.0,
+            "ema21": 0.0,
+            "macd": 0.0,
+            "macd_hist": 0.0,
+            "bullish_cross": False,
+            "bearish_cross": False,
+            "rsi_neutral": False,
+        }
+        if len(history) < 21:
+            return dict(empty)
+
+        prices = [float(h[1]) for h in history[-80:]]
+        if len(prices) < 26:
+            return dict(empty)
+
+        ema9 = _ema_last(prices, 9)
+        ema21 = _ema_last(prices, 21)
+        ema9_prev = _ema_last(prices[:-1], 9)
+        ema21_prev = _ema_last(prices[:-1], 21)
+        bullish_cross = ema9 > ema21 and ema9_prev <= ema21_prev
+        bearish_cross = ema9 < ema21 and ema9_prev >= ema21_prev
+
+        rsi = _rsi_last(prices)
+        macd, macd_prev = _macd_line_last(prices)
+        macd_hist = macd - macd_prev
+
+        rsi_neutral = 35.0 <= rsi <= 65.0
+        macd_positive = macd > 0.0
+
+        if bullish_cross and rsi_neutral:
+            signal = "buy"
+        elif bearish_cross and rsi_neutral:
+            signal = "wait"
+        elif rsi < 35.0 and macd_positive:
+            signal = "buy"
+        else:
+            signal = "none"
+
+        return {
+            "signal": signal,
+            "rsi": rsi,
+            "ema9": ema9,
+            "ema21": ema21,
+            "macd": macd,
+            "macd_hist": macd_hist,
+            "bullish_cross": bullish_cross,
+            "bearish_cross": bearish_cross,
+            "rsi_neutral": rsi_neutral,
+        }
+
     def _gate_a_scan(
         self,
         state: Dict[str, Any],
@@ -2059,8 +2512,6 @@ class CoinbaseAccumulator:
         products = list(_GATE_A_PRODUCTS)
         max_n = max(1, int(_env_float("COINBASE_GATE_A_POSITIONS", 50.0)))
         gate_a_min = max(0, int(_env_float("COINBASE_GATE_A_MIN_POSITIONS", 10.0)))
-        dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.001)
-        mom_pct = _env_float("COINBASE_GATE_A_MOM_PCT", 0.0005)
         order_usd = _gate_dynamic_order_usd(usd_balance, max_n)
         eng = 3
 
@@ -2081,19 +2532,18 @@ class CoinbaseAccumulator:
                 if bid <= 0 and ask <= 0:
                     continue
                 mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
-                hist = list(self._price_history.get(pid) or [])
-                ref2 = _mid_at_or_before(hist, now - 120.0)
-                ref60 = _mid_at_or_before(hist, now - 60.0)
-                if urgent:
-                    signal = "urgent"
-                else:
-                    signal = ""
-                    if ref2 and ref2 > 0 and (mid - ref2) / ref2 <= -dip_pct:
-                        signal = "dip"
-                    elif ref60 and ref60 > 0 and (mid - ref60) / ref60 >= mom_pct:
-                        signal = "mom"
-                if not signal:
+                signals = self._calculate_signals(pid)
+                if signals.get("signal") != "buy":
                     continue
+                logger.info(
+                    "Gate A SIGNAL: %s RSI=%.1f EMA9=%.4f EMA21=%.4f MACD=%.6f",
+                    pid,
+                    float(signals.get("rsi") or 0.0),
+                    float(signals.get("ema9") or 0.0),
+                    float(signals.get("ema21") or 0.0),
+                    float(signals.get("macd") or 0.0),
+                )
+                strat = "sig_buy_urgent" if urgent else "sig_buy"
                 ok, _ = _can_buy_gate(state, "A", pid, order_usd, usd_balance, max_n)
                 if not ok:
                     continue
@@ -2118,7 +2568,7 @@ class CoinbaseAccumulator:
                     order_id=r.order_id,
                     gate="A",
                     position_pct=order_usd / max(usd_balance, 1e-9),
-                    strategy=signal,
+                    strategy=strat,
                 )
                 try:
                     from trading_ai.shark.reporting import send_telegram
@@ -2507,7 +2957,13 @@ class CoinbaseAccumulator:
                 os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS")
                 or ",".join(_GATE_B_FALLBACK_PRODUCTS)
             )
-            extra = set(ga) | set(fb) | set(_E4_LIQUID) | set(_GATE_D_PRODUCTS)
+            extra = (
+                set(ga)
+                | set(fb)
+                | set(_E4_LIQUID)
+                | set(_GATE_D_PRODUCTS)
+                | set(_GATE_E_PRODUCTS)
+            )
             if _env_bool("COINBASE_GATE_C_ENABLED", False):
                 extra |= set(list(state.get("hf_product_cache") or [])[:400])
             pids = list(set(pids) | extra)
@@ -2553,6 +3009,8 @@ class CoinbaseAccumulator:
                     self._gate_c_scan(state, prices, usd_balance, now)
                 if _env_bool("COINBASE_GATE_D_ENABLED", False):
                     self._gate_d_scan(state, prices, usd_balance, now)
+                if _env_bool("COINBASE_GATE_E_ENABLED", False):
+                    self._gate_e_scan(state, prices, usd_balance, now)
         elif run_buy_tick:
             self._engine_4_micro(state, prices, usd_balance, now)
             self._engine_1_dip(state, prices, usd_balance, now)
@@ -2569,3 +3027,71 @@ class CoinbaseAccumulator:
             "exits_this_scan": 0,
             "exits": 0,
         }
+
+
+def sell_expired_positions_on_startup() -> int:
+    """Sell any position past ``expiry_time`` or age-based time stop (restart-safe). Returns sell count."""
+    if not coinbase_enabled():
+        return 0
+    acc = CoinbaseAccumulator()
+    if not acc._client.has_credentials():
+        return 0
+    state = load_coinbase_state()
+    positions = list(state.get("positions") or [])
+    if not positions:
+        return 0
+    now = time.time()
+    if acc._migrate_expiry_fields(state, now):
+        save_coinbase_state(state)
+    time_stop_fallback = _env_float("COINBASE_TIME_STOP_MIN", 3.0) * 60.0
+    expired: List[Dict[str, Any]] = []
+    fresh: List[Dict[str, Any]] = []
+    for pos in positions:
+        tlim = acc._time_stop_limit_sec(pos)
+        ex = float(pos.get("expiry_time") or pos.get("must_sell_by") or 0.0)
+        entry_t = float(pos.get("entry_time") or 0.0)
+        is_expired = False
+        if ex > 0 and now >= ex:
+            is_expired = True
+        elif entry_t > 0 and tlim > 0 and (now - entry_t) >= tlim:
+            is_expired = True
+        elif entry_t > 0 and time_stop_fallback > 0 and (now - entry_t) >= time_stop_fallback:
+            is_expired = True
+        if is_expired:
+            expired.append(pos)
+        else:
+            fresh.append(pos)
+    if not expired:
+        return 0
+    logger.info(
+        "STARTUP: %d expired Coinbase position(s) — selling immediately",
+        len(expired),
+    )
+    try:
+        from trading_ai.shark.reporting import send_telegram
+
+        send_telegram(
+            f"🔄 Restart: selling {len(expired)} expired Coinbase position(s)"
+        )
+    except Exception:
+        pass
+    sold = 0
+    still_open: List[Dict[str, Any]] = []
+    for pos in expired:
+        pid = str(pos.get("product_id") or "")
+        size = float(pos.get("size_base") or 0.0)
+        if not pid or size <= 0:
+            still_open.append(pos)
+            continue
+        base_str = _fmt_base_size(pid, size)
+        res = acc._try_market_sell_twice(pid, base_str)
+        if res.success:
+            sold += 1
+            logger.info("STARTUP: sold expired %s", pid)
+        else:
+            logger.warning("STARTUP: sell failed for expired %s — keeping in state", pid)
+            still_open.append(pos)
+    state["positions"] = fresh + still_open
+    save_coinbase_state(state)
+    logger.info("STARTUP: expired startup sells done (%d/%d)", sold, len(expired))
+    return sold

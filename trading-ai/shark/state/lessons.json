@@ -192,6 +192,16 @@
       "applied": true,
       "rule_added": "COINBASE: Stop loss runs every 3s (loss scanner). Max loss 0.025% per gate position. Sell instantly.",
       "never_again": "Holding a gate position past ~0.025% loss because stop only ran on the 5s job"
+    },
+    {
+      "date": "2026-04-16",
+      "session": "Day_A_Live",
+      "platform": "coinbase",
+      "category": "delta_neutral",
+      "severity": "HIGH",
+      "cost": 0,
+      "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.008%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
+      "applied": true
     }
   ],
   "rules": [
@@ -206,7 +216,8 @@
     "COINBASE: Stop loss fires even when price = 0",
     "COINBASE: Exit loop processes ALL positions per scan",
     "COINBASE: Profit scan every 3s \u2014 sell at first profit",
-    "COINBASE: Loss scan every 3s \u2014 max 0.025% loss per gate position, sell instantly",
+    "COINBASE: Loss scan every 3s \u2014 per-gate stop (A/B/E default 0.012%), sell instantly",
+    "COINBASE: Gate E BTC/ETH RSI/MACD/EMA + optional 50% hedge at +0.008%",
     "COINBASE: 20% reserve always kept, never touch",
     "COINBASE: Gate C for night gainers \u2014 enable always",
     "GENERAL: Never deploy more than 20% per scan",

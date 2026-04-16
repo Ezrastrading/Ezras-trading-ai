@@ -126,10 +126,7 @@ def _gate_a_series_tickers() -> Tuple[str, ...]:
 
 
 def _gate_min_prob(gate: str) -> float:
-    if gate == "a":
-        return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.90)))
-    if gate == "b":
-        return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
+    _ = gate
     return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
 
 
@@ -142,6 +139,16 @@ def _gate_max_ttr_sec(gate: str) -> float:
     return max(lo, _parse_float("KALSHI_SIMPLE_TTR_MAX_SEC", 3600.0))
 
 
+def _delta_neutral_ttr_window(gate: str) -> Optional[Tuple[float, float]]:
+    """When ``KALSHI_DELTA_NEUTRAL=true``, TTR must fall in [min, max] seconds (default 60–120)."""
+    if not _env_truthy("KALSHI_DELTA_NEUTRAL", "false"):
+        return None
+    lo = max(1.0, _parse_float("KALSHI_DELTA_TTR_MIN", 60.0))
+    hi = max(lo, _parse_float("KALSHI_DELTA_TTR_MAX", 120.0))
+    _ = gate
+    return lo, hi
+
+
 def _gate_max_positions(gate: str) -> int:
     if gate == "a":
         return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 5))
@@ -150,14 +157,23 @@ def _gate_max_positions(gate: str) -> int:
     return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
 
 
+def _position_fraction() -> float:
+    raw_pct = (os.environ.get("KALSHI_ORDER_PCT") or "").strip()
+    if raw_pct:
+        return max(0.001, min(0.5, float(raw_pct)))
+    return max(0.001, min(0.5, _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.05)))
+
+
 def _gate_per_order_cap_usd(deployable: float, gate: str) -> float:
     d = max(0.0, float(deployable))
+    pct = _position_fraction()
+    cap = max(0.01, _parse_float("KALSHI_SIMPLE_MAX_ORDER_USD", 5.0))
     if gate == "a":
-        return max(0.01, min(10.0, d * 0.10))
+        return min(cap, max(5.0, d * pct))
     if gate == "b":
-        return max(0.01, min(5.0, d * 0.05))
+        return min(cap, max(5.0, d * pct))
     mx = max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
-    return max(0.01, min(10.0, d * 0.20 / float(mx)))
+    return min(cap, max(5.0, d * pct / float(mx)))
 
 
 def _is_sp_index_ticker(ticker: str) -> bool:
@@ -305,6 +321,13 @@ def _filter_simple_candidates(
         skip_ch = _skip_long_dated_or_championship(t, float(close_ts) if close_ts else None)
         if skip_ch:
             logger.info("Skip %s: %s", t, skip_ch)
+            continue
+
+        px = float(c.get("price") or 0.0)
+        elo = max(0.01, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MIN", 0.35)))
+        ehi = max(elo, min(0.99, _parse_float("KALSHI_ENTRY_PRICE_MAX", 0.65)))
+        if not (elo <= px <= ehi):
+            logger.debug("Skip %s: entry ask %.2f outside %.2f–%.2f", t, px, elo, ehi)
             continue
 
         if gate == "b" and close_dt is not None:
@@ -485,9 +508,8 @@ def _available_deployable_usd() -> float:
 
 
 def _per_position_usd(available: float) -> float:
-    """``available * KALSHI_SIMPLE_POSITION_PCT`` (fraction of deployable per slot)."""
-    pct = max(0.001, min(0.5, _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08)))
-    return max(0.0, float(available) * pct)
+    """``available * KALSHI_ORDER_PCT`` (or ``KALSHI_SIMPLE_POSITION_PCT``) per slot."""
+    return max(0.0, float(available) * _position_fraction())
 
 
 def _profit_pct() -> float:
@@ -499,7 +521,7 @@ def _stop_pct() -> float:
 
 
 def _time_stop_min() -> float:
-    return max(0.5, _parse_float("KALSHI_SIMPLE_TIME_STOP_MIN", 5.0))
+    return max(0.5, _parse_float("KALSHI_SIMPLE_TIME_STOP_MIN", 3.0))
 
 
 def _fetch_simple_candidates(
@@ -515,9 +537,19 @@ def _fetch_simple_candidates(
 
     gate = _simple_scan_gate()
     min_prob = _gate_min_prob(gate)
-    min_net = max(0.0, _parse_float("KALSHI_SIMPLE_MIN_NET_EDGE", 0.015))
-    ttr_lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
-    ttr_hi = _gate_max_ttr_sec(gate)
+    min_net = max(
+        0.0,
+        _parse_float(
+            "KALSHI_MIN_PROFIT_PER_TRADE",
+            _parse_float("KALSHI_SIMPLE_MIN_NET_EDGE", 0.015),
+        ),
+    )
+    dn = _delta_neutral_ttr_window(gate)
+    if dn is not None:
+        ttr_lo, ttr_hi = dn
+    else:
+        ttr_lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
+        ttr_hi = _gate_max_ttr_sec(gate)
     if ttr_hi < ttr_lo:
         ttr_hi = ttr_lo
     api_limit = max(50, min(500, _parse_int("KALSHI_SIMPLE_SERIES_LIMIT", 200)))
@@ -641,7 +673,7 @@ def _check_exits_first(
         return 0
 
     available = _available_deployable_usd()
-    position_pct = max(0.001, min(0.5, _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08)))
+    position_pct = _position_fraction()
     profit_pct = _profit_pct()
     stop_pct = _stop_pct()
     tmax = _time_stop_min() * 60.0
@@ -890,7 +922,7 @@ def _maintain_positions(
             "entry_time": time.time(),
             "entry_prob": float(picked["prob"]),
             "entry_price": fp,
-            "position_pct": _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08),
+            "position_pct": _position_fraction(),
             "exit_submitted": False,
         }
         state.setdefault("positions", []).append(pos)
