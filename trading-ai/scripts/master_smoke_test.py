@@ -211,6 +211,8 @@ def main() -> None:
     from trading_ai.shark.kalshi_simple_scanner import run_simple_scan
 
     os.environ["KALSHI_SIMPLE_SCAN_ENABLED"] = "true"
+    os.environ["KALSHI_GATE_A_ENABLED"] = "false"
+    os.environ["KALSHI_GATE_B_ENABLED"] = "false"
     os.environ["KALSHI_SIMPLE_MIN_PROB"] = "0.85"
     os.environ["KALSHI_SIMPLE_MAX_TRADES"] = "0"
     result = run_simple_scan()
