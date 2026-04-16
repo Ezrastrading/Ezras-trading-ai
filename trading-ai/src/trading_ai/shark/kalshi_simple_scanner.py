@@ -356,7 +356,7 @@ def _check_exits_first(
                 platform="kalshi",
                 gate="simple",
                 product_id=tid,
-                side="sell",
+                side="buy",
                 strategy="simple_scan",
                 entry_price=entry_prob,
                 exit_price=exit_prob,
