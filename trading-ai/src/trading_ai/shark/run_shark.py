@@ -137,6 +137,9 @@ def main() -> None:
 
         if coinbase_enabled():
             _coinbase_accumulator = CoinbaseAccumulator()
+            n_em = _coinbase_accumulator.emergency_clear_stale_positions()
+            if n_em:
+                log.info("Coinbase emergency stale clear: sold %s position(s)", n_em)
             _coinbase_accumulator.load_and_check_positions_on_startup()
             log.info("Coinbase accumulator initialised")
         else:

@@ -681,6 +681,164 @@ class CoinbaseAccumulator:
         except Exception as exc:
             logger.warning("Coinbase startup check failed (non-fatal): %s", exc)
 
+    def emergency_clear_stale_positions(self) -> int:
+        """On bot restart: market-sell any open position at or past ``COINBASE_TIME_STOP_MIN``.
+
+        Runs before the scheduler so stuck post-deploy positions are flushed immediately.
+        Uses the same sell path as normal exits (no buy rate-limiter gate).
+        """
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        state = load_coinbase_state()
+        _reset_daily_pnl_if_needed(state)
+        positions = list(state.get("positions") or [])
+        now = time.time()
+        time_stop_sec = _env_float("COINBASE_TIME_STOP_MIN", 5.0) * 60.0
+
+        def _is_stale(pos: Dict[str, Any]) -> bool:
+            entry_t = float(pos.get("entry_time") or 0.0)
+            if entry_t <= 0:
+                return True
+            age = now - entry_t
+            return age >= time_stop_sec
+
+        stale = [p for p in positions if _is_stale(p)]
+        fresh = [p for p in positions if not _is_stale(p)]
+        if not stale:
+            return 0
+
+        logger.info(
+            "Coinbase EMERGENCY: %d position(s) at/ past time stop (%.0fs) — selling now",
+            len(stale),
+            time_stop_sec,
+        )
+        scan_ids = _hf_scan_product_ids(self._client, state, now)
+        stale_ids = [str(p.get("product_id") or "") for p in stale if p.get("product_id")]
+        pids = list(set(scan_ids) | set(collect_price_product_ids(state)) | set(stale_ids))
+        try:
+            prices = self._client.get_prices_batched(pids)
+        except Exception as exc:
+            logger.warning("Coinbase EMERGENCY: price fetch failed: %s", exc)
+            return 0
+        if not prices:
+            logger.warning("Coinbase EMERGENCY: no prices — cannot clear stale positions")
+            return 0
+        self._ingest_prices_into_history(prices, now)
+
+        sold = 0
+        failures: List[Dict[str, Any]] = []
+        for i, pos in enumerate(stale):
+            tail = stale[i + 1 :]
+            pid = str(pos.get("product_id") or "")
+            entry = float(pos.get("entry_price") or 0.0)
+            size_base = float(pos.get("size_base") or 0.0)
+            cost_usd = float(pos.get("cost_usd") or 0.0)
+            entry_t = float(pos.get("entry_time") or 0.0)
+            eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
+            age = (now - entry_t) if entry_t > 0 else -1.0
+            if not pid or size_base <= 0:
+                logger.warning(
+                    "Coinbase EMERGENCY: skip invalid position %s size=%s",
+                    pid,
+                    size_base,
+                )
+                failures.append(pos)
+                state["positions"] = fresh + failures + tail
+                save_coinbase_state(state)
+                continue
+            if pid not in prices:
+                logger.warning(
+                    "Coinbase EMERGENCY: no price for %s — keeping position",
+                    pid,
+                )
+                upd = dict(pos)
+                upd["sell_pending"] = True
+                failures.append(upd)
+                state["positions"] = fresh + failures + tail
+                save_coinbase_state(state)
+                continue
+
+            bid, _ask = prices[pid]
+            current = bid
+            if entry <= 0:
+                pnl_pct = 0.0
+            else:
+                pnl_pct = (current - entry) / entry
+            logger.info(
+                "EMERGENCY EXIT: %s age=%.0fs (time stop=%.0fs)",
+                pid,
+                age,
+                time_stop_sec,
+            )
+            base_str = _fmt_base_size(pid, size_base)
+            result = self._try_market_sell_twice(pid, base_str)
+            profit_usd = current * size_base - cost_usd
+
+            if result.success:
+                sold += 1
+                state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
+                state["total_realized_usd"] = (
+                    float(state.get("total_realized_usd") or 0.0) + profit_usd
+                )
+                state["total_trades"] = int(state.get("total_trades") or 0) + 1
+                if profit_usd >= 0:
+                    state["wins"] = int(state.get("wins") or 0) + 1
+                else:
+                    state["losses"] = int(state.get("losses") or 0) + 1
+                if eng == 2:
+                    state.setdefault("hunter_cooldown", {})[pid] = now
+                state["positions"] = fresh + failures + tail
+                save_coinbase_state(state)
+                logger.info(
+                    "Coinbase EMERGENCY SELL ok: %s %+.2f%% $%.4f (emergency_time_stop)",
+                    pid,
+                    pnl_pct * 100.0,
+                    profit_usd,
+                )
+                _log_trade(
+                    {
+                        "ts": now,
+                        "type": "sell",
+                        "engine": eng,
+                        "reason": "emergency_time_stop",
+                        "order_id": result.order_id,
+                        "product_id": pid,
+                        "entry_price": entry,
+                        "exit_price": current,
+                        "pnl_usd": profit_usd,
+                    }
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    send_telegram(
+                        f"🚨 EMERGENCY CB exit (stale): {_cb_sym(pid)} "
+                        f"{pnl_pct*100:+.2f}% ${profit_usd:+.3f} (restart flush)"
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "Coinbase EMERGENCY SELL failed %s (%s) — sell_pending=True",
+                    pid,
+                    result.reason,
+                )
+                upd = dict(pos)
+                upd["sell_pending"] = True
+                failures.append(upd)
+                state["positions"] = fresh + failures + tail
+                save_coinbase_state(state)
+
+        remaining = state.get("positions") or []
+        logger.info(
+            "Coinbase EMERGENCY: completed — sold=%d remaining_open=%d",
+            sold,
+            len(remaining),
+        )
+        return sold
+
     def _try_market_sell_twice(self, product_id: str, base_str: str) -> Any:
         r = self._client.place_market_sell(product_id, base_str)
         if r.success:
