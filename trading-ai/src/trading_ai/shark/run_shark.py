@@ -705,7 +705,10 @@ def main() -> None:
     log.info("Shark scheduler started — 24/7")
     for job in sched.get_jobs():
         jid = job.id.lower()
-        if any(x in jid for x in ("blitz", "crypto_15min", "simple_scan", "gate_c")):
+        if any(
+            x in jid
+            for x in ("blitz", "crypto_15min", "simple_scan", "gate_c", "coinbase_scan")
+        ):
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 
     def _send_bot_online_telegram() -> None:

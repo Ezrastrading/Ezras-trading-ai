@@ -650,6 +650,7 @@ class KalshiClient:
         fill_timeout_sec: Optional[float] = None,
         min_order_prob: Optional[float] = None,
         blitz_retry_bump_cents: Optional[int] = None,
+        skip_pretrade_buy_gates: bool = False,
     ) -> OrderResult:
         """
         POST ``type: market`` or ``type: limit`` with **one** of ``yes_price`` / ``no_price``
@@ -667,6 +668,9 @@ class KalshiClient:
         **Blitz:** With ``side_price_cents`` set and ``blitz_retry_bump_cents`` or
         ``KALSHI_BLITZ_PRICE_BUMP_CENTS``, may POST a second market order at +1 cent after the first
         unfilled window (same ``fill_timeout_sec`` each attempt).
+
+        **Scalp:** When ``skip_pretrade_buy_gates`` is True, TTR and min-probability buy gates are
+        not applied (short-hold strategies only; use from :mod:`trading_ai.shark.kalshi_scalp_engine`).
         """
         if not self.has_kalshi_credentials():
             from trading_ai.shark.required_env import require_kalshi_api_key
@@ -692,7 +696,7 @@ class KalshiClient:
         except Exception as exc:
             logger.warning("Kalshi pre-trade gate (get_market) failed %s: %s — proceeding", ticker, exc)
 
-        if act == "buy" and market_fetch_ok:
+        if act == "buy" and market_fetch_ok and not skip_pretrade_buy_gates:
             from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto
             from trading_ai.shark.kalshi_ttr import kalshi_max_ttr_seconds
 

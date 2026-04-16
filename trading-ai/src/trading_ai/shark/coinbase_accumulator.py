@@ -1,5 +1,6 @@
 """
-Coinbase — **four engines** (E1–E4), **25% / 25% / 25% / 25%** of deployable capital each.
+Coinbase — **four engines** (E1–E4), **25% / 25% / 25% / 25%** of deployable capital each,
+or **Gate A + Gate B** when ``COINBASE_GATES_MODE=true`` (percent-sized 5+5 positions).
 
 Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reserve via
 ``COINBASE_RESERVE_PCT``). Each engine may deploy up to **25%** of that deployable pool.
@@ -35,7 +36,6 @@ from trading_ai.shark.outlets.coinbase import CoinbaseAuthError, CoinbaseClient
 load_shark_dotenv()
 logger = logging.getLogger(__name__)
 
-_ABSOLUTE_MIN_ORDER_USD = 1.0
 _E3_LIQUID = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 _E4_LIQUID = ("BTC-USD", "ETH-USD")
 
@@ -56,8 +56,44 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def _min_order_usd(usd_balance: float) -> float:
+    raw = (os.environ.get("COINBASE_MIN_ORDER_USD") or "").strip()
+    if raw:
+        try:
+            return max(1e-12, float(raw))
+        except (TypeError, ValueError):
+            pass
+    pct = _env_float("COINBASE_MIN_ORDER_PCT", 0.001)
+    return max(1e-9, float(usd_balance) * pct)
+
+
+def _max_total_exposure_usd(usd_balance: float) -> float:
+    raw = (os.environ.get("COINBASE_MAX_TOTAL_USD") or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, float(usd_balance) * _env_float("COINBASE_MAX_TOTAL_EXPOSURE_PCT", 20.0))
+
+
+def _max_daily_loss_usd(usd_balance: float) -> float:
+    raw = (os.environ.get("COINBASE_MAX_DAILY_LOSS") or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, float(usd_balance) * _env_float("COINBASE_MAX_DAILY_LOSS_PCT", 2.0))
+
+
 def coinbase_enabled() -> bool:
     return _env_bool("COINBASE_ENABLED", False)
+
+
+def _coinbase_gates_mode() -> bool:
+    """Percent-based Gate A + Gate B (5+5) instead of engines E1–E4 buys."""
+    return _env_bool("COINBASE_GATES_MODE", False)
 
 
 def _reserve_pct() -> float:
@@ -203,8 +239,14 @@ def _has_open_product(state: Dict[str, Any], product_id: str) -> bool:
     )
 
 
-def _max_per_coin_usd() -> float:
-    return _env_float("COINBASE_MAX_PER_COIN_USD", 6.0)
+def _max_per_coin_usd(usd_balance: float) -> float:
+    raw = (os.environ.get("COINBASE_MAX_PER_COIN_USD") or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, float(usd_balance) * _env_float("COINBASE_MAX_PER_COIN_PCT", 0.06))
 
 
 def _deployable_usd(usd_balance: float) -> float:
@@ -213,6 +255,39 @@ def _deployable_usd(usd_balance: float) -> float:
 
 def _engine_quarter_cap(usd_balance: float) -> float:
     return _deployable_usd(usd_balance) * 0.25
+
+
+def _count_gate(state: Dict[str, Any], gate: str) -> int:
+    g = (gate or "").strip().upper()
+    return sum(
+        1
+        for p in (state.get("positions") or [])
+        if str(p.get("gate") or "").strip().upper() == g
+    )
+
+
+def _gate_order_usd(usd_balance: float, position_pct: float) -> float:
+    avail = max(0.0, float(usd_balance) * (1.0 - _reserve_pct()))
+    raw = avail * max(0.001, min(0.5, float(position_pct)))
+    return max(_min_order_usd(usd_balance), raw)
+
+
+def _can_buy_gate(
+    state: Dict[str, Any],
+    gate: str,
+    product_id: str,
+    order_usd: float,
+    usd_balance: float,
+    max_gate_positions: int,
+) -> Tuple[bool, str]:
+    ok, reason = _can_buy_global(state, product_id, order_usd, usd_balance)
+    if not ok:
+        return False, reason
+    if _has_open_product(state, product_id):
+        return False, "already open on product"
+    if _count_gate(state, gate) >= max_gate_positions:
+        return False, f"gate {gate} max positions ({max_gate_positions})"
+    return True, "ok"
 
 
 def _infer_engine_from_legacy(pos: Dict[str, Any]) -> int:
@@ -251,18 +326,21 @@ def _engine_open_count(state: Dict[str, Any], engine: int) -> int:
 def _can_buy_global(
     state: Dict[str, Any], product_id: str, usd_amount: float, usd_balance: float
 ) -> Tuple[bool, str]:
-    max_total = _env_float("COINBASE_MAX_TOTAL_USD", 2000.0)
-    max_daily_loss = _env_float("COINBASE_MAX_DAILY_LOSS", 200.0)
+    max_total = _max_total_exposure_usd(usd_balance)
+    max_daily_loss = _max_daily_loss_usd(usd_balance)
     raw_max = os.environ.get("COINBASE_MAX_POSITIONS")
     if raw_max is not None and str(raw_max).strip() != "":
         max_open = int(float(raw_max))
     else:
         max_open = int(_env_float("COINBASE_MAX_OPEN_POSITIONS", 50.0))
-    min_order = _ABSOLUTE_MIN_ORDER_USD
+    min_order = _min_order_usd(usd_balance)
 
     daily_loss = -(float(state.get("daily_pnl_usd") or 0.0))
     if daily_loss >= max_daily_loss:
-        return False, f"daily loss limit ${max_daily_loss:.0f} hit (${daily_loss:.2f} today)"
+        return False, (
+            f"daily loss limit hit ({max_daily_loss/max(usd_balance,1e-9)*100:.1f}% of balance) "
+            f"(${daily_loss:.2f} today)"
+        )
 
     if usd_amount < min_order:
         return False, f"order ${usd_amount:.2f} below minimum ${min_order:.2f}"
@@ -272,8 +350,8 @@ def _can_buy_global(
         return False, f"max open positions ({max_open}) reached"
 
     current_exposure = _total_open_cost(state)
-    if current_exposure + usd_amount > max_total:
-        return False, f"would exceed COINBASE_MAX_TOTAL_USD ${max_total:.0f}"
+    if max_total > 0 and current_exposure + usd_amount > max_total:
+        return False, f"would exceed max total exposure ${max_total:.2f}"
 
     max_deploy_pct = _env_float("COINBASE_MAX_DEPLOY_PCT", 0.80)
     if usd_balance > 0 and current_exposure + usd_amount > usd_balance * max_deploy_pct:
@@ -281,7 +359,7 @@ def _can_buy_global(
             f"max deploy {max_deploy_pct*100:.0f}% of ${usd_balance:.2f} balance would be exceeded"
         )
 
-    cap = _max_per_coin_usd()
+    cap = _max_per_coin_usd(usd_balance)
     product_cost = _product_open_cost(state, product_id)
     if cap > 0 and product_cost + usd_amount > cap:
         return False, (
@@ -365,7 +443,12 @@ def collect_price_product_ids(state: Dict[str, Any]) -> List[str]:
 
 
 class CoinbaseAccumulator:
-    """Four Coinbase engines (E1–E4) with unified exits and capital split."""
+    """Four Coinbase engines (E1–E4) with unified exits and capital split.
+
+    Read open positions via :meth:`get_state` / :attr:`state` (backed by
+    ``load_coinbase_state()``). When running one-off scripts from the repo, use
+    ``PYTHONPATH=src`` so you import this module and not an older site-packages copy.
+    """
 
     def __init__(self, client: Optional[CoinbaseClient] = None) -> None:
         self._client = client or CoinbaseClient()
@@ -374,6 +457,14 @@ class CoinbaseAccumulator:
         self._last_ac_tick: float = -1e9
         self._stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._buys_this_scan = 0
+
+    def get_state(self) -> Dict[str, Any]:
+        """Latest persisted Coinbase state (same as ``load_coinbase_state()``)."""
+        return load_coinbase_state()
+
+    @property
+    def state(self) -> Dict[str, Any]:
+        return self.get_state()
 
     def _ingest_prices_into_history(
         self, prices: Dict[str, Tuple[float, float]], now: float
@@ -430,9 +521,15 @@ class CoinbaseAccumulator:
     def _e2_candidates(
         self, state: Dict[str, Any], prices: Dict[str, Tuple[float, float]], now: float
     ) -> List[Dict[str, Any]]:
-        min_pct = _env_float("COINBASE_E2_MIN_HOUR_PCT", 0.03)
+        min_pct = _env_float(
+            "COINBASE_GAINER_MIN_PCT",
+            _env_float("COINBASE_E2_MIN_HOUR_PCT", 0.03),
+        )
         min_vol_usd = _env_float("COINBASE_E2_MIN_VOLUME_USD", 10_000.0)
-        min_vol_ratio = _env_float("COINBASE_E2_MIN_VOL_RATIO", 2.0)
+        min_vol_ratio = _env_float(
+            "COINBASE_GAINER_VOL_RATIO",
+            _env_float("COINBASE_E2_MIN_VOL_RATIO", 2.0),
+        )
         max_stats = max(20, int(_env_float("COINBASE_E2_MAX_STATS_FETCH", 80.0)))
         try:
             rows = self._client.list_brokerage_products()
@@ -562,7 +659,7 @@ class CoinbaseAccumulator:
                 logger.warning("Coinbase startup: no prices")
                 return
             self._ingest_prices_into_history(prices, now)
-            self._check_exits(state, prices, now)
+            _ = self._check_exits(state, prices, now)
             save_coinbase_state(state)
             logger.info(
                 "Coinbase startup: %d positions after exit scan",
@@ -613,8 +710,9 @@ class CoinbaseAccumulator:
         state: Dict[str, Any],
         prices: Dict[str, Tuple[float, float]],
         now: float,
-    ) -> None:
+    ) -> int:
         remaining: List[Dict[str, Any]] = []
+        exits = 0
         for pos in list(state.get("positions") or []):
             pid = str(pos.get("product_id") or "")
             entry = float(pos.get("entry_price") or 0.0)
@@ -623,6 +721,7 @@ class CoinbaseAccumulator:
             entry_t = float(pos.get("entry_time") or 0.0)
             eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
             sell_pending = bool(pos.get("sell_pending"))
+            gate = str(pos.get("gate") or "").strip().upper()
 
             if pid not in prices:
                 logger.info(
@@ -648,16 +747,23 @@ class CoinbaseAccumulator:
 
             pnl_pct = (current - entry) / entry
             age_s = int(now - entry_t) if entry_t > 0 else -1
+            log_label = f"Gate {gate}" if gate in ("A", "B") else f"E{eng}"
             logger.info(
-                "CB CHECK E%d: %s pnl=%+.3f%% age=%ds pending=%s",
-                eng,
+                "CB CHECK %s: %s pnl=%+.3f%% age=%ds pending=%s",
+                log_label,
                 pid,
                 pnl_pct * 100.0,
                 age_s,
                 sell_pending,
             )
 
-            tp, sl, tmin, trail = self._exit_params(eng)
+            if gate in ("A", "B"):
+                tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.005)
+                sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.01)
+                tmin = _env_float("COINBASE_TIME_STOP_MIN", 5.0)
+                trail = 0.0
+            else:
+                tp, sl, tmin, trail = self._exit_params(eng)
             tlim = tmin * 60.0
             peak = max(float(pos.get("peak_price") or entry), current)
 
@@ -670,13 +776,13 @@ class CoinbaseAccumulator:
                 sell_reason = f"stop -{sl*100:.2f}%"
             elif pnl_pct >= tp:
                 sell_reason = f"tp +{tp*100:.2f}%"
-            elif eng == 2 and trail > 0 and current < peak * (1.0 - trail):
+            elif eng == 2 and trail > 0 and gate not in ("A", "B") and current < peak * (1.0 - trail):
                 sell_reason = f"trail -{trail*100:.0f}% peak"
 
             if not sell_reason:
                 upd = dict(pos)
                 upd["peak_price"] = peak
-                if eng == 2 and pnl_pct >= 0.25 and not pos.get("ride2_tg"):
+                if eng == 2 and gate not in ("A", "B") and pnl_pct >= 0.25 and not pos.get("ride2_tg"):
                     upd["ride2_tg"] = True
                     try:
                         from trading_ai.shark.reporting import send_telegram
@@ -698,6 +804,7 @@ class CoinbaseAccumulator:
             profit_usd = current * size_base - cost_usd
 
             if result.success:
+                exits += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
                 state["total_realized_usd"] = (
                     float(state.get("total_realized_usd") or 0.0) + profit_usd
@@ -710,17 +817,18 @@ class CoinbaseAccumulator:
                 if eng == 2:
                     state.setdefault("hunter_cooldown", {})[pid] = now
 
+                xl = f"Gate {gate}" if gate in ("A", "B") else f"E{eng}"
                 logger.info(
-                    "CB EXIT E%d: %s %+.2f%% $%.4f profit (%s)",
-                    eng,
+                    "CB EXIT %s: %s %+.2f%% $%.4f profit (%s)",
+                    xl,
                     pid,
                     pnl_pct * 100.0,
                     profit_usd,
                     sell_reason,
                 )
                 logger.info(
-                    "CB SELL E%d: %s %+.2f%% $%.4f profit",
-                    eng,
+                    "CB SELL %s: %s %+.2f%% $%.4f profit",
+                    xl,
                     pid,
                     pnl_pct * 100.0,
                     profit_usd,
@@ -742,7 +850,12 @@ class CoinbaseAccumulator:
                     from trading_ai.shark.reporting import send_telegram
 
                     sym = _cb_sym(pid)
-                    if eng == 1:
+                    if gate in ("A", "B"):
+                        send_telegram(
+                            f"{'💰' if profit_usd >= 0 else '🛑'} Gate {gate}: {sym} "
+                            f"{pnl_pct*100:+.2f}% ${profit_usd:+.3f} ({sell_reason})"
+                        )
+                    elif eng == 1:
                         if pnl_pct >= tp:
                             send_telegram(
                                 f"💰 E1 SELL: {sym} +{pnl_pct*100:.1f}% profit ${abs(profit_usd):.3f}"
@@ -759,12 +872,15 @@ class CoinbaseAccumulator:
                                 f"💰 E2 WIN: {sym} +{pnl_pct*100:.1f}% profit ${abs(profit_usd):.2f}"
                             )
                     elif eng == 3:
+                        alert = cost_usd * _env_float("COINBASE_ALERT_MIN_REALIZED_PCT", 0.01)
                         send_telegram(
                             f"💰 E3 PROFIT: {sym} +{pnl_pct*100:.2f}% ${abs(profit_usd):.2f} profit"
-                            if profit_usd >= 0.10
+                            if profit_usd >= alert
                             else f"💰 E3: {sym} closed {pnl_pct*100:.2f}%"
                         )
-                    elif eng == 4 and abs(profit_usd) >= 0.10:
+                    elif eng == 4 and abs(profit_usd) >= cost_usd * _env_float(
+                        "COINBASE_ALERT_MIN_REALIZED_PCT", 0.01
+                    ):
                         send_telegram(
                             f"💰 E4 +{pnl_pct*100:.2f}% ${abs(profit_usd):.4f}"
                         )
@@ -785,18 +901,23 @@ class CoinbaseAccumulator:
                 save_coinbase_state(state)
 
         state["positions"] = remaining
+        return exits
 
     def _order_size_e(
         self, engine: int, usd_balance: float, slots: int
     ) -> float:
+        m = _min_order_usd(usd_balance)
         cap = _engine_quarter_cap(usd_balance)
         if slots <= 0:
-            return _ABSOLUTE_MIN_ORDER_USD
+            return m
         raw = cap / float(slots)
         if engine == 4:
-            micro = max(_ABSOLUTE_MIN_ORDER_USD, _env_float("COINBASE_E4_ORDER_USD", 1.0))
-            return max(_ABSOLUTE_MIN_ORDER_USD, min(raw, micro))
-        return max(_ABSOLUTE_MIN_ORDER_USD, min(raw, cap))
+            micro = max(
+                m,
+                _deployable_usd(usd_balance) * _env_float("COINBASE_E4_ORDER_PCT", 0.0125),
+            )
+            return max(m, min(raw, micro))
+        return max(m, min(raw, cap))
 
     def _append_buy(
         self,
@@ -808,8 +929,11 @@ class CoinbaseAccumulator:
         order_usd: float,
         now: float,
         order_id: str,
+        gate: str = "",
+        position_pct: float = 0.0,
+        strategy: str = "",
     ) -> None:
-        pos = {
+        pos: Dict[str, Any] = {
             "order_id": order_id,
             "product_id": product_id,
             "engine": engine,
@@ -819,27 +943,36 @@ class CoinbaseAccumulator:
             "entry_time": now,
             "peak_price": mid,
             "sell_pending": False,
+            "exit_submitted": False,
+            "exit_notified": False,
         }
+        if gate:
+            pos["gate"] = gate
+            pos["position_pct"] = position_pct
+            if strategy:
+                pos["strategy"] = strategy
         state.setdefault("positions", []).append(pos)
+        label = f"Gate {gate}" if gate else f"E{engine}"
         logger.info(
-            "CB BUY E%d: %s $%.2f @ %.4f",
-            engine,
+            "CB BUY %s: %s $%.2f @ %.4f",
+            label,
             product_id,
             order_usd,
             mid,
         )
         self._buys_this_scan += 1
-        _log_trade(
-            {
-                "ts": now,
-                "type": "buy",
-                "engine": engine,
-                "order_id": order_id,
-                "product_id": product_id,
-                "entry_price": mid,
-                "cost_usd": order_usd,
-            }
-        )
+        lt: Dict[str, Any] = {
+            "ts": now,
+            "type": "buy",
+            "engine": engine,
+            "order_id": order_id,
+            "product_id": product_id,
+            "entry_price": mid,
+            "cost_usd": order_usd,
+        }
+        if gate:
+            lt["gate"] = gate
+        _log_trade(lt)
         save_coinbase_state(state)
 
     def _engine_1_dip(
@@ -1030,6 +1163,144 @@ class CoinbaseAccumulator:
             except Exception:
                 pass
 
+    def _gate_a_scan(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        if not _coinbase_gates_mode():
+            return
+        if not _env_bool("COINBASE_GATE_A_ENABLED", True):
+            return
+        products = _parse_csv_products(
+            os.environ.get("COINBASE_GATE_A_PRODUCTS") or "BTC-USD,ETH-USD,SOL-USD"
+        )
+        max_n = max(1, int(_env_float("COINBASE_GATE_A_POSITIONS", 5.0)))
+        pct = _env_float("COINBASE_GATE_A_POSITION_PCT", 0.05)
+        dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.002)
+        mom_pct = _env_float("COINBASE_GATE_A_MOM_PCT", 0.001)
+        order_usd = _gate_order_usd(usd_balance, pct)
+        eng = 3
+
+        for pid in products:
+            if pid not in prices:
+                continue
+            if _count_gate(state, "A") >= max_n:
+                break
+            bid, ask = prices[pid]
+            if bid <= 0 and ask <= 0:
+                continue
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (bid or ask)
+            hist = list(self._price_history.get(pid) or [])
+            ref2 = _mid_at_or_before(hist, now - 120.0)
+            ref60 = _mid_at_or_before(hist, now - 60.0)
+            signal = ""
+            if ref2 and ref2 > 0 and (mid - ref2) / ref2 <= -dip_pct:
+                signal = "dip"
+            elif ref60 and ref60 > 0 and (mid - ref60) / ref60 >= mom_pct:
+                signal = "mom"
+            if not signal:
+                continue
+            ok, _ = _can_buy_gate(state, "A", pid, order_usd, usd_balance, max_n)
+            if not ok:
+                continue
+            if not self._rate_limiter.allow():
+                break
+            r = self._client.place_market_buy(pid, order_usd)
+            if not r.success:
+                continue
+            self._append_buy(
+                state,
+                engine=eng,
+                product_id=pid,
+                mid=mid,
+                order_usd=order_usd,
+                now=now,
+                order_id=r.order_id,
+                gate="A",
+                position_pct=pct,
+                strategy=signal,
+            )
+            try:
+                from trading_ai.shark.reporting import send_telegram
+
+                send_telegram(
+                    f"🟢 Gate A ({signal}): {_cb_sym(pid)} ${order_usd:.2f} @ ${mid:.4f}"
+                )
+            except Exception:
+                pass
+
+    def _gate_b_gainer(
+        self,
+        state: Dict[str, Any],
+        prices: Dict[str, Tuple[float, float]],
+        usd_balance: float,
+        now: float,
+    ) -> None:
+        if not _coinbase_gates_mode():
+            return
+        if not _env_bool("COINBASE_GATE_B_ENABLED", True):
+            return
+        interval = _env_float("COINBASE_GATE_B_SCAN_INTERVAL", 60.0)
+        last = float(state.get("gate_b_scan_ts") or 0.0)
+        if last > 0 and (now - last) < interval:
+            return
+        state["gate_b_scan_ts"] = now
+
+        max_n = max(1, int(_env_float("COINBASE_GATE_B_POSITIONS", 5.0)))
+        pct = _env_float("COINBASE_GATE_B_POSITION_PCT", 0.05)
+        order_usd = _gate_order_usd(usd_balance, pct)
+        dip_from_high = _env_float("COINBASE_GAINER_DIP_PCT", 0.01)
+        ranked = self._e2_candidates(state, prices, now)
+        eng = 2
+
+        for row in ranked:
+            if _count_gate(state, "B") >= max_n:
+                break
+            pid = row["product_id"]
+            mid = float(row["mid"])
+            st = self._cached_exchange_stats(pid, now)
+            if not st:
+                continue
+            try:
+                high = float(st.get("high") or 0.0)
+                last = float(st.get("last") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if high > 0 and last > high * (1.0 - dip_from_high):
+                continue
+            hg = float(row["hour_pct"])
+            ok, _ = _can_buy_gate(state, "B", pid, order_usd, usd_balance, max_n)
+            if not ok:
+                continue
+            if not self._rate_limiter.allow():
+                break
+            r = self._client.place_market_buy(pid, order_usd)
+            if not r.success:
+                continue
+            self._append_buy(
+                state,
+                engine=eng,
+                product_id=pid,
+                mid=mid,
+                order_usd=order_usd,
+                now=now,
+                order_id=r.order_id,
+                gate="B",
+                position_pct=pct,
+                strategy="gainer",
+            )
+            try:
+                from trading_ai.shark.reporting import send_telegram
+
+                send_telegram(
+                    f"🎯 Gate B: {_cb_sym(pid)} +{hg*100:.1f}%/hr pullback ${order_usd:.2f} @ ${mid:.4f}"
+                )
+            except Exception:
+                pass
+
     def _scan(self) -> Dict[str, Any]:
         state = load_coinbase_state()
         _reset_daily_pnl_if_needed(state)
@@ -1052,10 +1323,22 @@ class CoinbaseAccumulator:
             prices = self._client.get_prices_batched(pids)
         except Exception as exc:
             logger.warning("Coinbase price fetch failed: %s", exc)
-            return {"ok": False, "error": "price_fetch", "trades_this_scan": 0}
+            return {
+                "ok": False,
+                "error": "price_fetch",
+                "trades_this_scan": 0,
+                "exits_this_scan": 0,
+                "exits": 0,
+            }
 
         if not prices:
-            return {"ok": False, "error": "no_prices", "trades_this_scan": 0}
+            return {
+                "ok": False,
+                "error": "no_prices",
+                "trades_this_scan": 0,
+                "exits_this_scan": 0,
+                "exits": 0,
+            }
 
         open_ids = collect_price_product_ids(state)
         missing = [x for x in open_ids if x and x not in prices]
@@ -1069,14 +1352,19 @@ class CoinbaseAccumulator:
         self._ingest_prices_into_history(prices, now)
 
         # ── Exits FIRST (every scan, ~30s scheduler) ───────────────────────
-        self._check_exits(state, prices, now)
+        exits_this = self._check_exits(state, prices, now)
 
-        # E4 can fire every scan; E1–E3 buy engines on 60s cadence
-        self._engine_4_micro(state, prices, usd_balance, now)
-        if run_60:
-            self._engine_1_dip(state, prices, usd_balance, now)
-            self._engine_2_gainer(state, prices, usd_balance, now)
-            self._engine_3_scalp(state, prices, usd_balance, now)
+        if _coinbase_gates_mode():
+            self._gate_a_scan(state, prices, usd_balance, now)
+            if run_60:
+                self._gate_b_gainer(state, prices, usd_balance, now)
+        else:
+            # E4 can fire every scan; E1–E3 buy engines on 60s cadence
+            self._engine_4_micro(state, prices, usd_balance, now)
+            if run_60:
+                self._engine_1_dip(state, prices, usd_balance, now)
+                self._engine_2_gainer(state, prices, usd_balance, now)
+                self._engine_3_scalp(state, prices, usd_balance, now)
 
         save_coinbase_state(state)
         return {
@@ -1085,4 +1373,6 @@ class CoinbaseAccumulator:
             "usd_balance": round(usd_balance, 2),
             "scan_ids": len(scan_ids),
             "trades_this_scan": int(self._buys_this_scan),
+            "exits_this_scan": int(exits_this),
+            "exits": int(exits_this),
         }
