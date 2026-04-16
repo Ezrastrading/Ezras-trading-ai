@@ -466,20 +466,10 @@ class CoinbaseClient:
 
     def get_usd_balance(self) -> float:
         """
-        Trading cash: USD + USDC available (override, portfolio endpoints, or ``/accounts``).
+        Trading cash: USD + USDC available (portfolio endpoints or ``/accounts``).
 
         Spot crypto is not converted here — only fiat-stable USD and USDC balances.
         """
-        override = os.environ.get("COINBASE_BALANCE_OVERRIDE")
-        if override is not None and str(override).strip() != "":
-            try:
-                return float(str(override).strip())
-            except ValueError:
-                logger.warning(
-                    "COINBASE_BALANCE_OVERRIDE invalid %r — using API balance",
-                    override,
-                )
-
         portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
         if portfolio_id:
             try:
