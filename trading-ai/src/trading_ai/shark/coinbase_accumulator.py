@@ -18,8 +18,8 @@ max(COINBASE_GATE_*_POSITIONS, 10)`` via :func:`_gate_dynamic_order_usd` (defaul
 **E3 — Scalp**  BTC, ETH, SOL, XRP, DOGE: short momentum; tight TP/SL/time.
 **E4 — Micro HFT**  BTC-USD & ETH-USD only; buy cadence throttled with E1–E3 (default 30s).
 
-Exits: ``coinbase_loss_scan`` every **3s** (gate positions only — tight ``COINBASE_STOP_LOSS_PCT``),
-``coinbase_profit_scan`` every **3s** (take-profit), ``coinbase_exit_check`` / ``_check_exits_only`` every **5s**
+Exits: ``coinbase_loss_scan`` every **3s** (gate positions — per-gate stop from ``_gate_tp_sl_tmin``),
+``coinbase_profit_scan`` every **3s** (take-profit + optional partial hedge), ``coinbase_exit_check`` / ``_check_exits_only`` every **5s**
 (time stop, engine stops, no-price). ``scan_and_trade`` is buys-only. Per-position (after ``sell_pending`` retry):
 **no_price_stop** (missing/zero bid), then **time stop** (absolute) → take-profit → stop-loss → trail (E2 only, non-gate).
 Sells are not gated by the buy rate limiter.
