@@ -353,7 +353,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Coinbase: 5s buy scan (E1–E4 buys throttled inside); 5s exit-only job
+    # ── Coinbase: 30s full scan (exits + buys); separate 5s exit-only job ─────
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
@@ -364,7 +364,7 @@ def build_shark_scheduler(
 
         sched.add_job(
             _coinbase_scan_wrapper,
-            IntervalTrigger(seconds=5),
+            IntervalTrigger(seconds=30),
             id="coinbase_scan",
             max_instances=2,
             replace_existing=True,

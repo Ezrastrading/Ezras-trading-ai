@@ -598,7 +598,7 @@ def main() -> None:
                 from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
 
                 acc = CoinbaseAccumulator()
-            acc._check_exits_only()
+            acc._run_exits_only()
         except Exception as exc:
             log.warning("coinbase_exit_check: %s", exc)
 

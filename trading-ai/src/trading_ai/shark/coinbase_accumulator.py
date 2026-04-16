@@ -879,6 +879,28 @@ class CoinbaseAccumulator:
         save_coinbase_state(state)
         return exits
 
+    def _run_exits_only(self) -> int:
+        """Public entry-point for the 5s exit-check scheduler job.
+
+        Loads state fresh, fetches prices only for open positions, runs all
+        exit rules (time stop → profit target → stop loss), saves state, and
+        returns the number of positions exited this call.  Early-returns 0
+        when there are no open positions to avoid unnecessary API calls.
+        """
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        state = load_coinbase_state()
+        if not state.get("positions"):
+            return 0
+        _reset_daily_pnl_if_needed(state)
+        now = time.time()
+        prices = self._get_prices_for_positions(state)
+        exits = self._check_exits(state, prices, now)
+        save_coinbase_state(state)
+        return exits
+
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
         """Returns (profit_pct, stop_pct, time_min, trail_pct). trail only used for E2."""
         if engine == 1:
