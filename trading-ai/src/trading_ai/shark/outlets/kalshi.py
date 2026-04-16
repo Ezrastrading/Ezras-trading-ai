@@ -1024,19 +1024,6 @@ _NO_PRICE_FIELDS: Tuple[str, ...] = (
     "no_ask",
 )
 
-# Ask-only: cost to buy each side (probability = dollars at risk per $1 payout).
-_YES_ASK_FIELDS: Tuple[str, ...] = ("yes_ask_dollars", "yes_ask")
-_NO_ASK_FIELDS: Tuple[str, ...] = ("no_ask_dollars", "no_ask")
-
-
-def _kalshi_yes_no_ask_from_market_row(
-    m: Dict[str, Any],
-) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
-    """Best-effort **ask** (buy-now) prices for YES and NO in 0–1; None if field missing."""
-    yes_p, y_src = _first_probability_from_fields(m, _YES_ASK_FIELDS)
-    no_p, n_src = _first_probability_from_fields(m, _NO_ASK_FIELDS)
-    return yes_p, no_p, y_src, n_src
-
 
 def _kalshi_yes_no_from_market_row(m: Dict[str, Any]) -> Tuple[float, float, Optional[str], Optional[str]]:
     """

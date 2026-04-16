@@ -1,6 +1,6 @@
-"""Kalshi rapid cycle — Gate A (BTC/ETH/S&P) or Gate B (broad), exits first, refill to N positions.
+"""Kalshi rapid cycle — BTC / ETH / S&P series only; exits first, refill to N positions.
 
-**Probability = cost to buy** (ask): YES at 0.90 costs $0.90 for $1 payout → $0.10 edge before fees.
+**All sizing and risk are percentage-based** (no fixed dollar env targets).
 Deployable cash uses Kalshi effective capital (``KALSHI_CASH_RESERVE_PCT``, default 20%).
 
 State: ``shark/state/kalshi_positions.json``. Scheduler runs ``run_simple_scan`` on a fixed
@@ -17,14 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import httpx
-
 from trading_ai.governance.storage_architecture import shark_state_path
 
 logger = logging.getLogger(__name__)
-
-# Gate A: BTC/ETH daily + S&P index series (KXSP500 aliases S&P where Kalshi uses that root).
-_GATE_A_SERIES_DEFAULT: Tuple[str, ...] = ("KXBTCD", "KXETHD", "KXINX", "KXSPX", "KXSP500")
 
 
 def _kalshi_crypto_series(ticker: str) -> bool:
@@ -70,7 +65,7 @@ def _price_in_kalshi_range(ticker: str, current_price: float) -> bool:
     thr = _parse_kalshi_threshold_usd(ticker)
     if thr is None:
         return True
-    max_d = max(1.0, _parse_float("KALSHI_RANGE_MAX_DISTANCE_USD", 500.0))
+    max_d = max(500.0, _parse_float("KALSHI_RANGE_MAX_DISTANCE_USD", 2000.0))
     return abs(current_price - thr) <= max_d
 
 
@@ -108,108 +103,6 @@ def _spot_for_kalshi_ticker(
     if "ETH" in u:
         return eth
     return btc
-
-
-def _simple_scan_gate() -> str:
-    """``a`` = Gate A (BTC/ETH/S&P strict), ``b`` = Gate B (broad), ``legacy`` = env-only."""
-    if _env_truthy("KALSHI_GATE_A_ENABLED", "false"):
-        return "a"
-    if _env_truthy("KALSHI_GATE_B_ENABLED", "false"):
-        return "b"
-    return "legacy"
-
-
-def _gate_a_series_tickers() -> Tuple[str, ...]:
-    raw = (os.environ.get("KALSHI_GATE_A_SERIES") or "").strip()
-    if raw:
-        return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
-    return _GATE_A_SERIES_DEFAULT
-
-
-def _gate_min_prob(gate: str) -> float:
-    if gate == "a":
-        return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.90)))
-    if gate == "b":
-        return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
-    return max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
-
-
-def _gate_max_ttr_sec(gate: str) -> float:
-    if gate == "a":
-        return max(60.0, _parse_float("KALSHI_SIMPLE_MAX_TTR", 7200.0))
-    if gate == "b":
-        return max(60.0, min(86400.0, _parse_float("KALSHI_SIMPLE_MAX_TTR", 3600.0)))
-    lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
-    return max(lo, _parse_float("KALSHI_SIMPLE_TTR_MAX_SEC", 3600.0))
-
-
-def _gate_max_positions(gate: str) -> int:
-    if gate == "a":
-        return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 5))
-    if gate == "b":
-        return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
-    return max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
-
-
-def _gate_per_order_cap_usd(deployable: float, gate: str) -> float:
-    d = max(0.0, float(deployable))
-    if gate == "a":
-        return max(0.01, min(10.0, d * 0.10))
-    if gate == "b":
-        return max(0.01, min(5.0, d * 0.05))
-    return max(0.01, min(10.0, d * 0.20 / float(max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10)))))
-
-
-def _is_sp_index_ticker(ticker: str) -> bool:
-    u = (ticker or "").upper()
-    return "KXINX" in u or "KXSPX" in u or "KXSP500" in u or u.startswith("INX-")
-
-
-def _fetch_spx_spot() -> Optional[float]:
-    """Best-effort S&P 500 spot (Yahoo chart); None on failure."""
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=1d&interval=5m"
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; EzrasTradingAI/1.0)"}
-    try:
-        with httpx.Client(timeout=12.0) as h:
-            r = h.get(url, headers=headers)
-            r.raise_for_status()
-            j = r.json()
-        res = (j.get("chart") or {}).get("result") or []
-        if not res:
-            return None
-        meta = res[0].get("meta") or {}
-        px = meta.get("regularMarketPrice")
-        if px is not None:
-            return float(px)
-        ind = res[0].get("indicators", {}).get("quote") or [{}]
-        closes = (ind[0] or {}).get("close") or []
-        for v in reversed(closes):
-            if v is not None:
-                return float(v)
-    except Exception as exc:
-        logger.debug("S&P spot fetch failed: %s", exc)
-    return None
-
-
-def _spx_within_threshold_pct(ticker: str, spot: Optional[float], pct: float) -> bool:
-    if spot is None or spot <= 0:
-        return False
-    thr = _parse_kalshi_threshold_usd(ticker)
-    if thr is None or thr <= 0:
-        return False
-    return abs(spot - thr) / max(spot, 1.0) <= pct
-
-
-def _skip_long_dated_or_championship(ticker: str, close_ts: Optional[float]) -> Optional[str]:
-    """Return a skip log reason, or None if OK."""
-    t = (ticker or "").upper()
-    if close_ts and close_ts > 0:
-        y = datetime.fromtimestamp(float(close_ts), tz=timezone.utc).year
-        if y >= 2028 and any(x in t for x in ("KXNBA", "KXMLB", "NBA", "MLB")):
-            return "championship_or_far_future_2028"
-    if "CHAMP" in t and ("KXNBA" in t or "KXMLB" in t or "NBA" in t or "MLB" in t):
-        return "championship_future"
-    return None
 
 
 def _interpret_probability(
@@ -284,100 +177,29 @@ def _interpret_probability(
 def _filter_simple_candidates(
     candidates: List[Dict[str, Any]],
     now: float,
-    gate: str = "legacy",
 ) -> List[Dict[str, Any]]:
-    """Calendar / spot checks after REST scan (hours, range, S&P vs threshold, Gate A/B skips)."""
-    utc_now = datetime.now(timezone.utc)
+    """Day A: hours + spot vs threshold for crypto series (before any buy)."""
     btc, eth = _fetch_btc_eth_spot()
-    need_spx = any(_is_sp_index_ticker(str(x.get("ticker") or "")) for x in candidates)
-    spx = _fetch_spx_spot() if need_spx else None
-    sp_tol = max(0.001, min(0.05, _parse_float("KALSHI_SPX_THRESHOLD_PCT", 0.01)))
-
     out: List[Dict[str, Any]] = []
     for c in candidates:
         t = str(c.get("ticker") or "")
-        close_ts = c.get("close_ts")
-        close_dt: Optional[datetime] = None
-        if close_ts is not None:
-            try:
-                close_dt = datetime.fromtimestamp(float(close_ts), tz=timezone.utc)
-            except (TypeError, ValueError, OSError):
-                close_dt = None
-
-        skip_ch = _skip_long_dated_or_championship(t, float(close_ts) if close_ts else None)
-        if skip_ch:
-            logger.info("Skip %s: %s", t, skip_ch)
-            continue
-
-        if gate == "b" and close_dt is not None:
-            days_to_close = (close_dt - utc_now).days
-            if days_to_close > 7:
-                logger.info("Skip %s: closes in %d days", t, days_to_close)
-                continue
-
-        if gate == "a" and close_dt is not None:
-            if close_dt.year >= 2028:
-                logger.info("Skip %s: close year %d (not same-day index)", t, close_dt.year)
-                continue
-            if close_dt.date() != utc_now.date():
-                logger.info(
-                    "Skip %s: Gate A requires same-day resolution (close=%s)",
-                    t,
-                    close_dt.date().isoformat(),
-                )
-                continue
-
         if not _kalshi_crypto_market_hours_ok(t):
             logger.debug("SIMPLE: skip %s (crypto market hours)", t)
             continue
-
         if _kalshi_crypto_series(t):
             spot = _spot_for_kalshi_ticker(t, btc, eth)
-            if spot is None or spot <= 0:
-                logger.info("Skip %s: no spot quote for crypto validation", t)
-                continue
-            if not _price_in_kalshi_range(t, spot):
-                thr = _parse_kalshi_threshold_usd(t)
-                logger.info(
-                    "Skip %s: spot vs threshold distance — spot=$%.0f threshold=$%s dist=$%.0f",
+            if spot is not None and spot > 0 and not _price_in_kalshi_range(t, spot):
+                logger.debug(
+                    "SIMPLE: skip %s: spot vs threshold (range validation)",
                     t,
-                    spot,
-                    f"{thr:.0f}" if thr is not None else "?",
-                    abs(spot - thr) if thr is not None else -1.0,
                 )
                 continue
-
-        if _is_sp_index_ticker(t):
-            if not _spx_within_threshold_pct(t, spx, sp_tol):
-                thr = _parse_kalshi_threshold_usd(t)
-                logger.info(
-                    "Skip %s: S&P spot vs threshold — spot=%s threshold=%s (need within %.1f%%)",
-                    t,
-                    f"${spx:.2f}" if spx else "unavailable",
-                    f"{thr:.0f}" if thr is not None else "?",
-                    sp_tol * 100.0,
-                )
-                continue
-
         prob = float(c.get("prob") or 0.0)
         side = str(c.get("side") or "yes")
         yes_b = float(c.get("yes_bid") or 0.0)
         no_b = float(c.get("no_bid") or 0.0)
-        profit_per_contract = max(0.0, 1.0 - prob)
-        n_for_dollar = int(1 / max(0.01, profit_per_contract))
-
         interpretation = _interpret_probability(t, side, prob, yes_b, no_b)
         c["prob_interpretation"] = interpretation
-
-        logger.info(
-            "KALSHI TRADE: %s side=%s prob=%.0f%% profit_per_contract=$%.3f "
-            "need %d contracts for $1 profit",
-            t,
-            side,
-            prob * 100.0,
-            profit_per_contract,
-            n_for_dollar,
-        )
         logger.info(
             "PROB CHECK: %s %s %.0f%% → profit/contract=$%.3f need %d contracts for $0.50 warnings=%s",
             t,
@@ -387,6 +209,10 @@ def _filter_simple_candidates(
             interpretation["contracts_for_50c_profit"],
             interpretation["warnings"] or "none",
         )
+        for w in interpretation["warnings"]:
+            if "RANGE MARKET" in w:
+                # Existing spot/range validation above handles execution safety
+                pass
         out.append(c)
     return out
 
@@ -509,49 +335,30 @@ def _fetch_simple_candidates(
     now: float,
 ) -> List[Dict[str, Any]]:
     from trading_ai.shark.outlets.kalshi import (
-        _kalshi_yes_no_ask_from_market_row,
         _kalshi_yes_no_from_market_row,
         _parse_close_timestamp_unix,
-        fetch_kalshi_orderbook_best_ask_cents,
     )
 
-    gate = _simple_scan_gate()
-    min_prob = _gate_min_prob(gate)
-    min_net = max(0.0, _parse_float("KALSHI_SIMPLE_MIN_NET_EDGE", 0.015))
+    min_prob = max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
     ttr_lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
-    ttr_hi = _gate_max_ttr_sec(gate)
-    if ttr_hi < ttr_lo:
-        ttr_hi = ttr_lo
+    ttr_hi = max(ttr_lo, _parse_float("KALSHI_SIMPLE_TTR_MAX_SEC", 3600.0))
     api_limit = max(50, min(500, _parse_int("KALSHI_SIMPLE_SERIES_LIMIT", 200)))
-    gate_b_cap = max(200, min(20000, _parse_int("KALSHI_GATE_B_MAX_MARKETS", 2000)))
 
     merged: Dict[str, Dict[str, Any]] = {}
-    if gate == "b":
+    for ser in _series_tickers():
         try:
-            rows = client.fetch_all_open_markets(max_rows=gate_b_cap)
-            for m in rows:
+            j = client._request(
+                "GET",
+                "/markets",
+                params={"status": "open", "limit": api_limit, "series_ticker": ser},
+            )
+            for m in j.get("markets") or []:
                 if isinstance(m, dict):
                     tid = str(m.get("ticker") or "").strip()
                     if tid:
                         merged[tid] = m
         except Exception as exc:
-            logger.warning("simple scan Gate B open-markets fetch failed: %s", exc)
-    else:
-        series_src = _gate_a_series_tickers() if gate == "a" else _series_tickers()
-        for ser in series_src:
-            try:
-                j = client._request(
-                    "GET",
-                    "/markets",
-                    params={"status": "open", "limit": api_limit, "series_ticker": ser},
-                )
-                for m in j.get("markets") or []:
-                    if isinstance(m, dict):
-                        tid = str(m.get("ticker") or "").strip()
-                        if tid:
-                            merged[tid] = m
-            except Exception as exc:
-                logger.warning("simple scan fetch %s failed: %s", ser, exc)
+            logger.warning("simple scan fetch %s failed: %s", ser, exc)
 
     out: List[Dict[str, Any]] = []
     for m in merged.values():
@@ -560,64 +367,42 @@ def _fetch_simple_candidates(
             if not ticker:
                 continue
             row = dict(m)
-            y_bid, n_bid, _, _ = _kalshi_yes_no_from_market_row(row)
-            if y_bid <= 0 or n_bid <= 0:
+            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+            if y <= 0 or n <= 0:
                 try:
                     row = client.enrich_market_with_detail_and_orderbook(dict(m))
-                    y_bid, n_bid, _, _ = _kalshi_yes_no_from_market_row(row)
+                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
                 except Exception:
                     continue
-            if y_bid <= 0 or n_bid <= 0:
+            if y <= 0 or n <= 0:
                 continue
-
             close_ts = _parse_close_timestamp_unix(row)
             if close_ts is None:
                 continue
             ttr = close_ts - now
             if not (ttr_lo <= ttr <= ttr_hi):
                 continue
-
-            yes_ask, no_ask, _, _ = _kalshi_yes_no_ask_from_market_row(row)
-            if yes_ask is None or no_ask is None:
-                ya_c, na_c = fetch_kalshi_orderbook_best_ask_cents(ticker, client)
-                if yes_ask is None and ya_c is not None:
-                    yes_ask = ya_c / 100.0
-                if no_ask is None and na_c is not None:
-                    no_ask = na_c / 100.0
-            if yes_ask is None or no_ask is None:
+            prob = max(y, n)
+            if prob < min_prob:
                 continue
-
-            side: Optional[str] = None
-            px = 0.0
-            prob = 0.0
-            if yes_ask >= min_prob and (1.0 - yes_ask) >= min_net:
-                side, px, prob = "yes", yes_ask, yes_ask
-            elif no_ask >= min_prob and (1.0 - no_ask) >= min_net:
-                side, px, prob = "no", no_ask, no_ask
-            if side is None:
-                continue
-
-            profit_per_contract = 1.0 - px
+            side = "yes" if y >= n else "no"
+            px = y if side == "yes" else n
             out.append(
                 {
                     "ticker": ticker,
                     "ttr": ttr,
-                    "prob": float(prob),
+                    "prob": prob,
                     "side": side,
                     "price": float(px),
-                    "yes_bid": float(y_bid),
-                    "no_bid": float(n_bid),
-                    "yes_ask": float(yes_ask),
-                    "no_ask": float(no_ask),
-                    "close_ts": float(close_ts),
-                    "profit_per_contract": float(profit_per_contract),
+                    "yes_bid": float(y),
+                    "no_bid": float(n),
                 }
             )
         except Exception:
             continue
 
     out.sort(key=lambda x: (-x["prob"], x["ttr"]))
-    return _filter_simple_candidates(out, now, gate)
+    return _filter_simple_candidates(out, now)
 
 
 def _position_pnl_usd(
