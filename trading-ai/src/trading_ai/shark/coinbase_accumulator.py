@@ -1119,7 +1119,7 @@ class CoinbaseAccumulator:
             gate_b_min = max(0, int(_env_float("COINBASE_GATE_B_MIN_POSITIONS", 10.0)))
             gate_c_min = max(0, int(_env_float("COINBASE_GATE_C_MIN_POSITIONS", 5.0)))
             gate_d_min = max(0, int(_env_float("COINBASE_GATE_D_MIN_POSITIONS", 5.0)))
-            gate_e_min = max(0, int(_env_float("COINBASE_GATE_E_MIN_POSITIONS", 1.0)))
+            gate_e_min = max(0, int(_env_float("COINBASE_GATE_E_MIN_POSITIONS", 5.0)))
             a_count = _count_gate(state, "A")
             b_count = _count_gate(state, "B")
             c_count = _count_gate(state, "C")
@@ -1544,55 +1544,61 @@ class CoinbaseAccumulator:
         save_coinbase_state(state)
         return exits
 
-    def _calculate_signals(self, pid: str, now: float) -> Dict[str, Any]:
-        """RSI + MACD (EMA12−EMA26) + EMA9 vs EMA21 cross for Gate E (BTC/ETH)."""
-        rsi_lo = _env_float("COINBASE_GATE_E_RSI_LO", 40.0)
-        rsi_hi = _env_float("COINBASE_GATE_E_RSI_HI", 60.0)
-        out: Dict[str, Any] = {
+    def _calculate_signals(self, pid: str, _now: float = 0.0) -> Dict[str, Any]:
+        """RSI, MACD line, MACD histogram proxy, EMA 9/21 — Gate A entry + Gate E screening."""
+        history = list(self._price_history.get(pid) or [])
+        empty: Dict[str, Any] = {
             "signal": "none",
             "rsi": 50.0,
-            "macd": 0.0,
-            "macd_prev": 0.0,
             "ema9": 0.0,
             "ema21": 0.0,
-            "ema9_prev": 0.0,
-            "ema21_prev": 0.0,
+            "macd": 0.0,
+            "macd_hist": 0.0,
+            "bullish_cross": False,
+            "bearish_cross": False,
+            "rsi_neutral": False,
         }
-        hist = list(self._price_history.get(pid) or [])
-        closes = [float(t[1]) for t in hist[-1200:]]
-        if len(closes) < 60:
-            return out
-        rsi = _rsi_last(closes, 14)
-        e9s = _ema_series(closes, 9)
-        e21s = _ema_series(closes, 21)
-        if len(e9s) < 2 or len(e21s) < 2:
-            return out
-        e9, e9p = e9s[-1], e9s[-2]
-        e21, e21p = e21s[-1], e21s[-2]
-        m_now, m_prev = _macd_line_last(closes)
-        out.update(
-            {
-                "rsi": rsi,
-                "macd": m_now,
-                "macd_prev": m_prev,
-                "ema9": e9,
-                "ema21": e21,
-                "ema9_prev": e9p,
-                "ema21_prev": e21p,
-            }
-        )
-        if _env_bool("COINBASE_GATE_E_MACD_TURN", False):
-            macd_ok = m_now > 0.0 and m_prev <= 0.0
+        if len(history) < 21:
+            return dict(empty)
+
+        prices = [float(h[1]) for h in history[-80:]]
+        if len(prices) < 26:
+            return dict(empty)
+
+        ema9 = _ema_last(prices, 9)
+        ema21 = _ema_last(prices, 21)
+        ema9_prev = _ema_last(prices[:-1], 9)
+        ema21_prev = _ema_last(prices[:-1], 21)
+        bullish_cross = ema9 > ema21 and ema9_prev <= ema21_prev
+        bearish_cross = ema9 < ema21 and ema9_prev >= ema21_prev
+
+        rsi = _rsi_last(prices)
+        macd, macd_prev = _macd_line_last(prices)
+        macd_hist = macd - macd_prev
+
+        rsi_neutral = 35.0 <= rsi <= 65.0
+        macd_positive = macd > 0.0
+
+        if bullish_cross and rsi_neutral:
+            signal = "buy"
+        elif bearish_cross and rsi_neutral:
+            signal = "wait"
+        elif rsi < 35.0 and macd_positive:
+            signal = "buy"
         else:
-            macd_ok = m_now > 0.0
-        rsi_ok = rsi_lo <= rsi <= rsi_hi
-        if _env_bool("COINBASE_GATE_E_STRICT_CROSS", True):
-            cross = e9 > e21 and e9p <= e21p
-        else:
-            cross = e9 > e21
-        if rsi_ok and macd_ok and cross:
-            out["signal"] = "buy"
-        return out
+            signal = "none"
+
+        return {
+            "signal": signal,
+            "rsi": rsi,
+            "ema9": ema9,
+            "ema21": ema21,
+            "macd": macd,
+            "macd_hist": macd_hist,
+            "bullish_cross": bullish_cross,
+            "bearish_cross": bearish_cross,
+            "rsi_neutral": rsi_neutral,
+        }
 
     def _check_hedge_opportunities(
         self, state: Dict[str, Any], prices: Dict[str, Tuple[float, float]]
@@ -1671,16 +1677,15 @@ class CoinbaseAccumulator:
         usd_balance: float,
         now: float,
     ) -> None:
-        """Gate E — BTC/ETH only: neutral RSI band, MACD>0, EMA9 vs EMA21 cross."""
+        """Gate E — BTC/ETH: EMA9>EMA21 cross, RSI 35–65, MACD histogram > 0."""
         if not _coinbase_gates_mode():
             return
         if not _env_bool("COINBASE_GATE_E_ENABLED", False):
             return
         max_n = max(1, int(_env_float("COINBASE_GATE_E_POSITIONS", 10.0)))
-        slice_pct = _env_float("COINBASE_GATE_E_SLICE_PCT", 0.10)
         order_usd = max(
             _min_order_usd(usd_balance),
-            _deployable_usd(usd_balance) * max(0.005, min(0.25, slice_pct)) / max(float(max_n), 10.0),
+            _deployable_usd(usd_balance) * 0.20 / max(float(max_n), 10.0),
         )
         eng = 5
 
@@ -1691,18 +1696,19 @@ class CoinbaseAccumulator:
                     break
                 if pid not in prices:
                     continue
-                already = any(
-                    str(p.get("product_id")) == pid and str(p.get("gate") or "").upper() == "E"
-                    for p in (state.get("positions") or [])
-                )
-                if already:
-                    continue
 
                 signals = self._calculate_signals(pid, now)
-                if signals.get("signal") != "buy":
+                rsi = float(signals.get("rsi") or 50.0)
+                macd_hist = float(signals.get("macd_hist") or 0.0)
+                rsi_lo = _env_float("COINBASE_GATE_E_RSI_LO", 40.0)
+                rsi_hi = _env_float("COINBASE_GATE_E_RSI_HI", 60.0)
+                if not (
+                    signals.get("bullish_cross")
+                    and rsi_lo <= rsi <= rsi_hi
+                    and macd_hist > 0.0
+                ):
                     continue
 
-                rsi = float(signals.get("rsi") or 50.0)
                 macd = float(signals.get("macd") or 0.0)
                 bid, ask = prices.get(pid, (0.0, 0.0))
                 if not bid or bid <= 0:
@@ -1740,15 +1746,15 @@ class CoinbaseAccumulator:
                     order_id=r.order_id,
                     gate="E",
                     position_pct=order_usd / max(usd_balance, 1e-9),
-                    strategy="rsi_macd_ema",
+                    strategy="gate_e_scalp",
                     extra_fields=extra,
                 )
                 try:
                     from trading_ai.shark.reporting import send_telegram
 
                     send_telegram(
-                        f"📡 Gate E (RSI/MACD): {pid} ${order_usd:.2f} @ ${mid:.4f} "
-                        f"RSI={rsi:.0f} MACD={'↑' if macd > 0 else '↓'}"
+                        f"📡 Gate E: {pid} ${order_usd:.2f} @ ${mid:.4f} "
+                        f"RSI={rsi:.0f} MACDΔ={macd_hist:.6f} MACD={'↑' if macd > 0 else '↓'}"
                     )
                 except Exception:
                     pass
@@ -2441,62 +2447,6 @@ class CoinbaseAccumulator:
                 )
             except Exception:
                 pass
-
-    def _calculate_signals(self, pid: str) -> Dict[str, Any]:
-        """RSI, MACD line, MACD histogram proxy, EMA 9/21 — entry signal for Gate A / Gate E."""
-        history = list(self._price_history.get(pid) or [])
-        empty = {
-            "signal": "none",
-            "rsi": 50.0,
-            "ema9": 0.0,
-            "ema21": 0.0,
-            "macd": 0.0,
-            "macd_hist": 0.0,
-            "bullish_cross": False,
-            "bearish_cross": False,
-            "rsi_neutral": False,
-        }
-        if len(history) < 21:
-            return dict(empty)
-
-        prices = [float(h[1]) for h in history[-80:]]
-        if len(prices) < 26:
-            return dict(empty)
-
-        ema9 = _ema_last(prices, 9)
-        ema21 = _ema_last(prices, 21)
-        ema9_prev = _ema_last(prices[:-1], 9)
-        ema21_prev = _ema_last(prices[:-1], 21)
-        bullish_cross = ema9 > ema21 and ema9_prev <= ema21_prev
-        bearish_cross = ema9 < ema21 and ema9_prev >= ema21_prev
-
-        rsi = _rsi_last(prices)
-        macd, macd_prev = _macd_line_last(prices)
-        macd_hist = macd - macd_prev
-
-        rsi_neutral = 35.0 <= rsi <= 65.0
-        macd_positive = macd > 0.0
-
-        if bullish_cross and rsi_neutral:
-            signal = "buy"
-        elif bearish_cross and rsi_neutral:
-            signal = "wait"
-        elif rsi < 35.0 and macd_positive:
-            signal = "buy"
-        else:
-            signal = "none"
-
-        return {
-            "signal": signal,
-            "rsi": rsi,
-            "ema9": ema9,
-            "ema21": ema21,
-            "macd": macd,
-            "macd_hist": macd_hist,
-            "bullish_cross": bullish_cross,
-            "bearish_cross": bearish_cross,
-            "rsi_neutral": rsi_neutral,
-        }
 
     def _gate_a_scan(
         self,
