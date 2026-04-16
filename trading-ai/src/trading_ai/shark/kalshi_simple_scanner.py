@@ -1,0 +1,501 @@
+"""Kalshi rapid cycle — BTC / ETH / S&P series only; exits first, refill to N positions.
+
+**All sizing and risk are percentage-based** (no fixed dollar env targets).
+Deployable cash uses Kalshi effective capital (``KALSHI_CASH_RESERVE_PCT``, default 20%).
+
+State: ``shark/state/kalshi_positions.json``. Scheduler runs ``run_simple_scan`` on a fixed
+30-second interval (see ``scheduler.build_shark_scheduler``).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from trading_ai.governance.storage_architecture import shark_state_path
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _parse_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        return default
+
+
+def _env_truthy(name: str, default: str = "false") -> bool:
+    return (os.environ.get(name) or default).strip().lower() in ("1", "true", "yes")
+
+
+def _state_path() -> Path:
+    return shark_state_path("kalshi_positions.json")
+
+
+def _default_state() -> Dict[str, Any]:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return {
+        "positions": [],
+        "daily_profit": 0.0,
+        "daily_date": today,
+        "trades_today": 0,
+        "wins_today": 0,
+        "losses_today": 0,
+        "hour_cycle_count": 0,
+        "hour_trade_count": 0,
+        "hour_start_unix": time.time(),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def load_simple_state() -> Dict[str, Any]:
+    p = _state_path()
+    if not p.is_file():
+        return _default_state()
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            s = _default_state()
+            s.update(raw)
+            return s
+    except Exception as exc:
+        logger.warning("kalshi_positions.json load failed: %s", exc)
+    return _default_state()
+
+
+def save_simple_state(state: Dict[str, Any]) -> None:
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.error("kalshi_positions.json save failed: %s", exc)
+
+
+def _reset_daily_if_needed(state: Dict[str, Any]) -> None:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if state.get("daily_date") != today:
+        state["daily_date"] = today
+        state["daily_profit"] = 0.0
+        state["trades_today"] = 0
+        state["wins_today"] = 0
+        state["losses_today"] = 0
+
+
+def _series_tickers() -> Tuple[str, ...]:
+    raw = (os.environ.get("KALSHI_SIMPLE_MARKETS") or "KXBTC,KXETH,KXINX").strip()
+    return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+
+
+def _available_deployable_usd() -> float:
+    """Kalshi cash after reserve — same as ``balance * (1 - reserve)`` when API/env synced."""
+    from trading_ai.shark.capital_effective import effective_capital_for_outlet
+    from trading_ai.shark.state_store import load_capital
+
+    book = load_capital()
+    return max(0.0, effective_capital_for_outlet("kalshi", float(book.current_capital)))
+
+
+def _per_position_usd(available: float) -> float:
+    """``available * KALSHI_SIMPLE_POSITION_PCT`` (fraction of deployable per slot)."""
+    pct = max(0.001, min(0.5, _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08)))
+    return max(0.0, float(available) * pct)
+
+
+def _profit_pct() -> float:
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.10)))
+
+
+def _stop_pct() -> float:
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_STOP_PCT", 0.05)))
+
+
+def _time_stop_min() -> float:
+    return max(0.5, _parse_float("KALSHI_SIMPLE_TIME_STOP_MIN", 5.0))
+
+
+def _fetch_simple_candidates(
+    client: Any,
+    now: float,
+) -> List[Dict[str, Any]]:
+    from trading_ai.shark.outlets.kalshi import (
+        _kalshi_yes_no_from_market_row,
+        _parse_close_timestamp_unix,
+    )
+
+    min_prob = max(0.5, min(0.99, _parse_float("KALSHI_SIMPLE_MIN_PROB", 0.85)))
+    ttr_lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
+    ttr_hi = max(ttr_lo, _parse_float("KALSHI_SIMPLE_TTR_MAX_SEC", 3600.0))
+    api_limit = max(50, min(500, _parse_int("KALSHI_SIMPLE_SERIES_LIMIT", 200)))
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for ser in _series_tickers():
+        try:
+            j = client._request(
+                "GET",
+                "/markets",
+                params={"status": "open", "limit": api_limit, "series_ticker": ser},
+            )
+            for m in j.get("markets") or []:
+                if isinstance(m, dict):
+                    tid = str(m.get("ticker") or "").strip()
+                    if tid:
+                        merged[tid] = m
+        except Exception as exc:
+            logger.warning("simple scan fetch %s failed: %s", ser, exc)
+
+    out: List[Dict[str, Any]] = []
+    for m in merged.values():
+        try:
+            ticker = str(m.get("ticker") or "").strip()
+            if not ticker:
+                continue
+            row = dict(m)
+            y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+            if y <= 0 or n <= 0:
+                try:
+                    row = client.enrich_market_with_detail_and_orderbook(dict(m))
+                    y, n, _, _ = _kalshi_yes_no_from_market_row(row)
+                except Exception:
+                    continue
+            if y <= 0 or n <= 0:
+                continue
+            close_ts = _parse_close_timestamp_unix(row)
+            if close_ts is None:
+                continue
+            ttr = close_ts - now
+            if not (ttr_lo <= ttr <= ttr_hi):
+                continue
+            prob = max(y, n)
+            if prob < min_prob:
+                continue
+            side = "yes" if y >= n else "no"
+            px = y if side == "yes" else n
+            out.append(
+                {
+                    "ticker": ticker,
+                    "ttr": ttr,
+                    "prob": prob,
+                    "side": side,
+                    "price": float(px),
+                }
+            )
+        except Exception:
+            continue
+
+    out.sort(key=lambda x: (-x["prob"], x["ttr"]))
+    return out
+
+
+def _position_pnl_usd(
+    pos: Dict[str, Any],
+    y: float,
+    n: float,
+) -> float:
+    side = str(pos.get("side") or "yes").lower()
+    entry = float(pos.get("entry_price") or 0.0)
+    contracts = float(pos.get("contracts") or 0.0)
+    if entry <= 0 or contracts <= 0:
+        return 0.0
+    cur = y if side == "yes" else n
+    return contracts * (cur - entry)
+
+
+def _check_exits_first(
+    state: Dict[str, Any],
+    client: Any,
+) -> int:
+    from trading_ai.shark.outlets.kalshi import KalshiClient, _kalshi_yes_no_from_market_row
+
+    if not isinstance(client, KalshiClient):
+        return 0
+
+    available = _available_deployable_usd()
+    position_pct = max(0.001, min(0.5, _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08)))
+    profit_pct = _profit_pct()
+    stop_pct = _stop_pct()
+    tmax = _time_stop_min() * 60.0
+    now = time.time()
+
+    remaining: List[Dict[str, Any]] = []
+    exits = 0
+    for pos in list(state.get("positions") or []):
+        if bool(pos.get("exit_submitted")):
+            remaining.append(pos)
+            continue
+
+        tid = str(pos.get("ticker") or "").strip()
+        if not tid:
+            remaining.append(pos)
+            continue
+        entry_t = float(pos.get("entry_time") or 0.0)
+        age_min = (now - entry_t) / 60.0 if entry_t > 0 else 0.0
+        contracts = float(pos.get("contracts") or 0.0)
+        entry_prob = float(pos.get("entry_prob") or 0.0)
+
+        try:
+            mj = client.get_market(tid)
+            inner = mj.get("market") if isinstance(mj.get("market"), dict) else mj
+            if not isinstance(inner, dict):
+                inner = {}
+            y, n, _, _ = _kalshi_yes_no_from_market_row(inner)
+        except Exception as exc:
+            logger.debug("simple exit price fetch failed %s: %s", tid, exc)
+            remaining.append(pos)
+            continue
+
+        pnl = _position_pnl_usd(pos, y, n)
+        raw_tgt_usd = (os.environ.get("KALSHI_SIMPLE_TARGET_PROFIT") or "").strip()
+        raw_sl_usd = (os.environ.get("KALSHI_SIMPLE_STOP_LOSS") or "").strip()
+        if raw_tgt_usd and raw_sl_usd:
+            profit_target_usd = max(0.01, float(raw_tgt_usd))
+            stop_usd = max(0.01, float(raw_sl_usd))
+        else:
+            per_position = available * position_pct
+            stop_usd = per_position * stop_pct
+            edge = max(0.0, 1.0 - entry_prob)
+            profit_target_usd = edge * contracts * profit_pct
+
+        exit_reason = ""
+        if pnl >= profit_target_usd:
+            exit_reason = "profit"
+        elif pnl <= -stop_usd:
+            exit_reason = "stop"
+        elif entry_t > 0 and (now - entry_t) >= tmax:
+            exit_reason = "time"
+
+        if not exit_reason:
+            remaining.append(pos)
+            continue
+
+        side = str(pos.get("side") or "yes").lower()
+        if side not in ("yes", "no"):
+            side = "yes"
+        cnt = max(1, int(contracts))
+
+        pos_exit = dict(pos)
+        pos_exit["exit_submitted"] = True
+        try:
+            res = client.place_order(ticker=tid, side=side, count=cnt, action="sell")
+        except Exception as exc:
+            logger.warning("RAPID EXIT sell failed %s: %s", tid, exc)
+            pos_exit.pop("exit_submitted", None)
+            remaining.append(pos_exit)
+            continue
+
+        fs = float(res.filled_size or 0.0)
+        fp = float(res.filled_price or 0.0)
+        realized = fs * fp - float(pos.get("cost") or 0.0) if fs > 0 else pnl
+        if fs <= 0:
+            realized = pnl
+            pos_exit.pop("exit_submitted", None)
+            remaining.append(pos_exit)
+            continue
+
+        logger.info(
+            "RAPID EXIT: [%s] %s $%+.2f in %.1fmin (%s)",
+            tid,
+            exit_reason.upper(),
+            realized,
+            age_min,
+            exit_reason,
+        )
+
+        state["daily_profit"] = float(state.get("daily_profit") or 0.0) + realized
+        state["trades_today"] = int(state.get("trades_today") or 0) + 1
+        state["hour_trade_count"] = int(state.get("hour_trade_count") or 0) + 1
+        if realized >= 0:
+            state["wins_today"] = int(state.get("wins_today") or 0) + 1
+        else:
+            state["losses_today"] = int(state.get("losses_today") or 0) + 1
+
+        try:
+            from trading_ai.shark.reporting import send_telegram
+
+            open_n = len(remaining)
+            daily = float(state.get("daily_profit") or 0.0)
+            max_pos = max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
+            sym = tid.split("-")[0] if "-" in tid else tid
+            send_telegram(
+                f"💰 RAPID: {sym} ${realized:+.2f} in {age_min:.0f}min "
+                f"[{open_n}/{max_pos} positions, PnL today ${daily:.2f}]"
+            )
+        except Exception:
+            pass
+
+        exits += 1
+
+    state["positions"] = remaining
+    return exits
+
+
+def _maintain_positions(
+    state: Dict[str, Any],
+    client: Any,
+    open_tickers: Set[str],
+) -> int:
+    from trading_ai.shark.outlets.kalshi import KalshiClient
+
+    if not isinstance(client, KalshiClient):
+        return 0
+
+    max_n = max(1, _parse_int("KALSHI_SIMPLE_MAX_TRADES", 10))
+    now = time.time()
+    placed = 0
+
+    while len(state.get("positions") or []) < max_n:
+        available = _available_deployable_usd()
+        per_slot = _per_position_usd(available)
+        cands = _fetch_simple_candidates(client, now)
+        picked: Optional[Dict[str, Any]] = None
+        for c in cands:
+            t = str(c["ticker"])
+            if t in open_tickers:
+                continue
+            picked = c
+            break
+        if picked is None:
+            logger.info(
+                "SIMPLE SCAN: need %s positions but no eligible markets",
+                max_n - len(state.get("positions") or []),
+            )
+            break
+
+        ticker = str(picked["ticker"])
+        side = str(picked["side"])
+        px = max(float(picked["price"]), 0.01)
+        cnt = max(1, int(per_slot / px))
+
+        try:
+            res = client.place_order(ticker=ticker, side=side, count=cnt, action="buy")
+        except Exception as exc:
+            logger.warning("simple scan buy failed %s: %s", ticker, exc)
+            break
+
+        fs = float(res.filled_size or 0.0)
+        fp = float(res.filled_price or 0.0)
+        if fs <= 0 or not (res.success is not False):
+            open_tickers.add(ticker)
+            continue
+
+        cost = fs * fp
+        pos = {
+            "ticker": ticker,
+            "side": side,
+            "contracts": int(fs),
+            "cost": cost,
+            "entry_time": time.time(),
+            "entry_prob": float(picked["prob"]),
+            "entry_price": fp,
+            "position_pct": _parse_float("KALSHI_SIMPLE_POSITION_PCT", 0.08),
+            "exit_submitted": False,
+        }
+        state.setdefault("positions", []).append(pos)
+        open_tickers.add(ticker)
+        placed += 1
+
+        logger.info(
+            "SIMPLE BUY: %s %s x%s @ %.4f (notional ~%.4f of deployable)",
+            ticker,
+            side,
+            int(fs),
+            fp,
+            cost,
+        )
+        save_simple_state(state)
+
+    return placed
+
+
+def _maybe_hourly_report(state: Dict[str, Any]) -> None:
+    now = time.time()
+    start = float(state.get("hour_start_unix") or 0.0)
+    if start <= 0:
+        state["hour_start_unix"] = now
+        return
+    if now - start < 3600.0:
+        return
+
+    try:
+        from trading_ai.shark.capital_effective import effective_capital_for_outlet
+        from trading_ai.shark.reporting import send_telegram
+        from trading_ai.shark.state_store import load_capital
+
+        book = load_capital()
+        cap = effective_capital_for_outlet("kalshi", float(book.current_capital))
+        cycles = int(state.get("hour_cycle_count") or 0)
+        trades = int(state.get("hour_trade_count") or 0)
+        w = int(state.get("wins_today") or 0)
+        l = int(state.get("losses_today") or 0)
+        t = w + l
+        wr = (100.0 * w / t) if t > 0 else 0.0
+        pnl = float(state.get("daily_profit") or 0.0)
+        pct = (pnl / cap * 100.0) if cap > 0 else 0.0
+
+        send_telegram(
+            f"📊 HOUR REPORT (Kalshi simple):\n"
+            f"Cycles: {cycles} | Trades: {trades}\n"
+            f"Profit: ${pnl:+.2f} ({pct:+.1f}% vs deployable) | Win rate: {wr:.0f}%\n"
+            f"Deployable ref: ${cap:.2f}"
+        )
+    except Exception as exc:
+        logger.warning("hourly simple report failed: %s", exc)
+
+    state["hour_cycle_count"] = 0
+    state["hour_trade_count"] = 0
+    state["hour_start_unix"] = now
+
+
+def run_simple_scan() -> Dict[str, Any]:
+    """One cycle: load state → exits → refill → save. Returns summary dict."""
+    if not _env_truthy("KALSHI_SIMPLE_SCAN_ENABLED", "false"):
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    from trading_ai.shark.outlets.kalshi import KalshiClient
+
+    client = KalshiClient()
+    if not client.has_kalshi_credentials():
+        logger.info("Kalshi simple scan skipped — no credentials")
+        return {"ok": False, "skipped": True, "reason": "no_credentials"}
+
+    state = load_simple_state()
+    _reset_daily_if_needed(state)
+    now = time.time()
+    if float(state.get("hour_start_unix") or 0.0) <= 0:
+        state["hour_start_unix"] = now
+    _maybe_hourly_report(state)
+
+    state["hour_cycle_count"] = int(state.get("hour_cycle_count") or 0) + 1
+
+    exits = _check_exits_first(state, client)
+
+    open_tickers: Set[str] = {
+        str(p.get("ticker") or "") for p in (state.get("positions") or []) if p.get("ticker")
+    }
+    placed = _maintain_positions(state, client, open_tickers)
+
+    save_simple_state(state)
+
+    return {
+        "ok": True,
+        "exits": exits,
+        "placed": placed,
+        "open": len(state.get("positions") or []),
+    }

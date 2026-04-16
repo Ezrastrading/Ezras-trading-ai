@@ -74,6 +74,8 @@ def build_shark_scheduler(
     hourly_report: Optional[Callable[[], None]] = None,
     coinbase_scan: Optional[Callable[[], None]] = None,
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
+    kalshi_simple_scan: Optional[Callable[[], None]] = None,
+    kalshi_gate_c: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -106,7 +108,13 @@ def build_shark_scheduler(
         if arb_sweep is not None:
             sched.add_job(arb_sweep, IntervalTrigger(minutes=2), id="arb_sweep", replace_existing=True)
     if kalshi_near_resolution is not None:
-        sched.add_job(kalshi_near_resolution, IntervalTrigger(seconds=60), id="kalshi_near_resolution", replace_existing=True)
+        sched.add_job(
+            kalshi_near_resolution,
+            IntervalTrigger(seconds=30),
+            id="kalshi_near_resolution",
+            max_instances=1,
+            replace_existing=True,
+        )
 
     def _live_sports_hv_wrapper() -> None:
         if live_sports_scan is None:
@@ -140,7 +148,13 @@ def build_shark_scheduler(
             kalshi_hf_scan()
 
     if kalshi_hf_scan is not None:
-        sched.add_job(_kalshi_hf_wrapper, IntervalTrigger(seconds=30), id="kalshi_hf", replace_existing=True)
+        sched.add_job(
+            _kalshi_hf_wrapper,
+            IntervalTrigger(seconds=30),
+            id="kalshi_hf",
+            max_instances=1,
+            replace_existing=True,
+        )
     if kalshi_convergence_scan is not None:
         sched.add_job(kalshi_convergence_scan, IntervalTrigger(seconds=60), id="kalshi_convergence", replace_existing=True)
 
@@ -148,14 +162,20 @@ def build_shark_scheduler(
         if hot_window_active():
             hot_scan()
 
-    sched.add_job(_hot_wrapper, IntervalTrigger(seconds=90), id="scan_hot", replace_existing=True)
+    sched.add_job(_hot_wrapper, IntervalTrigger(seconds=30), id="scan_hot", max_instances=1, replace_existing=True)
     sched.add_job(gap_passive_scan, IntervalTrigger(minutes=15), id="gap_passive", replace_existing=True)
 
     def _gap_active_wrapper() -> None:
         if gap_active():
             gap_active_scan()
 
-    sched.add_job(_gap_active_wrapper, IntervalTrigger(seconds=30), id="gap_active", replace_existing=True)
+    sched.add_job(
+        _gap_active_wrapper,
+        IntervalTrigger(seconds=30),
+        id="gap_active",
+        max_instances=1,
+        replace_existing=True,
+    )
     sched.add_job(resolution_monitor, IntervalTrigger(seconds=60), id="resolution", replace_existing=True)
     sched.add_job(daily_memo, CronTrigger(hour=8, minute=0), id="daily_memo", replace_existing=True)
     sched.add_job(weekly_summary, CronTrigger(day_of_week="sun", hour=21, minute=0), id="weekly", replace_existing=True)
@@ -197,8 +217,9 @@ def build_shark_scheduler(
     if kalshi_stale_order_sweep is not None:
         sched.add_job(
             kalshi_stale_order_sweep,
-            IntervalTrigger(minutes=2),
+            IntervalTrigger(seconds=30),
             id="kalshi_stale_orders",
+            max_instances=1,
             replace_existing=True,
         )
     # ── Crypto blitz: every 15 min Mon–Fri 9:00–4:45 PM ET (:00/:15/:30/:45 + 30 s) ─
@@ -219,8 +240,9 @@ def build_shark_scheduler(
     if kalshi_blitz is not None and IntervalTrigger is not None:
         sched.add_job(
             kalshi_blitz,
-            IntervalTrigger(seconds=120),
-            id="kalshi_blitz_backup_120s",
+            IntervalTrigger(seconds=30),
+            id="kalshi_blitz_backup",
+            max_instances=1,
             replace_existing=True,
         )
     if crypto_market_open_blitz is not None and CronTrigger is not None:
@@ -239,8 +261,9 @@ def build_shark_scheduler(
     if kalshi_sports_blitz is not None:
         sched.add_job(
             kalshi_sports_blitz,
-            IntervalTrigger(seconds=60),
+            IntervalTrigger(seconds=30),
             id="kalshi_sports_blitz",
+            max_instances=1,
             replace_existing=True,
         )
     if kalshi_non_crypto_hf is not None:
@@ -248,6 +271,7 @@ def build_shark_scheduler(
             kalshi_non_crypto_hf,
             IntervalTrigger(seconds=30),
             id="kalshi_nc_hf",
+            max_instances=1,
             replace_existing=True,
         )
 
@@ -291,6 +315,43 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
+    # ── Kalshi simple rapid cycle (BTC/ETH/S&P; exits first; optional)
+    if kalshi_simple_scan is not None and IntervalTrigger is not None:
+        def _kalshi_simple_wrapper() -> None:
+            if (os.environ.get("KALSHI_SIMPLE_SCAN_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            kalshi_simple_scan()  # type: ignore[misc]
+
+        sched.add_job(
+            _kalshi_simple_wrapper,
+            IntervalTrigger(seconds=30),
+            id="kalshi_simple_scan",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_gate_c is not None and IntervalTrigger is not None:
+        def _gate_c_wrapper() -> None:
+            if (os.environ.get("KALSHI_GATE_C_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            kalshi_gate_c()  # type: ignore[misc]
+
+        sched.add_job(
+            _gate_c_wrapper,
+            IntervalTrigger(seconds=30),
+            id="kalshi_gate_c",
+            max_instances=1,
+            replace_existing=True,
+        )
+
     # ── Coinbase 4-engine scan (30s: exits every tick; E4 micro; E1–E3 buys on 60s cadence inside)
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
@@ -304,6 +365,7 @@ def build_shark_scheduler(
             _coinbase_scan_wrapper,
             IntervalTrigger(seconds=30),
             id="coinbase_scan",
+            max_instances=2,
             replace_existing=True,
         )
 

@@ -565,6 +565,29 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_index_blitz failed (non-blocking): %s", exc)
 
+    def kalshi_simple_scan_job() -> None:
+        try:
+            from trading_ai.shark.kalshi_simple_scanner import run_simple_scan
+
+            result = run_simple_scan()
+            placed = result.get("placed", 0) if isinstance(result, dict) else result
+            if placed:
+                log.info("kalshi_simple_scan: placed=%s", placed)
+        except Exception as exc:
+            log.warning("kalshi_simple_scan failed: %s", exc)
+
+    def kalshi_gate_c_job() -> None:
+        try:
+            from trading_ai.shark.kalshi_gate_c import run_gate_c
+
+            result = run_gate_c()
+            if isinstance(result, dict) and result.get("ok") and (
+                result.get("exits") or result.get("placed")
+            ):
+                log.info("kalshi_gate_c: result=%s", result)
+        except Exception as exc:
+            log.warning("kalshi_gate_c failed: %s", exc)
+
     def hourly_report() -> None:
         try:
             from datetime import datetime
@@ -672,6 +695,8 @@ def main() -> None:
         hourly_report=hourly_report,
         coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
         crypto_market_open_blitz=crypto_market_open_blitz,
+        kalshi_simple_scan=kalshi_simple_scan_job,
+        kalshi_gate_c=kalshi_gate_c_job,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)
@@ -680,7 +705,7 @@ def main() -> None:
     log.info("Shark scheduler started — 24/7")
     for job in sched.get_jobs():
         jid = job.id.lower()
-        if "blitz" in jid or "crypto_15min" in jid or "crypto_market_open" in jid:
+        if any(x in jid for x in ("blitz", "crypto_15min", "simple_scan", "gate_c")):
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 
     def _send_bot_online_telegram() -> None:

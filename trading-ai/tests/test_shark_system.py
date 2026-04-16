@@ -2344,7 +2344,7 @@ def test_126c_kalshi_blitz_job_registered():
     )
     assert sched is not None
     ids = [j.id for j in sched.get_jobs()]
-    assert "kalshi_blitz" in ids
+    assert "crypto_15min_cron" in ids or "kalshi_blitz_backup" in ids
 
 
 def test_126c2_kalshi_sports_blitz_job_registered():
