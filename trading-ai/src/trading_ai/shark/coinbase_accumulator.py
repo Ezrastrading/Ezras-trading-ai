@@ -17,8 +17,11 @@ max(COINBASE_GATE_*_POSITIONS, 10)`` via :func:`_gate_dynamic_order_usd` (defaul
 **E3 — Scalp**  BTC, ETH, SOL, XRP, DOGE: short momentum; tight TP/SL/time.
 **E4 — Micro HFT**  BTC-USD & ETH-USD only; buy cadence throttled with E1–E3 (default 30s).
 
-Exits: ``_check_exits_only`` / scheduler job ``coinbase_exit_check`` every 5s; ``scan_and_trade`` is buys-only. Per-position (after ``sell_pending`` retry): **no_price_stop** (missing/zero bid),
-then **time stop** (absolute) → take-profit → stop-loss → trail (E2 only, non-gate). Sells are not gated by the buy rate limiter.
+Exits: ``coinbase_loss_scan`` every **3s** (gate positions only — tight ``COINBASE_STOP_LOSS_PCT``),
+``coinbase_profit_scan`` every **3s** (take-profit), ``coinbase_exit_check`` / ``_check_exits_only`` every **5s**
+(time stop, engine stops, no-price). ``scan_and_trade`` is buys-only. Per-position (after ``sell_pending`` retry):
+**no_price_stop** (missing/zero bid), then **time stop** (absolute) → take-profit → stop-loss → trail (E2 only, non-gate).
+Sells are not gated by the buy rate limiter.
 Sells retry once; on failure ``sell_pending`` is set for the next scan.
 
 Logging: ``CB BUY E{n}``, ``CB SELL E{n}``, ``CB CHECK E{n}``, ``CB EXIT E{n}``.
@@ -231,6 +234,8 @@ def _cb_supabase_exit_reason(sell_reason: str, *, profit_scan: bool = False) -> 
     sl = sell_reason.lower()
     if "time" in sl or ">=" in sell_reason:
         return "timeout"
+    if "loss_scan" in sl:
+        return "stop"
     if "stop" in sl or "trail" in sl or "no_price" in sl:
         return "stop"
     if "tp" in sl or sl.startswith("tp"):
@@ -365,7 +370,7 @@ def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
     if g in ("A", "B"):
         return (
             _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025),
-            _env_float("COINBASE_STOP_LOSS_PCT", 0.0025),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.00025),
             _env_float("COINBASE_TIME_STOP_MIN", 5.0),
         )
     if g == "C":
@@ -1241,6 +1246,201 @@ class CoinbaseAccumulator:
                 logger.warning(
                     "PROFIT SCAN: sell failed %s — will retry on next scan", pid
                 )
+                remaining.append(pos)
+
+        state["positions"] = remaining
+        save_coinbase_state(state)
+        return exits
+
+    def _run_loss_scan(self) -> int:
+        """Tight stop for **gate** positions (A/B/C/D) — scheduler ``coinbase_loss_scan`` every 3s.
+
+        Uses ``COINBASE_STOP_LOSS_PCT`` (default **0.025%** = 0.00025). Engine-only positions keep
+        their wider stops on the 5s ``coinbase_exit_check`` path.
+        """
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        state = load_coinbase_state()
+        if not state.get("positions"):
+            return 0
+
+        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.00025)
+
+        prices = self._get_prices_for_positions(state)
+        if not prices:
+            return 0
+
+        now = time.time()
+        exits = 0
+        positions_snapshot = list(state.get("positions") or [])
+        remaining: List[Dict[str, Any]] = []
+
+        for idx, pos in enumerate(positions_snapshot):
+            if pos.get("exit_submitted"):
+                remaining.append(pos)
+                continue
+
+            gate = str(pos.get("gate") or "").strip().upper()
+            if _gate_tp_sl_tmin(gate) is None:
+                remaining.append(pos)
+                continue
+
+            pid = str(pos.get("product_id") or "")
+            if pid not in prices:
+                remaining.append(pos)
+                continue
+
+            bid, _ask = prices[pid]
+            current = bid
+            size_base = float(pos.get("size_base") or 0.0)
+            cost_usd = float(pos.get("cost_usd") or 0.0)
+            entry = float(pos.get("entry_price") or 0.0)
+            eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
+
+            if not current or current <= 0:
+                logger.warning(
+                    "LOSS SCAN: %s no valid bid → emergency sell",
+                    pid,
+                )
+                if size_base <= 0 or not entry:
+                    remaining.append(pos)
+                    continue
+                base_str = _fmt_base_size(pid, size_base)
+                result = self._try_market_sell_twice(pid, base_str)
+                if result.success:
+                    exits += 1
+                    pnl_usd = -float(cost_usd)
+                    state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
+                    state["total_realized_usd"] = (
+                        float(state.get("total_realized_usd") or 0.0) + pnl_usd
+                    )
+                    state["total_trades"] = int(state.get("total_trades") or 0) + 1
+                    state["losses"] = int(state.get("losses") or 0) + 1
+                    state["positions"] = remaining + positions_snapshot[idx + 1 :]
+                    save_coinbase_state(state)
+                    _log_trade(
+                        {
+                            "ts": now,
+                            "type": "sell",
+                            "engine": eng,
+                            "reason": "loss_scan_no_price",
+                            "order_id": result.order_id,
+                            "product_id": pid,
+                            "entry_price": entry,
+                            "exit_price": 0.0,
+                            "pnl_usd": pnl_usd,
+                        }
+                    )
+                    try:
+                        bal_after = float(self._client.get_usd_balance())
+                    except Exception:
+                        bal_after = 0.0
+                    log_trade(
+                        platform="coinbase",
+                        gate=gate,
+                        product_id=pid,
+                        side="sell",
+                        strategy=str(pos.get("strategy") or ""),
+                        entry_price=entry,
+                        exit_price=0.0,
+                        size_usd=cost_usd,
+                        pnl_usd=pnl_usd,
+                        exit_reason=_cb_supabase_exit_reason("loss_scan_no_price"),
+                        hold_seconds=int(now - float(pos.get("entry_time") or now)),
+                        balance_after=bal_after,
+                        metadata={"gate": pos.get("gate"), "engine": pos.get("engine"), "no_price": True},
+                    )
+                    try:
+                        from trading_ai.shark.reporting import send_telegram
+
+                        send_telegram(f"🚨 LOSS SCAN: {pid} no price → emergency exit")
+                    except Exception:
+                        pass
+                else:
+                    remaining.append(pos)
+                continue
+
+            if not entry:
+                remaining.append(pos)
+                continue
+
+            pnl_pct = (current - entry) / entry
+            pnl_usd = current * size_base - cost_usd
+
+            if pnl_pct > -stop_loss_pct:
+                remaining.append(pos)
+                continue
+
+            logger.info(
+                "LOSS SCAN: %s %.4f%% $%.4f → SELL (threshold: %.4f%%)",
+                pid,
+                pnl_pct * 100.0,
+                pnl_usd,
+                -stop_loss_pct * 100.0,
+            )
+
+            base_str = _fmt_base_size(pid, size_base)
+            result = self._try_market_sell_twice(pid, base_str)
+
+            if result.success:
+                exits += 1
+                state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
+                state["total_realized_usd"] = (
+                    float(state.get("total_realized_usd") or 0.0) + pnl_usd
+                )
+                state["total_trades"] = int(state.get("total_trades") or 0) + 1
+                if pnl_usd >= 0:
+                    state["wins"] = int(state.get("wins") or 0) + 1
+                else:
+                    state["losses"] = int(state.get("losses") or 0) + 1
+                state["positions"] = remaining + positions_snapshot[idx + 1 :]
+                save_coinbase_state(state)
+                _log_trade(
+                    {
+                        "ts": now,
+                        "type": "sell",
+                        "engine": eng,
+                        "reason": "loss_scan",
+                        "order_id": result.order_id,
+                        "product_id": pid,
+                        "entry_price": entry,
+                        "exit_price": current,
+                        "pnl_usd": pnl_usd,
+                    }
+                )
+                try:
+                    bal_after = float(self._client.get_usd_balance())
+                except Exception:
+                    bal_after = 0.0
+                log_trade(
+                    platform="coinbase",
+                    gate=gate,
+                    product_id=pid,
+                    side="sell",
+                    strategy=str(pos.get("strategy") or ""),
+                    entry_price=entry,
+                    exit_price=current,
+                    size_usd=cost_usd,
+                    pnl_usd=pnl_usd,
+                    exit_reason=_cb_supabase_exit_reason("loss_scan"),
+                    hold_seconds=int(now - float(pos.get("entry_time") or now)),
+                    balance_after=bal_after,
+                    metadata={"gate": pos.get("gate"), "engine": pos.get("engine")},
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    prefix = f"Gate {gate} " if gate in ("A", "B", "C", "D") else ""
+                    send_telegram(
+                        f"🛑 {prefix}STOP: {pid} {pnl_pct * 100:+.3f}%"
+                        f" ${pnl_usd:+.4f} (loss scan <3s)"
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.warning("LOSS SCAN: sell failed %s — retry next tick", pid)
                 remaining.append(pos)
 
         state["positions"] = remaining

@@ -77,6 +77,7 @@ def build_shark_scheduler(
     coinbase_scan: Optional[Callable[[], None]] = None,
     coinbase_exit_check: Optional[Callable[[], None]] = None,
     coinbase_profit_scan: Optional[Callable[[], None]] = None,
+    coinbase_loss_scan: Optional[Callable[[], None]] = None,
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
@@ -428,6 +429,24 @@ def build_shark_scheduler(
             _coinbase_profit_scan_wrapper,
             IntervalTrigger(seconds=3),
             id="coinbase_profit_scan",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if coinbase_loss_scan is not None:
+        def _coinbase_loss_scan_wrapper() -> None:
+            if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            coinbase_loss_scan()  # type: ignore[misc]
+
+        sched.add_job(
+            _coinbase_loss_scan_wrapper,
+            IntervalTrigger(seconds=3),
+            id="coinbase_loss_scan",
             max_instances=1,
             replace_existing=True,
         )

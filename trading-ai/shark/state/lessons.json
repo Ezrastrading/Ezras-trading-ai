@@ -178,6 +178,20 @@
       "what_went_wrong": "exit_notified flag not checked before sending.",
       "what_to_do": "Already fixed. Always check exit_notified before send_telegram.",
       "applied": true
+    },
+    {
+      "date": "2026-04-16",
+      "session": "Day_A_Live",
+      "platform": "coinbase",
+      "category": "stop_loss",
+      "severity": "CRITICAL",
+      "cost": -0.029,
+      "lesson": "FATAL: Gate B held losing positions to -0.50% (DOT), -0.27% (AVAX), -0.20% (UNI), -0.04% (ADA) because stop loss only ran every 5s in exit_check. By 5 minutes the loss was already far beyond the intended scalp stop. RULE: Stop loss must run every 3 SECONDS (dedicated loss scanner, same cadence as profit scan). Max loss per gate position = 0.025% (COINBASE_STOP_LOSS_PCT). Sell IMMEDIATELY at first breach. Never hold a loser waiting for the time stop.",
+      "what_went_wrong": "Stop loss for gates lived only in the 5s exit_check path with a default that was effectively too wide until timeout. Profit scan ran every 3s but was profit-only, so underwater positions were not cut quickly.",
+      "what_to_do": "Add coinbase_loss_scan every 3s calling _run_loss_scan(). COINBASE_STOP_LOSS_PCT=0.00025 (0.025%). Lower _gate_tp_sl_tmin A/B default stop to match. Sell when pnl_pct <= -COINBASE_STOP_LOSS_PCT.",
+      "applied": true,
+      "rule_added": "COINBASE: Stop loss runs every 3s (loss scanner). Max loss 0.025% per gate position. Sell instantly.",
+      "never_again": "Holding a gate position past ~0.025% loss because stop only ran on the 5s job"
     }
   ],
   "rules": [
@@ -192,6 +206,7 @@
     "COINBASE: Stop loss fires even when price = 0",
     "COINBASE: Exit loop processes ALL positions per scan",
     "COINBASE: Profit scan every 3s \u2014 sell at first profit",
+    "COINBASE: Loss scan every 3s \u2014 max 0.025% loss per gate position, sell instantly",
     "COINBASE: 20% reserve always kept, never touch",
     "COINBASE: Gate C for night gainers \u2014 enable always",
     "GENERAL: Never deploy more than 20% per scan",
@@ -213,8 +228,11 @@
     "Missing night altcoin pumps (+100%+ opportunities)",
     "Sending duplicate Telegram notifications",
     "Going all-in on unvalidated signals",
-    "Buying illiquid coins that cannot be sold"
+    "Buying illiquid coins that cannot be sold",
+    "Letting gate scalps bleed because stop loss was only on the 5s exit check"
   ],
+  "day_a_live_lessons": true,
+  "day_a_live_summary": "Day A Live: Gate B held losers to -0.50% because tight stop was not enforced every 3s. Fixed: dedicated coinbase_loss_scan every 3s + COINBASE_STOP_LOSS_PCT default 0.025% for gates A/B; profit scan unchanged at +0.25%; 5min hard stop remains on exit_check.",
   "day_a_complete": true,
   "total_capital_lost_day_a": -115.0,
   "day_a_summary": "Day A: Lost $100 Kalshi (wrong range markets), $15 Coinbase (penny coins, missed stops). Total: -$115. Key lessons: validate range conditions independently, filter penny coins, fix exit loop, add no-price stop, catch night gainers. All critical fixes applied."
