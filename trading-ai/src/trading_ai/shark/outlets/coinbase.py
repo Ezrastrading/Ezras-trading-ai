@@ -310,6 +310,9 @@ class CoinbaseClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
+        if portfolio_id:
+            headers["CB-PORTFOLIO-ID"] = portfolio_id
 
         url = f"{base.scheme}://{base.netloc}{broker_prefix}{rel_path}{qs}"
         data: Optional[bytes] = json.dumps(body).encode("utf-8") if body is not None else None
