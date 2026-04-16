@@ -22,6 +22,113 @@ from trading_ai.governance.storage_architecture import shark_state_path
 logger = logging.getLogger(__name__)
 
 
+def _kalshi_crypto_series(ticker: str) -> bool:
+    u = ticker.upper()
+    return any(x in u for x in ("KXBTCD", "KXBTC", "KXETHD", "KXETH"))
+
+
+def _kalshi_crypto_market_hours_ok(ticker: str) -> bool:
+    """Day A: BTC/ETH Kalshi series only trade 9am–5pm ET Mon–Fri."""
+    if not _kalshi_crypto_series(ticker):
+        return True
+    from datetime import datetime
+
+    from zoneinfo import ZoneInfo
+
+    et = datetime.now(ZoneInfo("America/New_York"))
+    if et.weekday() >= 5:
+        return False
+    return 9 <= et.hour < 17
+
+
+def _parse_kalshi_threshold_usd(ticker: str) -> Optional[float]:
+    try:
+        last = str(ticker).rsplit("-", 1)[-1].strip()
+        if len(last) < 2 or last[0] not in "TtBb":
+            return None
+        raw = last[1:].replace(".99", "")
+        v = float(raw)
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _price_in_kalshi_range(ticker: str, current_price: float) -> bool:
+    """
+    For BTC/ETH Kalshi dailies: parsed threshold vs spot (± KALSHI_RANGE_MAX_DISTANCE_USD).
+    If current_price <= 0, returns True (do not block on missing spot).
+    """
+    if current_price <= 0:
+        return True
+    if not _kalshi_crypto_series(ticker):
+        return True
+    thr = _parse_kalshi_threshold_usd(ticker)
+    if thr is None:
+        return True
+    max_d = max(500.0, _parse_float("KALSHI_RANGE_MAX_DISTANCE_USD", 2000.0))
+    return abs(current_price - thr) <= max_d
+
+
+def _fetch_btc_eth_spot() -> Tuple[Optional[float], Optional[float]]:
+    try:
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+        c = CoinbaseClient()
+        pr = c.get_prices(["BTC-USD", "ETH-USD"])
+
+        def mid(pid: str) -> Optional[float]:
+            t = pr.get(pid)
+            if not t:
+                return None
+            bid, ask = t
+            if bid <= 0 and ask <= 0:
+                return None
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2.0
+            return max(bid, ask)
+
+        return mid("BTC-USD"), mid("ETH-USD")
+    except Exception:
+        return None, None
+
+
+def _spot_for_kalshi_ticker(
+    ticker: str,
+    btc: Optional[float],
+    eth: Optional[float],
+) -> Optional[float]:
+    if not _kalshi_crypto_series(ticker):
+        return None
+    u = ticker.upper()
+    if "ETH" in u:
+        return eth
+    return btc
+
+
+def _filter_simple_candidates(
+    candidates: List[Dict[str, Any]],
+    now: float,
+) -> List[Dict[str, Any]]:
+    """Day A: hours + spot vs threshold for crypto series (before any buy)."""
+    btc, eth = _fetch_btc_eth_spot()
+    out: List[Dict[str, Any]] = []
+    for c in candidates:
+        t = str(c.get("ticker") or "")
+        if not _kalshi_crypto_market_hours_ok(t):
+            logger.debug("SIMPLE: skip %s (crypto market hours)", t)
+            continue
+        if _kalshi_crypto_series(t):
+            spot = _spot_for_kalshi_ticker(t, btc, eth)
+            if spot is not None and spot > 0 and not _price_in_kalshi_range(t, spot):
+                logger.debug(
+                    "SIMPLE: skip %s: spot vs threshold (range validation)",
+                    t,
+                )
+                continue
+        out.append(c)
+    return out
+
+
 def _parse_float(name: str, default: float) -> float:
     raw = (os.environ.get(name) or "").strip()
     if not raw:
@@ -201,7 +308,7 @@ def _fetch_simple_candidates(
             continue
 
     out.sort(key=lambda x: (-x["prob"], x["ttr"]))
-    return out
+    return _filter_simple_candidates(out, now)
 
 
 def _position_pnl_usd(
@@ -392,6 +499,9 @@ def _maintain_positions(
     while len(state.get("positions") or []) < max_n:
         available = _available_deployable_usd()
         per_slot = _per_position_usd(available)
+        hard_cap = min(10.0, available * 0.20 / float(max_n))
+        raw_mx = (os.environ.get("KALSHI_SIMPLE_MAX_ORDER_USD") or "").strip()
+        per_order_cap = min(hard_cap, float(raw_mx)) if raw_mx else hard_cap
         cands = _fetch_simple_candidates(client, now)
         picked: Optional[Dict[str, Any]] = None
         for c in cands:
@@ -412,6 +522,9 @@ def _maintain_positions(
         px = max(float(picked["price"]), 0.01)
         cnt = max(1, int(per_slot / px))
         est_cost = float(cnt * px)
+        if est_cost > per_order_cap:
+            cnt = max(1, int(per_order_cap / px))
+            est_cost = float(cnt * px)
 
         from trading_ai.shark.mission import evaluate_trade_against_mission
 

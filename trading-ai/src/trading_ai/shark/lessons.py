@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from trading_ai.governance.storage_architecture import shark_state_path
@@ -16,6 +17,19 @@ from trading_ai.governance.storage_architecture import shark_state_path
 logger = logging.getLogger(__name__)
 
 LESSONS_FILE = shark_state_path("lessons.json")
+
+
+def _repo_committed_lessons_path() -> Optional[Path]:
+    """``trading-ai/shark/state/lessons.json`` — Day A seed when runtime file is absent."""
+    try:
+        shark_dir = Path(__file__).resolve().parent
+        root = shark_dir.parent.parent.parent
+        p = root / "shark" / "state" / "lessons.json"
+        if p.is_file():
+            return p
+    except Exception:
+        pass
+    return None
 
 DEFAULT_LESSONS: Dict[str, Any] = {
     "version": 1,
@@ -122,6 +136,15 @@ def load_lessons() -> dict:
                     return data
     except Exception:
         logger.warning("load_lessons: falling back to defaults", exc_info=True)
+    try:
+        rp = _repo_committed_lessons_path()
+        if rp is not None:
+            with open(rp, encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        logger.warning("load_lessons: repo lessons.json unreadable", exc_info=True)
     return dict(DEFAULT_LESSONS)
 
 
