@@ -209,17 +209,7 @@
       "category": "delta_neutral",
       "severity": "HIGH",
       "cost": 0,
-      "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.008%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
-      "applied": true
-    },
-    {
-      "date": "2026-04-16",
-      "session": "delta_neutral_polymarket",
-      "platform": "both",
-      "category": "strategy",
-      "severity": "MEDIUM",
-      "cost": 0,
-      "lesson": "Delta-neutral hedging: enter at 40-60 cents, hedge opposite side to lock profit either way. No big wins no big losses. Just micro profit compounded 100s of times. $100\u2192$12K proof this works.",
+      "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.01%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
       "applied": true
     }
   ],
