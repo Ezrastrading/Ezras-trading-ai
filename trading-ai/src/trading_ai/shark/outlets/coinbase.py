@@ -428,6 +428,31 @@ class CoinbaseClient:
             return 0.0
 
     @staticmethod
+    def _portfolio_balances_dict_to_usd(pb: Dict[str, Any]) -> float:
+        """
+        Retail Advanced Trade shape: ``portfolio_balances`` is a dict of
+        ``total_cash_equivalent_balance`` / ``total_balance`` / … each
+        ``{value, currency}`` in USD.
+        """
+        if not isinstance(pb, dict):
+            return 0.0
+
+        def amount(key: str) -> float:
+            node = pb.get(key)
+            if not isinstance(node, dict):
+                return 0.0
+            cur = str(node.get("currency", "") or "").upper()
+            if cur not in ("USD", "USDC", ""):
+                return 0.0
+            return CoinbaseClient._safe_float(node.get("value", 0) or 0)
+
+        for key in ("total_cash_equivalent_balance", "total_balance"):
+            v = amount(key)
+            if v > 0:
+                return v
+        return 0.0
+
+    @staticmethod
     def _account_usd_usdc_spendable(a: Dict[str, Any]) -> float:
         """
         Best-effort spendable fiat from one ``/accounts`` row.
@@ -501,6 +526,17 @@ class CoinbaseClient:
     def _parse_portfolio_balances_json(self, data: Dict[str, Any]) -> float:
         """Sum USD + USDC fiat from portfolio ``/balances`` or breakdown payloads (flexible keys)."""
         total = 0.0
+        bd = data.get("breakdown")
+        nested_pb: Optional[Dict[str, Any]] = None
+        if isinstance(bd, dict):
+            maybe = bd.get("portfolio_balances")
+            if isinstance(maybe, dict):
+                nested_pb = maybe
+                total += self._portfolio_balances_dict_to_usd(maybe)
+        top_pb = data.get("portfolio_balances")
+        if isinstance(top_pb, dict) and top_pb is not nested_pb:
+            total += self._portfolio_balances_dict_to_usd(top_pb)
+
         for key in ("breakdown", "portfolio_breakdown", "balances", "spot_balances"):
             block = data.get(key)
             if isinstance(block, list):
@@ -555,6 +591,10 @@ class CoinbaseClient:
         """Parse USD/USDC from portfolio ``/balances``, ``/portfolios/{id}``, or list payloads."""
         total = 0.0
         breakdown = j.get("breakdown")
+        if isinstance(breakdown, dict):
+            inner_pb = breakdown.get("portfolio_balances")
+            if isinstance(inner_pb, dict):
+                total += self._portfolio_balances_dict_to_usd(inner_pb)
         if isinstance(breakdown, list):
             for item in breakdown:
                 if not isinstance(item, dict):
