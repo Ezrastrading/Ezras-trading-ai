@@ -911,14 +911,13 @@ class CoinbaseAccumulator:
                     "BLITZ JOB: Gate A=%d (min %d) Gate B=%d (min %d) — urgent refill",
                     a_count, gate_a_min, b_count, gate_b_min,
                 )
-                # Fetch prices for gate products + fallbacks + cache
+                # Fetch prices for gate products + fallbacks only (not full HF cache — too slow for 5s job)
                 ga_env = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
                 ga_pids = _parse_csv_products(ga_env) if ga_env else []
                 fb_env = (os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS") or "").strip()
                 fb_pids = _parse_csv_products(fb_env) if fb_env else list(_GATE_B_FALLBACK_PRODUCTS)
-                scan_pids = list(state.get("hf_product_cache") or [])
                 open_pids = collect_price_product_ids(state)
-                all_pids = list(set(ga_pids) | set(fb_pids) | set(scan_pids) | set(open_pids))
+                all_pids = list(set(ga_pids) | set(fb_pids) | set(open_pids))
                 if not all_pids:
                     all_pids = list(_GATE_B_FALLBACK_PRODUCTS)
                 try:
