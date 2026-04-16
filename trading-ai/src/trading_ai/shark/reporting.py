@@ -67,6 +67,29 @@ def send_telegram(message: str) -> bool:
         return False
 
 
+def send_telegram_safe(text: str) -> None:
+    """Send Telegram text, splitting into parts if longer than 3000 chars (under 4096 limit)."""
+    MAX_LEN = 3000
+    if len(text) <= MAX_LEN:
+        send_telegram(text)
+        return
+
+    lines = text.split("\n")
+    chunk = ""
+    part = 1
+    for line in lines:
+        if len(chunk) + len(line) + 1 > MAX_LEN:
+            send_telegram(f"[Part {part}]\n{chunk.strip()}")
+            chunk = line + "\n"
+            part += 1
+        else:
+            chunk += line + "\n"
+    if chunk.strip():
+        send_telegram(
+            f"[Part {part}]\n{chunk.strip()}" if part > 1 else chunk.strip()
+        )
+
+
 def send_telegram_fatal_once(message: str) -> bool:
     """Send at most one Telegram per process for uncaught fatal errors (crash path)."""
     global _FATAL_TELEGRAM_SENT

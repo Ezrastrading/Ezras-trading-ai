@@ -73,6 +73,7 @@ def build_shark_scheduler(
     kalshi_index_blitz: Optional[Callable[[], None]] = None,
     hourly_report: Optional[Callable[[], None]] = None,
     daily_briefing: Optional[Callable[[], None]] = None,
+    daily_full_report: Optional[Callable[[], None]] = None,
     coinbase_scan: Optional[Callable[[], None]] = None,
     coinbase_exit_check: Optional[Callable[[], None]] = None,
     coinbase_profit_scan: Optional[Callable[[], None]] = None,
@@ -318,16 +319,31 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Trade report + million-tracker briefings (9am, 12pm, 3pm, 6pm ET) ─────
+    # ── CEO briefing 4×/day (9am, 12pm, 3pm, 6pm ET) — $1M goal + milestones ─
     if daily_briefing is not None and CronTrigger is not None:
         sched.add_job(
             daily_briefing,
             CronTrigger(
                 hour="9,12,15,18",
                 minute=0,
+                second=0,
                 timezone="America/New_York",
             ),
-            id="daily_briefing",
+            id="ceo_briefing_4x",
+            replace_existing=True,
+        )
+
+    # ── Full trade reports + million-tracker briefing (8am ET, once daily) ────
+    if daily_full_report is not None and CronTrigger is not None:
+        sched.add_job(
+            daily_full_report,
+            CronTrigger(
+                hour=8,
+                minute=0,
+                second=0,
+                timezone="America/New_York",
+            ),
+            id="daily_full_report",
             replace_existing=True,
         )
 

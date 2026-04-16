@@ -619,7 +619,7 @@ def main() -> None:
         try:
             from datetime import datetime
 
-            from trading_ai.shark.reporting import send_telegram, trading_capital_usd_for_alerts
+            from trading_ai.shark.reporting import send_telegram_safe, trading_capital_usd_for_alerts
             from trading_ai.shark.trade_journal import get_summary_stats
 
             try:
@@ -709,7 +709,7 @@ def main() -> None:
 
                 briefing = generate_ceo_briefing()
                 msg = f"{msg}\n\n{briefing.strip()}"
-                send_telegram(msg)
+                send_telegram_safe(msg)
 
                 try:
                     from trading_ai.shark.supabase_logger import _get_client
@@ -730,7 +730,7 @@ def main() -> None:
                 except Exception:
                     pass
             except Exception:
-                send_telegram(msg)
+                send_telegram_safe(msg)
 
             log.info("HOURLY_REPORT: sent")
         except Exception as exc:
@@ -738,14 +738,14 @@ def main() -> None:
 
     def daily_briefing_job() -> None:
         try:
-            from trading_ai.shark.million_tracker import (
-                get_daily_briefing,
-                get_milestones_summary,
-                update_balance,
-            )
-            from trading_ai.shark.trade_reports import format_report_for_telegram, get_combined_report
+            from datetime import datetime, timezone
+
+            from zoneinfo import ZoneInfo
+
             from trading_ai.shark.lessons import load_lessons
-            from trading_ai.shark.reporting import send_telegram
+            from trading_ai.shark.million_tracker import START_DATE, update_balance
+            from trading_ai.shark.reporting import send_telegram_safe
+            from trading_ai.shark.trade_reports import get_combined_report
 
             cb_bal = 0.0
             ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)
@@ -756,34 +756,175 @@ def main() -> None:
             except Exception:
                 pass
 
+            total = cb_bal + ka_bal
             update_balance(cb_bal, ka_bal)
 
             today = get_combined_report("day")
             pnl = float(today["combined"]["total_pnl"])
             trades = int(today["combined"]["total_trades"])
-            cb_report = today["coinbase"]
-            ka_report = today["kalshi"]
-            wins = cb_report.get("wins", 0) + ka_report.get("wins", 0)
-            win_rate = (wins / trades) if trades else 0.0
+            win_rate = float(today["coinbase"].get("win_rate", 0) or 0)
 
-            send_telegram(format_report_for_telegram("day"))
-            send_telegram(
-                get_daily_briefing(cb_bal, ka_bal, pnl, trades, win_rate)
-            )
-            send_telegram(get_milestones_summary())
+            hour_et = datetime.now(ZoneInfo("America/New_York")).hour
+            session = {
+                9: "MORNING",
+                12: "MIDDAY",
+                15: "AFTERNOON",
+                18: "EVENING",
+            }.get(hour_et, "UPDATE")
+
+            start_ts = datetime.strptime(START_DATE, "%Y-%m-%d").timestamp()
+            days_elapsed = (time.time() - start_ts) / 86400
+            pct = (total / 1_000_000) * 100
+            days_left = max(1, 180 - days_elapsed)
+            required_daily = (((1_000_000 / max(1, total)) ** (1 / days_left)) - 1) * 100
+
+            now_utc = datetime.now(timezone.utc)
+            msg1 = f"""🏦 CEO BRIEFING — {session}
+{'═'*35}
+🕐 {now_utc.strftime('%b %d %Y %H:%M UTC')}
+
+💰 BALANCES:
+  🟡 Coinbase: ${cb_bal:,.2f}
+  🔴 Kalshi: ${ka_bal:,.2f}
+  📊 Total: ${total:,.2f}
+
+🎯 COMPANY GOAL: $1,000,000 in 6 months
+  Progress: {pct:.3f}% complete
+  Day {int(days_elapsed)} of 180
+  Need {required_daily:.2f}%/day to stay on track
+{'═'*35}"""
+            send_telegram_safe(msg1)
+
+            msg2 = f"""📊 TODAY'S PERFORMANCE
+{'─'*35}
+🟡 COINBASE:
+  Trades: {today['coinbase'].get('trades', 0)}
+  P&L: ${today['coinbase'].get('pnl_usd', 0):+.4f}
+  Win Rate: {today['coinbase'].get('win_rate', 0) * 100:.1f}%
+  Avg/trade: ${today['coinbase'].get('avg_pnl_per_trade', 0):+.4f}
+
+🔴 KALSHI:
+  Trades: {today['kalshi'].get('trades', 0)}
+  P&L: ${today['kalshi'].get('pnl_usd', 0):+.4f}
+  Win Rate: {today['kalshi'].get('win_rate', 0) * 100:.1f}%
+
+💰 COMBINED:
+  Total trades: {trades}
+  Total P&L: ${pnl:+.4f}
+  Win rate: {win_rate * 100:.1f}%
+{'─'*35}"""
+            send_telegram_safe(msg2)
+
+            milestones_hit = []
+            milestones_next = []
+            MILESTONES = [
+                500,
+                1000,
+                2500,
+                5000,
+                10000,
+                25000,
+                50000,
+                100000,
+                250000,
+                500000,
+                1000000,
+            ]
+            for m in MILESTONES:
+                if total >= m:
+                    milestones_hit.append(m)
+                else:
+                    milestones_next.append(m)
+
+            next_m = milestones_next[0] if milestones_next else 1_000_000
+            need = next_m - total
+            days_to_next = int(need / max(0.01, pnl)) if pnl > 0 else 999
+
+            msg3 = f"""🎯 PATH TO $1,000,000
+{'─'*35}
+✅ MILESTONES HIT:
+{chr(10).join(f'  ✅ ${m:,}' for m in milestones_hit) or '  None yet — Day 1!'}
+
+⬜ NEXT TARGET: ${next_m:,}
+  Need: ${need:,.2f} more
+  Est: ~{days_to_next} days at today's pace
+
+🚀 MILESTONES AHEAD:
+{chr(10).join(f'  ⬜ ${m:,}' for m in milestones_next[:5])}
+
+📈 PROJECTION (at current rate):
+  30 days: ~${total * (1 + required_daily / 100) ** 30:,.0f}
+  90 days: ~${total * (1 + required_daily / 100) ** 90:,.0f}
+  180 days: ~${total * (1 + required_daily / 100) ** 180:,.0f}
+{'─'*35}"""
+            send_telegram_safe(msg3)
 
             lessons = load_lessons()
-            raw_lessons = lessons.get("lessons", [])
-            recent = raw_lessons[-3:] if raw_lessons else []
-            msg = "📚 RECENT LESSONS:\n"
-            for le in recent:
-                text = str(le.get("lesson", ""))
-                msg += f"• {text[:80]}...\n"
-            send_telegram(msg)
+            recent_lessons = lessons.get("lessons", [])[-3:]
+            rules = lessons.get("rules", [])[:3]
+
+            action = "ACCELERATE" if pnl <= 0 else "MAINTAIN PACE"
+            if total < 500:
+                next_action = "Focus on Coinbase cycling"
+            elif total < 5000:
+                next_action = "Increase position sizes"
+            else:
+                next_action = "Let compounding work"
+
+            goal_year = START_DATE[:4]
+            msg4 = f"""📚 LESSONS & ACTION PLAN
+{'─'*35}
+🔑 ACTIVE RULES:
+{chr(10).join(f'  • {r[:60]}' for r in rules)}
+
+⚠️ RECENT LESSONS:
+{chr(10).join(f'  • {l["lesson"][:70]}...' for l in recent_lessons) or '  No recent lessons'}
+
+🎯 ACTION: {action}
+📋 NEXT STEP: {next_action}
+
+🏆 COMPANY GOAL:
+  $1,000,000 by {goal_year}-10-16
+  Current: ${total:,.2f}
+  Remaining: ${1_000_000 - total:,.2f}
+{'─'*35}"""
+            send_telegram_safe(msg4)
 
             log.info("daily_briefing_job: Telegram sent (4 messages)")
         except Exception as e:
-            log.warning("daily_briefing failed: %s", e)
+            log.warning("daily_briefing: %s", e)
+
+    def daily_full_report_job() -> None:
+        try:
+            from trading_ai.shark.million_tracker import get_daily_briefing
+            from trading_ai.shark.reporting import send_telegram_safe
+            from trading_ai.shark.trade_reports import format_report_for_telegram, get_combined_report
+
+            cb_bal = 0.0
+            ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)
+            try:
+                from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+                cb_bal = float(CoinbaseClient().get_usd_balance())
+            except Exception:
+                pass
+
+            for period in ("day", "week", "month"):
+                send_telegram_safe(format_report_for_telegram(period))
+
+            today = get_combined_report("day")
+            send_telegram_safe(
+                get_daily_briefing(
+                    cb_bal,
+                    ka_bal,
+                    today["combined"]["total_pnl"],
+                    today["combined"]["total_trades"],
+                    today["coinbase"].get("win_rate", 0),
+                )
+            )
+            log.info("daily_full_report_job: Telegram sent")
+        except Exception as e:
+            log.warning("daily_full_report: %s", e)
 
     _coinbase_env_on = (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() in (
         "1",
@@ -827,6 +968,7 @@ def main() -> None:
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,
         daily_briefing=daily_briefing_job,
+        daily_full_report=daily_full_report_job,
         coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
         coinbase_exit_check=coinbase_exit_check_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
