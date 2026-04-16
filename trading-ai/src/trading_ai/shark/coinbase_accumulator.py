@@ -901,6 +901,119 @@ class CoinbaseAccumulator:
         save_coinbase_state(state)
         return exits
 
+    def _run_profit_scan(self) -> int:
+        """Profit-only scanner — called every 3s (separate from the 5s time/stop exit check).
+
+        Sells any position that has hit COINBASE_PROFIT_TARGET_PCT (default 0.5%) OR
+        COINBASE_MIN_PROFIT_USD (default $0.05), whichever fires first.
+        """
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        state = load_coinbase_state()
+        if not state.get("positions"):
+            return 0
+
+        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.005)
+        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.05)
+
+        prices = self._get_prices_for_positions(state)
+        if not prices:
+            return 0
+
+        now = time.time()
+        exits = 0
+        positions_snapshot = list(state.get("positions") or [])
+        remaining: List[Dict[str, Any]] = []
+
+        for idx, pos in enumerate(positions_snapshot):
+            if pos.get("exit_submitted"):
+                remaining.append(pos)
+                continue
+
+            pid = str(pos.get("product_id") or "")
+            if pid not in prices:
+                remaining.append(pos)
+                continue
+
+            bid, _ask = prices[pid]
+            current = bid
+            if not current:
+                remaining.append(pos)
+                continue
+
+            entry = float(pos.get("entry_price") or 0.0)
+            if not entry:
+                remaining.append(pos)
+                continue
+
+            cost_usd = float(pos.get("cost_usd") or 0.0)
+            size_base = float(pos.get("size_base") or 0.0)
+            eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
+            gate = str(pos.get("gate") or "").strip().upper()
+            pnl_pct = (current - entry) / entry
+            pnl_usd = current * size_base - cost_usd
+
+            if not (pnl_pct >= profit_pct or pnl_usd >= min_profit_usd):
+                remaining.append(pos)
+                continue
+
+            logger.info(
+                "PROFIT SCAN: %s +%.3f%% $+%.4f → SELL",
+                pid,
+                pnl_pct * 100,
+                pnl_usd,
+            )
+            base_str = _fmt_base_size(pid, size_base)
+            result = self._try_market_sell_twice(pid, base_str)
+
+            if result.success:
+                exits += 1
+                state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
+                state["total_realized_usd"] = (
+                    float(state.get("total_realized_usd") or 0.0) + pnl_usd
+                )
+                state["total_trades"] = int(state.get("total_trades") or 0) + 1
+                if pnl_usd >= 0:
+                    state["wins"] = int(state.get("wins") or 0) + 1
+                else:
+                    state["losses"] = int(state.get("losses") or 0) + 1
+                state["positions"] = remaining + positions_snapshot[idx + 1 :]
+                save_coinbase_state(state)
+                _log_trade(
+                    {
+                        "ts": now,
+                        "type": "sell",
+                        "engine": eng,
+                        "reason": "profit_scan",
+                        "order_id": result.order_id,
+                        "product_id": pid,
+                        "entry_price": entry,
+                        "exit_price": current,
+                        "pnl_usd": pnl_usd,
+                    }
+                )
+                try:
+                    from trading_ai.shark.reporting import send_telegram
+
+                    prefix = f"Gate {gate} " if gate in ("A", "B") else ""
+                    send_telegram(
+                        f"💰 {prefix}PROFIT: {pid} +{pnl_pct*100:.2f}%"
+                        f" ${pnl_usd:+.4f} (profit scan)"
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "PROFIT SCAN: sell failed %s — will retry on next scan", pid
+                )
+                remaining.append(pos)
+
+        state["positions"] = remaining
+        save_coinbase_state(state)
+        return exits
+
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
         """Returns (profit_pct, stop_pct, time_min, trail_pct). trail only used for E2."""
         if engine == 1:

@@ -602,6 +602,19 @@ def main() -> None:
         except Exception as exc:
             log.warning("coinbase_exit_check: %s", exc)
 
+    def coinbase_profit_scan_job() -> None:
+        try:
+            acc = _coinbase_accumulator
+            if acc is None:
+                from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
+
+                acc = CoinbaseAccumulator()
+            n = acc._run_profit_scan()
+            if n:
+                log.info("coinbase_profit_scan: exits=%s", n)
+        except Exception as exc:
+            log.warning("coinbase_profit_scan failed: %s", exc)
+
     def hourly_report() -> None:
         try:
             from datetime import datetime
@@ -717,6 +730,9 @@ def main() -> None:
         coinbase_exit_check=coinbase_exit_check_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
+        coinbase_profit_scan=coinbase_profit_scan_job
+        if (_coinbase_accumulator is not None or _coinbase_env_on)
+        else None,
         crypto_market_open_blitz=crypto_market_open_blitz,
         kalshi_simple_scan=kalshi_simple_scan_job,
         kalshi_gate_c=kalshi_gate_c_job,
@@ -737,6 +753,7 @@ def main() -> None:
                 "gate_c",
                 "coinbase_scan",
                 "coinbase_exit_check",
+                "coinbase_profit_scan",
             )
         ):
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
