@@ -736,6 +736,55 @@ def main() -> None:
         except Exception as exc:
             log.warning("hourly_report failed: %s", exc)
 
+    def daily_briefing_job() -> None:
+        try:
+            from trading_ai.shark.million_tracker import (
+                get_daily_briefing,
+                get_milestones_summary,
+                update_balance,
+            )
+            from trading_ai.shark.trade_reports import format_report_for_telegram, get_combined_report
+            from trading_ai.shark.lessons import load_lessons
+            from trading_ai.shark.reporting import send_telegram
+
+            cb_bal = 0.0
+            ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)
+            try:
+                from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+                cb_bal = float(CoinbaseClient().get_usd_balance())
+            except Exception:
+                pass
+
+            update_balance(cb_bal, ka_bal)
+
+            today = get_combined_report("day")
+            pnl = float(today["combined"]["total_pnl"])
+            trades = int(today["combined"]["total_trades"])
+            cb_report = today["coinbase"]
+            ka_report = today["kalshi"]
+            wins = cb_report.get("wins", 0) + ka_report.get("wins", 0)
+            win_rate = (wins / trades) if trades else 0.0
+
+            send_telegram(format_report_for_telegram("day"))
+            send_telegram(
+                get_daily_briefing(cb_bal, ka_bal, pnl, trades, win_rate)
+            )
+            send_telegram(get_milestones_summary())
+
+            lessons = load_lessons()
+            raw_lessons = lessons.get("lessons", [])
+            recent = raw_lessons[-3:] if raw_lessons else []
+            msg = "📚 RECENT LESSONS:\n"
+            for le in recent:
+                text = str(le.get("lesson", ""))
+                msg += f"• {text[:80]}...\n"
+            send_telegram(msg)
+
+            log.info("daily_briefing_job: Telegram sent (4 messages)")
+        except Exception as e:
+            log.warning("daily_briefing failed: %s", e)
+
     _coinbase_env_on = (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() in (
         "1",
         "true",
@@ -777,6 +826,7 @@ def main() -> None:
         kalshi_blitz_cron=kalshi_blitz,
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,
+        daily_briefing=daily_briefing_job,
         coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
         coinbase_exit_check=coinbase_exit_check_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
