@@ -6,7 +6,7 @@
       "date": "2026-04-16",
       "session": "DeltaNeutral",
       "platform": "both",
-      "lesson": "DELTA-NEUTRAL STRATEGY: Enter at 35-65c, 60-120s before expiry. Hedge opposite side to lock profit either way. Profit 0.015%. Loss 0.012% max. Time 3min max. $100\u2192$12K proof: micro profits compound 100s of times. No big wins needed. Consistency beats home runs every time.",
+      "lesson": "DELTA-NEUTRAL STRATEGY: Enter at 35-65c, 60-120s before expiry. Hedge opposite side to lock profit either way. Profit 0.15%. Loss 0.12% max. Time 3min max. $100\u2192$12K proof: micro profits compound 100s of times. No big wins needed. Consistency beats home runs every time.",
       "cost": 0,
       "category": "strategy",
       "applied": true
@@ -209,7 +209,7 @@
       "category": "delta_neutral",
       "severity": "HIGH",
       "cost": 0,
-      "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.01%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
+      "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.1%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
       "applied": true
     }
   ],
@@ -225,13 +225,13 @@
     "COINBASE: Stop loss fires even when price = 0",
     "COINBASE: Exit loop processes ALL positions per scan",
     "COINBASE: Profit scan every 3s \u2014 sell at first profit",
-    "COINBASE: Loss scan every 3s \u2014 per-gate stop (A/B/E default 0.012%), sell instantly",
-    "COINBASE: Gate E BTC/ETH RSI/MACD/EMA + optional 50% hedge at +0.01%",
+    "COINBASE: Loss scan every 3s \u2014 per-gate stop (A/B/E default 0.12%), sell instantly",
+    "COINBASE: Gate E BTC/ETH RSI/MACD/EMA + optional 50% hedge at +0.1%",
     "KALSHI: Only enter 60-120s before expiry",
     "KALSHI: Only enter at 35-65 cent price",
     "COINBASE: Use RSI/MACD/EMA signals",
-    "ALL: Profit 0.015%, Loss 0.012%, Time 3min",
-    "ALL: Hedge when up 0.01% to lock profit",
+    "ALL: Profit 0.15%, Loss 0.12%, Time 3min",
+    "ALL: Hedge when up 0.1% to lock profit",
     "COINBASE: 20% reserve always kept, never touch",
     "COINBASE: Gate C for night gainers \u2014 enable always",
     "GENERAL: Never deploy more than 20% per scan",
@@ -250,7 +250,7 @@
     "Trading Kalshi outside 60-120s window",
     "Entering above 65c or below 35c on Kalshi",
     "Ignoring RSI/MACD before Coinbase entry",
-    "Holding past 0.012% loss",
+    "Holding past 0.12% loss",
     "Waiting for big wins instead of compounding",
     "Ignoring stop loss when price = 0",
     "Only processing 1-2 exits per scan cycle",
@@ -262,7 +262,7 @@
     "Letting gate scalps bleed because stop loss was only on the 5s exit check"
   ],
   "day_a_live_lessons": true,
-  "day_a_live_summary": "Delta-neutral: profit 0.015%, stop 0.012%, time 3min; Kalshi 35\u201365c entry and 60\u2013120s TTR when KALSHI_DELTA_NEUTRAL=true; Coinbase gates/scalp aligned via COINBASE_* env defaults.",
+  "day_a_live_summary": "Delta-neutral: profit 0.15%, stop 0.12%, time 3min; Kalshi 35\u201365c entry and 60\u2013120s TTR when KALSHI_DELTA_NEUTRAL=true; Coinbase gates/scalp aligned via COINBASE_* env defaults.",
   "day_a_complete": true,
   "total_capital_lost_day_a": -115.0,
   "day_a_summary": "Day A: Lost $100 Kalshi (wrong range markets), $15 Coinbase (penny coins, missed stops). Total: -$115. Key lessons: validate range conditions independently, filter penny coins, fix exit loop, add no-price stop, catch night gainers. All critical fixes applied."

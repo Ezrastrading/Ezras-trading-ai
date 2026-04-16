@@ -602,11 +602,11 @@ def _per_position_usd(available: float) -> float:
 
 
 def _profit_pct() -> float:
-    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.00015)))
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.0015)))
 
 
 def _stop_pct() -> float:
-    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_STOP_PCT", 0.00012)))
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_STOP_PCT", 0.0012)))
 
 
 def _time_stop_min() -> float:
@@ -630,7 +630,7 @@ def _fetch_simple_candidates(
         0.0,
         _parse_float(
             "KALSHI_MIN_PROFIT_PER_TRADE",
-            _parse_float("KALSHI_SIMPLE_MIN_NET_EDGE", 0.015),
+            _parse_float("KALSHI_SIMPLE_MIN_NET_EDGE", 0.15),
         ),
     )
     dn = _delta_neutral_ttr_window(gate)
@@ -802,7 +802,7 @@ def _check_exits_first(
             profit_target_usd = max(0.01, float(raw_tgt_usd))
             stop_usd = max(0.01, float(raw_sl_usd))
         else:
-            min_trade = max(0.0, _parse_float("KALSHI_MIN_PROFIT_PER_TRADE", 0.015))
+            min_trade = max(0.0, _parse_float("KALSHI_MIN_PROFIT_PER_TRADE", 0.15))
             per_position = available * position_pct
             stop_usd = per_position * stop_pct
             edge = max(0.0, 1.0 - entry_prob)

@@ -209,11 +209,11 @@ def main() -> None:
             "severity": "MEDIUM",
             "cost": -3.00,
             "lesson": (
-                "Profit target 0.5% too high for scalping. Delta-neutral default: 0.015% or $0.015 min per trade, "
-                "0.012% max loss, 3 min time stop — compound hundreds of micro wins."
+                "Profit target 0.5% too high for scalping. Delta-neutral default: 0.15% or $0.15 min per trade, "
+                "0.12% max loss, 3 min time stop — compound hundreds of micro wins."
             ),
             "what_went_wrong": "Original 0.5% profit target meant positions rarely hit target in the time window.",
-            "what_to_do": "COINBASE_PROFIT_TARGET_PCT=0.00015, COINBASE_MIN_PROFIT_USD=0.015. Already set. Verify cycling.",
+            "what_to_do": "COINBASE_PROFIT_TARGET_PCT=0.0015, COINBASE_MIN_PROFIT_USD=0.15. Already set. Verify cycling.",
             "applied": True,
         },
         {

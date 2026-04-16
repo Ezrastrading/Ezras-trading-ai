@@ -67,8 +67,8 @@ DIRECTIVES = [
         "rule": "High probability only. Kalshi: min 85% "
         "AND entry price 35-65 cents AND 60-120s "
         "before expiry. Coinbase: RSI/MACD/EMA "
-        "signals only. Profit target 0.015%. "
-        "Stop loss 0.012%. Time stop 3 minutes.",
+        "signals only. Profit target 0.15%. "
+        "Stop loss 0.12%. Time stop 3 minutes.",
         "hard_limit": True,
     },
     # DIRECTIVE 4: LEARN FROM EVERY LOSS
@@ -429,10 +429,10 @@ def generate_full_ceo_briefing(
 🚀 HIGHEST VALUE OPPORTUNITIES RIGHT NOW:
 
 1. COINBASE COMPOUNDING:
-   ${total_balance:.2f} × 0.015% × 20 positions
-   = ${total_balance*0.00015*20:.3f} per 3min cycle
-   = ${total_balance*0.00015*20*20:.3f}/hour
-   = ${total_balance*0.00015*20*20*24:.3f}/day
+   ${total_balance:.2f} × 0.15% × 20 positions
+   = ${total_balance*0.0015*20:.3f} per 3min cycle
+   = ${total_balance*0.0015*20*20:.3f}/hour
+   = ${total_balance*0.0015*20*20*24:.3f}/day
    → Scale positions as balance grows
 
 2. KALSHI MORNING BLITZ (9am-5pm ET):
@@ -446,9 +446,9 @@ def generate_full_ceo_briefing(
    1-2 of these/day = +$5-20 extra
 
 4. COMBINED DAILY TARGET:
-   Coinbase: ${total_balance*0.00015*20*20*8:.2f}/day (crypto only)
+   Coinbase: ${total_balance*0.0015*20*20*8:.2f}/day (crypto only)
    Kalshi:   $40-80/day (market hours)
-   Total:    ${total_balance*0.00015*20*20*8+60:.2f}/day target
+   Total:    ${total_balance*0.0015*20*20*8+60:.2f}/day target
 
 5. ACCELERATION TRIGGER:
    When balance hits $1,000 → double positions
