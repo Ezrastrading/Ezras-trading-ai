@@ -80,6 +80,21 @@ def log_trade(
             exit_reason,
             pnl_usd,
         )
+        try:
+            from trading_ai.shark.progression import record_trade
+
+            record_trade(
+                platform=platform,
+                gate=gate,
+                product_id=product_id,
+                pnl_usd=pnl_usd,
+                exit_reason=exit_reason,
+                hold_seconds=hold_seconds,
+                balance_after=balance_after,
+                win=win,
+            )
+        except Exception:
+            pass
         return True
     except Exception as e:
         logger.warning("Supabase log_trade failed: %s", e)

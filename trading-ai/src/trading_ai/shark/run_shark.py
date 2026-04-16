@@ -704,11 +704,11 @@ def main() -> None:
                 pass
 
             try:
-                from trading_ai.shark.lessons import get_rules_summary, load_lessons
+                from trading_ai.shark.lessons import load_lessons
                 from trading_ai.shark.progression import generate_ceo_briefing, get_summary
 
                 briefing = generate_ceo_briefing()
-                msg = f"{msg}\n\n{briefing.strip()}\n\n{get_rules_summary()}"
+                msg = f"{msg}\n\n{briefing.strip()}"
                 send_telegram(msg)
 
                 try:
