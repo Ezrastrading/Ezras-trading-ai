@@ -413,18 +413,40 @@ class CoinbaseClient:
         return j.get("accounts") or []
 
     @staticmethod
+    def _account_usd_usdc_spendable(a: Dict[str, Any]) -> float:
+        """
+        Best-effort spendable fiat from one ``/accounts`` row.
+
+        Coinbase may expose cash in ``available_balance`` and/or top-level ``balance``;
+        we take the max of numeric ``value`` fields when both are dicts.
+        """
+        bal1 = a.get("available_balance")
+        bal2 = a.get("balance")
+        if not isinstance(bal1, dict):
+            bal1 = {}
+        if not isinstance(bal2, dict):
+            bal2 = {}
+        try:
+            val1 = float(bal1.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            val1 = 0.0
+        try:
+            val2 = float(bal2.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            val2 = 0.0
+        return max(val1, val2)
+
+    @staticmethod
     def _sum_usd_usdc_from_accounts_json(j: Dict[str, Any]) -> float:
-        """Sum ``available_balance.value`` for USD and USDC rows from ``/accounts`` JSON."""
+        """Sum USD + USDC from ``/accounts`` JSON (available vs balance, whichever is higher per row)."""
         total = 0.0
         for a in j.get("accounts", []) or []:
+            if not isinstance(a, dict):
+                continue
             curr = str(a.get("currency") or "").upper()
             if curr not in ("USD", "USDC"):
                 continue
-            avail = a.get("available_balance") or {}
-            try:
-                val = float(avail.get("value") or 0.0)
-            except (TypeError, ValueError):
-                val = 0.0
+            val = CoinbaseClient._account_usd_usdc_spendable(a)
             total += val
             logger.info("Balance: %s $%.2f", curr, val)
         return total
@@ -514,29 +536,82 @@ class CoinbaseClient:
 
     def get_usd_balance(self) -> float:
         """
-        Trading cash: USD + USDC available (``/accounts`` sums both; portfolio fallback).
-
-        Spot crypto is not converted here — only fiat-stable USD and USDC balances.
+        Trading cash: USD + USDC from ``/accounts`` (detailed logging + max of
+        ``available_balance`` / ``balance`` per row); portfolio fallback if still zero.
         """
-        total = 0.0
         try:
             j = self._request("GET", "/accounts")
-            total = self._sum_usd_usdc_from_accounts_json(j)
+            logger.info("RAW ACCOUNTS RESPONSE: %s", str(j)[:2000])
+            accounts = j.get("accounts", []) or []
+            logger.info("Total accounts: %d", len(accounts))
+            total = 0.0
+            for a in accounts:
+                if not isinstance(a, dict):
+                    continue
+                curr = str(a.get("currency", "") or "").upper()
+                bal1 = a.get("available_balance", {})
+                bal2 = a.get("balance", {})
+                if not isinstance(bal1, dict):
+                    bal1 = {}
+                if not isinstance(bal2, dict):
+                    bal2 = {}
+                try:
+                    val1 = float(bal1.get("value", 0) or 0)
+                except (TypeError, ValueError):
+                    val1 = 0.0
+                try:
+                    val2 = float(bal2.get("value", 0) or 0)
+                except (TypeError, ValueError):
+                    val2 = 0.0
+                val = max(val1, val2)
+                logger.info(
+                    "Account: %s available=%s balance=%s",
+                    curr or "?",
+                    bal1,
+                    bal2,
+                )
+                if curr in ("USD", "USDC"):
+                    total += val
+                    logger.info("FOUND: %s = $%.2f", curr, val)
+            logger.info("Total USD+USDC: $%.2f", total)
             if total > 0:
-                logger.info("get_usd_balance: USD+USDC (accounts) = %.2f", total)
                 return total
         except Exception as e:
-            logger.warning("get_usd_balance accounts failed: %s", e)
+            logger.warning("get_usd_balance failed: %s", e)
+            total = 0.0
 
         portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
         if portfolio_id:
             try:
                 pf = float(self.get_portfolio_balance())
-                logger.info("get_usd_balance: USD+USDC (portfolio) = %.2f", pf)
+                logger.info("get_usd_balance: USD+USDC (portfolio fallback) = %.2f", pf)
                 return pf
             except Exception as e2:
                 logger.warning("get_usd_balance portfolio path failed: %s", e2)
         return total
+
+    def debug_all_balances(self) -> Dict[str, Any]:
+        """Fetch ``/accounts``, ``/portfolios``, and paginated accounts for diagnostics."""
+        results: Dict[str, Any] = {}
+        try:
+            j = self._request("GET", "/accounts")
+            results["accounts"] = j
+        except Exception as e:
+            results["accounts_error"] = str(e)
+
+        try:
+            j2 = self._request("GET", "/portfolios")
+            results["portfolios"] = j2
+        except Exception as e:
+            results["portfolios_error"] = str(e)
+
+        try:
+            j3 = self._request("GET", "/accounts", params={"limit": 250})
+            results["accounts_250"] = j3
+        except Exception as e:
+            results["accounts_250_error"] = str(e)
+
+        return results
 
     def get_available_balance(self, currency: str) -> float:
         """Available balance for a currency code (e.g. ``USD``, ``BTC``, ``ETH``)."""
