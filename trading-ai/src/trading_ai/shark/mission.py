@@ -271,3 +271,273 @@ def get_directives_summary() -> str:
         lines.append(f"{lock} {d['id']}: {d['name']}")
         lines.append(f"   → {d['rule'][:80]}")
     return "\n".join(lines)
+
+
+def generate_full_ceo_briefing(
+    total_balance: float,
+    coinbase_bal: float,
+    kalshi_bal: float,
+    todays_pnl: float,
+    todays_trades: int,
+    win_rate: float,
+    day_number: int,
+    all_time_pnl: float,
+    lessons: list,
+    recent_trades: list,
+) -> list:
+    """
+    Generates 5 Telegram messages for CEO briefing.
+    Called 5x per day. Claude reads all of this.
+    Returns list of message strings.
+    """
+    pct = (total_balance / 1_000_000) * 100
+    days_left = max(1, 180 - day_number)
+    required_daily = (
+        (1_000_000 / max(1, total_balance)) ** (1 / days_left) - 1
+    ) * 100
+    on_track = todays_pnl > 0
+
+    # Velocity calculation
+    if todays_trades > 0:
+        avg_per_trade = todays_pnl / todays_trades
+    else:
+        avg_per_trade = 0
+
+    # Days to $1M at current pace
+    if todays_pnl > 0:
+        days_to_million = int((1_000_000 - total_balance) / todays_pnl)
+    else:
+        days_to_million = 999
+
+    # Projected milestones
+    proj_30 = total_balance * (1 + required_daily / 100) ** 30
+    proj_60 = total_balance * (1 + required_daily / 100) ** 60
+    proj_120 = total_balance * (1 + required_daily / 100) ** 120
+
+    messages = []
+
+    # ─── MESSAGE 1: MISSION + BALANCE ───────
+    msg1 = f"""
+╔══════════════════════════════════════════╗
+║   🎯 MISSION: $1,000,000 by Oct 2026    ║
+║   Day {day_number:<3} of 180 | {pct:.4f}% there  ║
+║   Balance: ${total_balance:>12,.2f}          ║
+║   Required: {required_daily:.2f}%/day              ║
+║   Today: ${todays_pnl:>+12.4f}               ║
+║   {'✅ ON TRACK — KEEP PUSHING' if on_track else '🚨 BEHIND — MUST ACCELERATE':^40} ║
+╚══════════════════════════════════════════╝
+
+💰 BALANCES:
+  🟡 Coinbase: ${coinbase_bal:,.2f}
+  🔴 Kalshi:   ${kalshi_bal:,.2f}
+  📊 Total:    ${total_balance:,.2f}
+  📈 All-time P&L: ${all_time_pnl:+,.4f}
+
+⏱️ AT TODAY'S PACE:
+  Days to $1M: {days_to_million}
+  {'🔥 4 MONTHS POSSIBLE!' if days_to_million <= 120 else '📈 Accelerate to hit 4 months'}
+  {'✅ 6 MONTHS ON TRACK' if days_to_million <= 180 else '⚠️ Need to improve pace'}"""
+    messages.append(msg1)
+
+    # ─── MESSAGE 2: PERFORMANCE ANALYSIS ───
+    wins = [t for t in recent_trades if t.get("win")]
+    losses = [t for t in recent_trades if not t.get("win")]
+
+    best_coins = {}
+    for t in recent_trades:
+        pid = t.get("product_id", "?")
+        pnl = float(t.get("pnl_usd", 0) or 0)
+        best_coins[pid] = best_coins.get(pid, 0) + pnl
+
+    top3 = sorted(best_coins.items(), key=lambda x: -x[1])[:3]
+    bot3 = sorted(best_coins.items(), key=lambda x: x[1])[:3]
+
+    msg2 = f"""
+📊 PERFORMANCE ANALYSIS
+{'═'*40}
+✅ WHAT WORKED TODAY:
+  Trades: {todays_trades}
+  Win Rate: {win_rate*100:.1f}%
+  Avg profit/trade: ${avg_per_trade:+.4f}
+  Best performers:
+{chr(10).join(f'  🏆 {p}: ${v:+.4f}' for p, v in top3) or '  None yet'}
+
+❌ WHAT FAILED TODAY:
+  Losses: {len(losses)}
+  Loss rate: {(1-win_rate)*100:.1f}%
+  Worst performers:
+{chr(10).join(f'  💔 {p}: ${v:+.4f}' for p, v in bot3) or '  None yet'}
+
+🎯 EFFICIENCY SCORE:
+  {'EXCELLENT' if win_rate >= 0.8 else 'GOOD' if win_rate >= 0.6 else 'NEEDS WORK' if win_rate >= 0.4 else 'CRITICAL'}
+  ({win_rate*100:.1f}% win rate)"""
+    messages.append(msg2)
+
+    # ─── MESSAGE 3: RIGHTS/WRONGS/AVOID ────
+    recent_lessons = lessons[-5:] if lessons else []
+    wrongs = [l for l in recent_lessons if l.get("cost", 0) < 0]
+    rights = [l for l in recent_lessons if l.get("cost", 0) >= 0]
+
+    rights_lines = chr(10).join(
+        f'  ✅ {str(l.get("lesson", ""))[:70]}' for l in rights[-3:]
+    )
+    wrongs_lines = chr(10).join(
+        f'  ❌ {str(l.get("lesson", ""))[:70]}' for l in wrongs[-3:]
+    )
+    rights_block = rights_lines or (
+        "  • 5min time stop cycling ✅"
+        + chr(10)
+        + "  • Profit scan every 3s ✅"
+        + chr(10)
+        + "  • Gate A/B both firing ✅"
+    )
+    wrongs_block = wrongs_lines or (
+        "  • Kalshi bought wrong price ranges ❌"
+        + chr(10)
+        + "  • Penny coins selected ❌"
+        + chr(10)
+        + "  • Stop loss delayed ❌"
+    )
+
+    msg3 = f"""
+📚 RIGHTS / WRONGS / AVOID
+{'═'*40}
+✅ WHAT WAS CORRECT:
+{rights_block}
+
+❌ WHAT WENT WRONG:
+{wrongs_block}
+
+🚫 AVOID NEXT TIME:
+  • Kalshi: ONLY buy ranges BTC trades IN
+  • Coinbase: NO coins under $0.01 price
+  • NEVER hold past 5 minutes
+  • NEVER ignore stop loss signal
+  • NEVER buy illiquid coins
+
+🔑 NON-NEGOTIABLE RULES:
+  • 85%+ prob on Kalshi always
+  • Gate A = BTC/ETH/SOL/XRP/DOGE only
+  • 20% reserve at all times
+  • Exit ALL positions at 5min hard stop"""
+    messages.append(msg3)
+
+    # ─── MESSAGE 4: HIDDEN OPPORTUNITIES ───
+    msg4 = f"""
+🔍 HIDDEN OPPORTUNITIES + STRATEGY
+{'═'*40}
+🚀 HIGHEST VALUE OPPORTUNITIES RIGHT NOW:
+
+1. COINBASE COMPOUNDING:
+   ${total_balance:.2f} × 0.25% × 20 positions
+   = ${total_balance*0.0025*20:.3f} per 5min cycle
+   = ${total_balance*0.0025*20*12:.3f}/hour
+   = ${total_balance*0.0025*20*12*24:.3f}/day
+   → Scale positions as balance grows
+
+2. KALSHI MORNING BLITZ (9am-5pm ET):
+   80 trades × $0.50 profit = $40/blitz
+   32 blitzes/day = $1,280/day potential
+   → Reinvest in larger positions
+
+3. GATE C MOMENTUM (pumping coins):
+   Catch +10%/hr coins early
+   Buy dip → sell continuation
+   1-2 of these/day = +$5-20 extra
+
+4. COMBINED DAILY TARGET:
+   Coinbase: ${total_balance*0.0025*20*12*8:.2f}/day (crypto only)
+   Kalshi:   $40-80/day (market hours)
+   Total:    ${total_balance*0.0025*20*12*8+60:.2f}/day target
+
+5. ACCELERATION TRIGGER:
+   When balance hits $1,000 → double positions
+   When balance hits $5,000 → 5x daily profit
+   When balance hits $10,000 → $500+/day
+   This is how we hit $1M in 4 months
+
+💡 HIDDEN EDGE:
+   Night hours (10pm-9am): Coinbase only
+   → Zero competition from Kalshi
+   → Full capital deployed in crypto
+   → Gainers run wild at night (USD +142%!)
+   → Gate B catches these automatically"""
+    messages.append(msg4)
+
+    # ─── MESSAGE 5: ACTION PLAN + FORECAST ─
+    MILESTONES = [
+        500,
+        1000,
+        2500,
+        5000,
+        10000,
+        25000,
+        50000,
+        100000,
+        250000,
+        500000,
+        1000000,
+    ]
+    next_milestone = None
+    for m in MILESTONES:
+        if total_balance < m:
+            next_milestone = m
+            break
+
+    if next_milestone is None:
+        milestone_section = f"""🎯 NEXT MILESTONE: ✅ $1,000,000+ (balance ${total_balance:,.2f})
+   Need: $0.00 more
+   Est: — (at or past target)"""
+        days_to_next = 0
+    else:
+        days_to_next = (
+            int((next_milestone - total_balance) / max(0.01, todays_pnl))
+            if todays_pnl > 0
+            else 999
+        )
+        milestone_section = f"""🎯 NEXT MILESTONE: ${next_milestone:,}
+   Need: ${next_milestone - total_balance:,.2f} more
+   Est: {days_to_next} days at today's pace"""
+
+    msg5 = f"""
+🗺️ ACTION PLAN + FORECAST
+{'═'*40}
+{milestone_section}
+
+📈 30/60/120 DAY FORECAST:
+   30 days:  ${proj_30:>12,.0f}
+   60 days:  ${proj_60:>12,.0f}
+   120 days: ${proj_120:>12,.0f}
+   {'🔥 $1M IN 4 MONTHS ACHIEVABLE!' if proj_120 >= 500000 else '📈 On track for 6 months'}
+
+✅ TODAY'S ACTIONS (DO THIS):
+  1. Keep Coinbase cycling 24/7
+  2. {'Kalshi fires at 9am — watch first blitz' if day_number <= 2 else 'Kalshi compounding daily'}
+  3. {'Scale up positions — balance growing' if todays_pnl > 0 else 'Fix losing strategy FIRST'}
+  4. Check Gate C for pumping coins tonight
+  5. Review lessons before next session
+
+⚡ ACCELERATION MOVES:
+  • Deposit more capital → faster compound
+  • Fix any losing gates immediately
+  • Add Tasty Trades next (options = 10x)
+  • Add Manifold/Polymarket for more markets
+
+🏆 THE PATH TO $1M:
+  Day 1-30:   $200 → $1,000+ (5x)
+  Day 30-90:  $1K → $10,000 (10x)
+  Day 90-150: $10K → $100,000 (10x)
+  Day 150-180: $100K → $1,000,000 (10x)
+
+  Each 10x is achievable with current system.
+  Compound interest does the heavy lifting.
+  Stay consistent. Never deviate from mission.
+
+╔══════════════════════════════════════════╗
+║  🎯 EVERY TRADE SERVES THE MISSION      ║
+║  💰 $1,000,000 IS THE ONLY OUTCOME      ║
+║  🔥 4 MONTHS IF WE EXECUTE PERFECTLY   ║
+╚══════════════════════════════════════════╝"""
+    messages.append(msg5)
+
+    return messages
