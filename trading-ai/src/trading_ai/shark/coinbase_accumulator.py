@@ -371,7 +371,7 @@ def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
         return (
             _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025),
             _env_float("COINBASE_STOP_LOSS_PCT", 0.00025),
-            _env_float("COINBASE_TIME_STOP_MIN", 5.0),
+            _env_float("COINBASE_TIME_STOP_MIN", 3.0),
         )
     if g == "C":
         return (
@@ -847,8 +847,11 @@ class CoinbaseAccumulator:
     def force_sell_all_positions(self) -> int:
         """Market-sell every open position immediately and clear local position list.
 
-        Used on startup and for manual ``railway ssh`` / one-off recovery. Does not use
-        the buy rate limiter. Failed sells leave ``sell_pending`` on retained rows.
+        Used on **every** process startup (before normal exit scans) and for manual recovery.
+        Never overwrites ``entry_time`` on rows — ages logged from saved state only.
+        Attempts market sells even when bid cache is empty or a product is missing from
+        the batch quote map (Coinbase may still fill from book). Does not use the buy
+        rate limiter. Failed sells leave ``sell_pending`` on retained rows.
         """
         if not coinbase_enabled():
             return 0
@@ -868,15 +871,15 @@ class CoinbaseAccumulator:
             | set(collect_price_product_ids(state))
             | {str(p.get("product_id") or "") for p in positions}
         )
+        prices: Dict[str, Tuple[float, float]] = {}
         try:
-            prices = self._client.get_prices_batched(pids)
+            prices = self._client.get_prices_batched(pids) or {}
         except Exception as exc:
-            logger.warning("FORCE SELL ALL: price fetch failed: %s", exc)
-            return 0
-        if not prices:
-            logger.warning("FORCE SELL ALL: no prices — aborting")
-            return 0
-        self._ingest_prices_into_history(prices, now)
+            logger.warning("FORCE SELL ALL: price fetch failed: %s — blind sells only", exc)
+        if prices:
+            self._ingest_prices_into_history(prices, now)
+        else:
+            logger.warning("FORCE SELL ALL: no price map — attempting market sells anyway")
 
         sold = 0
         kept: List[Dict[str, Any]] = []
@@ -892,17 +895,17 @@ class CoinbaseAccumulator:
                 logger.warning("FORCE SELL ALL: skip invalid %s size=%s", pid, size_base)
                 kept.append(pos)
                 continue
-            if pid not in prices:
-                logger.warning("FORCE SELL ALL: no price for %s — keeping row", pid)
-                upd = dict(pos)
-                upd["sell_pending"] = True
-                kept.append(upd)
-                continue
 
-            bid, _ask = prices[pid]
-            current = bid
-            pnl_pct = 0.0 if entry <= 0 else (current - entry) / entry
-            logger.info("FORCE SELL: %s age=%.0fs", pid, age)
+            quote = prices.get(pid)
+            if quote and len(quote) >= 2:
+                try:
+                    current = float(quote[0] or 0.0)
+                except (TypeError, ValueError):
+                    current = 0.0
+            else:
+                current = 0.0
+            pnl_pct = 0.0 if entry <= 0 or current <= 0 else (current - entry) / entry
+            logger.info("FORCE SELL: %s age=%.0fs (entry_time from state)", pid, age)
             base_str = _fmt_base_size(pid, size_base)
             try:
                 result = self._try_market_sell_twice(pid, base_str)
@@ -913,7 +916,9 @@ class CoinbaseAccumulator:
                 kept.append(upd)
                 continue
 
-            profit_usd = current * size_base - cost_usd
+            profit_usd = (
+                -float(cost_usd) if current <= 0 else current * size_base - cost_usd
+            )
             if result.success:
                 sold += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
@@ -974,7 +979,8 @@ class CoinbaseAccumulator:
     def emergency_clear_stale_positions(self) -> int:
         """Restart flush: ``time_stop_sec = 0`` → every position is stale; sell all via force.
 
-        Same implementation as :meth:`force_sell_all_positions` (single code path).
+        Delegates to :meth:`force_sell_all_positions` only — never mutates ``entry_time``
+        (always uses timestamps already stored on each position row).
         """
         if not coinbase_enabled():
             return 0
@@ -1488,7 +1494,7 @@ class CoinbaseAccumulator:
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
         exits = 0
-        default_ts_sec = int(_env_float("COINBASE_TIME_STOP_MIN", 5.0) * 60.0)
+        default_ts_sec = int(_env_float("COINBASE_TIME_STOP_MIN", 3.0) * 60.0)
         logger.info(
             "Exit check: %d positions, default_gate_time_stop=%ds",
             len(positions_snapshot),
@@ -1500,6 +1506,12 @@ class CoinbaseAccumulator:
             size_base = float(pos.get("size_base") or 0.0)
             cost_usd = float(pos.get("cost_usd") or 0.0)
             entry_t = float(pos.get("entry_time") or 0.0)
+            if not entry_t or entry_t <= 0:
+                entry_t = now - 600.0
+                logger.warning(
+                    "CB CHECK: %s missing/zero entry_time — synthetic age ~10m for time-stop",
+                    pid,
+                )
             eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
             sell_pending = bool(pos.get("sell_pending"))
             gate = str(pos.get("gate") or "").strip().upper()
@@ -1539,7 +1551,7 @@ class CoinbaseAccumulator:
                 continue
 
             pnl_pct = 0.0 if no_price else (current - entry) / entry
-            age_s = int(now - entry_t) if entry_t > 0 else -1
+            age_s = int(now - entry_t)
             log_label = f"Gate {gate}" if _gate_tp_sl_tmin(gate) else f"E{eng}"
             logger.info(
                 "CB CHECK %s: %s pnl=%s age=%ds pending=%s no_price=%s",
@@ -1559,7 +1571,7 @@ class CoinbaseAccumulator:
                 tp, sl, tmin, trail = self._exit_params(eng)
             tlim = tmin * 60.0
             time_stop_seconds = int(round(tlim)) if tlim > 0 else 0
-            age = (now - entry_t) if entry_t > 0 else 0.0
+            age = now - entry_t
             logger.info(
                 "Position %s age=%.0fs profit=%.3f%% (time_stop=%ds)",
                 pid,
@@ -1576,7 +1588,7 @@ class CoinbaseAccumulator:
                 sell_reason = "sell_pending_retry"
             elif no_price:
                 sell_reason = "no_price_stop"
-            elif tlim > 0 and entry_t > 0 and age >= tlim:
+            elif tlim > 0 and age >= tlim:
                 sell_reason = "timeout"
             elif pnl_pct >= tp:
                 sell_reason = f"tp +{tp*100:.2f}%"
@@ -1674,7 +1686,7 @@ class CoinbaseAccumulator:
                     size_usd=cost_usd,
                     pnl_usd=profit_usd,
                     exit_reason=_cb_supabase_exit_reason(sell_reason),
-                    hold_seconds=int(now - float(pos.get("entry_time") or now)),
+                    hold_seconds=max(0, int(now - entry_t)),
                     balance_after=bal_after,
                     metadata={
                         "gate": pos.get("gate"),
