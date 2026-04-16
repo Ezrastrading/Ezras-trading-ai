@@ -904,8 +904,8 @@ class CoinbaseAccumulator:
     def _run_profit_scan(self) -> int:
         """Profit-only scanner — called every 3s (separate from the 5s time/stop exit check).
 
-        Sells any position that has hit COINBASE_PROFIT_TARGET_PCT (default 0.5%) OR
-        COINBASE_MIN_PROFIT_USD (default $0.05), whichever fires first.
+        Sells any position that has hit COINBASE_PROFIT_TARGET_PCT (default 0.25%) OR
+        COINBASE_MIN_PROFIT_USD (default $0.025), whichever fires first.
         """
         if not coinbase_enabled():
             return 0
@@ -915,8 +915,8 @@ class CoinbaseAccumulator:
         if not state.get("positions"):
             return 0
 
-        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.005)
-        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.05)
+        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025)
+        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.025)
 
         prices = self._get_prices_for_positions(state)
         if not prices:
@@ -1100,8 +1100,8 @@ class CoinbaseAccumulator:
             )
 
             if gate in ("A", "B"):
-                tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.005)
-                sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.01)
+                tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0025)
+                sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.0025)
                 tmin = _env_float("COINBASE_TIME_STOP_MIN", 5.0)
                 trail = 0.0
             else:
