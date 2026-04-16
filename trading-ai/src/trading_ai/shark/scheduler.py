@@ -81,6 +81,7 @@ def build_shark_scheduler(
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
+    kalshi_hv_gate: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -381,6 +382,29 @@ def build_shark_scheduler(
             _gate_c_wrapper,
             IntervalTrigger(seconds=30),
             id="kalshi_gate_c",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_hv_gate is not None and CronTrigger is not None:
+        def _hv_gate_wrapper() -> None:
+            if (os.environ.get("KALSHI_HV_GATE_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            kalshi_hv_gate()  # type: ignore[misc]
+
+        sched.add_job(
+            _hv_gate_wrapper,
+            CronTrigger(
+                minute=0,
+                hour="9,10,11,12,13,14,15,16",
+                day_of_week="mon-fri",
+                timezone="America/New_York",
+            ),
+            id="kalshi_hv_gate",
             max_instances=1,
             replace_existing=True,
         )

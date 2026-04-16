@@ -664,6 +664,29 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_gate_c failed: %s", exc)
 
+    def kalshi_hv_gate_job() -> None:
+        """High-value long-shot NO trades (index/crypto range far from spot). Hourly ET."""
+        try:
+            from trading_ai.shark.kalshi_high_value_gate import run_hv_scan
+            from trading_ai.shark.outlets.kalshi import KalshiClient
+            from trading_ai.shark.state_store import load_capital
+
+            if (os.environ.get("KALSHI_HV_GATE_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+
+            client = KalshiClient()
+            book = load_capital()
+            bal = float(book.current_capital or 0.0)
+            n = run_hv_scan(client, bal)
+            if n:
+                log.info("kalshi_hv_gate: placed=%s", n)
+        except Exception as exc:
+            log.warning("kalshi_hv_gate failed: %s", exc)
+
     def coinbase_exit_check_job() -> None:
         try:
             acc = _coinbase_accumulator
@@ -971,6 +994,7 @@ def main() -> None:
         crypto_market_open_blitz=crypto_market_open_blitz,
         kalshi_simple_scan=kalshi_simple_scan_job,
         kalshi_gate_c=kalshi_gate_c_job,
+        kalshi_hv_gate=kalshi_hv_gate_job,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)
@@ -986,6 +1010,7 @@ def main() -> None:
                 "crypto_15min",
                 "simple_scan",
                 "gate_c",
+                "kalshi_hv_gate",
                 "coinbase_scan",
                 "coinbase_exit_check",
                 "coinbase_profit_scan",
