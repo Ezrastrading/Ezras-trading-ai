@@ -64,11 +64,11 @@ DIRECTIVES = [
         "id": "D3",
         "priority": 3,
         "name": "HIGH PROBABILITY ONLY",
-        "rule": "Kalshi: min 85% probability. "
-        "Coinbase: only liquid coins "
-        "with $500K+ daily volume. "
-        "Never gamble. Only take trades "
-        "with clear edge.",
+        "rule": "High probability only. Kalshi: min 85% "
+        "AND entry price 35-65 cents AND 60-120s "
+        "before expiry. Coinbase: RSI/MACD/EMA "
+        "signals only. Profit target 0.015%. "
+        "Stop loss 0.012%. Time stop 3 minutes.",
         "hard_limit": True,
     },
     # DIRECTIVE 4: LEARN FROM EVERY LOSS
@@ -91,7 +91,7 @@ DIRECTIVES = [
         "name": "MAXIMIZE FREQUENCY",
         "rule": "More trades = more compounding. "
         "20 positions always open. "
-        "5 minute cycles. 12 cycles/hour. "
+        "3 minute time stop. Rapid cycles. "
         "Never leave capital idle. "
         "Every second capital sits unused "
         "is a missed compounding opportunity.",
@@ -385,7 +385,7 @@ def generate_full_ceo_briefing(
         f'  ❌ {str(l.get("lesson", ""))[:70]}' for l in wrongs[-3:]
     )
     rights_block = rights_lines or (
-        "  • 5min time stop cycling ✅"
+        "  • 3min time stop cycling ✅"
         + chr(10)
         + "  • Profit scan every 3s ✅"
         + chr(10)
@@ -411,7 +411,7 @@ def generate_full_ceo_briefing(
 🚫 AVOID NEXT TIME:
   • Kalshi: ONLY buy ranges BTC trades IN
   • Coinbase: NO coins under $0.01 price
-  • NEVER hold past 5 minutes
+  • NEVER hold past 3 minutes (time stop)
   • NEVER ignore stop loss signal
   • NEVER buy illiquid coins
 
@@ -419,7 +419,7 @@ def generate_full_ceo_briefing(
   • 85%+ prob on Kalshi always
   • Gate A = BTC/ETH/SOL/XRP/DOGE only
   • 20% reserve at all times
-  • Exit ALL positions at 5min hard stop"""
+  • Exit ALL positions at 3min hard stop"""
     messages.append(msg3)
 
     # ─── MESSAGE 4: HIDDEN OPPORTUNITIES ───
@@ -429,10 +429,10 @@ def generate_full_ceo_briefing(
 🚀 HIGHEST VALUE OPPORTUNITIES RIGHT NOW:
 
 1. COINBASE COMPOUNDING:
-   ${total_balance:.2f} × 0.25% × 20 positions
-   = ${total_balance*0.0025*20:.3f} per 5min cycle
-   = ${total_balance*0.0025*20*12:.3f}/hour
-   = ${total_balance*0.0025*20*12*24:.3f}/day
+   ${total_balance:.2f} × 0.015% × 20 positions
+   = ${total_balance*0.00015*20:.3f} per 3min cycle
+   = ${total_balance*0.00015*20*20:.3f}/hour
+   = ${total_balance*0.00015*20*20*24:.3f}/day
    → Scale positions as balance grows
 
 2. KALSHI MORNING BLITZ (9am-5pm ET):
@@ -446,9 +446,9 @@ def generate_full_ceo_briefing(
    1-2 of these/day = +$5-20 extra
 
 4. COMBINED DAILY TARGET:
-   Coinbase: ${total_balance*0.0025*20*12*8:.2f}/day (crypto only)
+   Coinbase: ${total_balance*0.00015*20*20*8:.2f}/day (crypto only)
    Kalshi:   $40-80/day (market hours)
-   Total:    ${total_balance*0.0025*20*12*8+60:.2f}/day target
+   Total:    ${total_balance*0.00015*20*20*8+60:.2f}/day target
 
 5. ACCELERATION TRIGGER:
    When balance hits $1,000 → double positions

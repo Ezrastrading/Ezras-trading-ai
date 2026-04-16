@@ -32,8 +32,8 @@ def run_kalshi_profit_exit_scan() -> None:
     if not _env_truthy("KALSHI_PROFIT_EXIT_ENABLED", "true"):
         return
 
-    take_pct = _parse_pct("KALSHI_PROFIT_EXIT_PCT", 0.03)
-    stop_pct = _parse_pct("KALSHI_STOP_LOSS_PCT", 0.15)
+    take_pct = _parse_pct("KALSHI_PROFIT_EXIT_PCT", 0.00015)
+    stop_pct = _parse_pct("KALSHI_STOP_LOSS_PCT", 0.00012)
     exit_crypto = _env_truthy("KALSHI_PROFIT_EXIT_CRYPTO", "false")
 
     from trading_ai.shark.kalshi_crypto import kalshi_ticker_is_crypto

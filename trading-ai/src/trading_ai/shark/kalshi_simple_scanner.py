@@ -134,14 +134,14 @@ def _gate_max_ttr_sec(gate: str) -> float:
     if gate == "a":
         return max(60.0, _parse_float("KALSHI_SIMPLE_MAX_TTR", 7200.0))
     if gate == "b":
-        return max(60.0, min(86400.0, _parse_float("KALSHI_SIMPLE_MAX_TTR", 3600.0)))
+        return max(60.0, min(86400.0, _parse_float("KALSHI_SIMPLE_MAX_TTR", 7200.0)))
     lo = max(30.0, _parse_float("KALSHI_SIMPLE_TTR_MIN_SEC", 120.0))
     return max(lo, _parse_float("KALSHI_SIMPLE_TTR_MAX_SEC", 3600.0))
 
 
 def _delta_neutral_ttr_window(gate: str) -> Optional[Tuple[float, float]]:
     """When ``KALSHI_DELTA_NEUTRAL=true``, TTR must fall in [min, max] seconds (default 60–120)."""
-    if not _env_truthy("KALSHI_DELTA_NEUTRAL", "false"):
+    if not _env_truthy("KALSHI_DELTA_NEUTRAL", "true"):
         return None
     lo = max(1.0, _parse_float("KALSHI_DELTA_TTR_MIN", 60.0))
     hi = max(lo, _parse_float("KALSHI_DELTA_TTR_MAX", 120.0))
@@ -295,6 +295,64 @@ def _interpret_probability(
     }
 
 
+def _delta_neutral_kalshi_trade(
+    ticker: str,
+    yes_ask: float,
+    no_ask: float,
+    ttr: int,
+    balance: float,
+    *,
+    ttr_min: int = 60,
+    ttr_max: int = 120,
+) -> Dict[str, Any]:
+    """Delta-neutral Kalshi: enter 60–120s before expiry, 35–65c zone, hedge opposite."""
+    if not (ttr_min <= ttr <= ttr_max):
+        return {
+            "action": "skip",
+            "reason": f"ttr={ttr}s not in {ttr_min}-{ttr_max}s window",
+        }
+    yes_px = float(yes_ask)
+    no_px = float(no_ask)
+    if yes_px <= 0 or no_px <= 0:
+        return {"action": "skip", "reason": "missing ask quotes"}
+    lo = max(0.01, min(0.99, _parse_float("KALSHI_DELTA_YES_ZONE_LO", 0.35)))
+    hi = max(lo, min(0.99, _parse_float("KALSHI_DELTA_YES_ZONE_HI", 0.65)))
+    if not (lo <= yes_px <= hi):
+        return {
+            "action": "skip",
+            "reason": f"yes ask {yes_px:.2f} not in {lo:.2f}-{hi:.2f} zone",
+        }
+    if yes_px < 0.50:
+        entry_side = "yes"
+        entry_cost = yes_px
+        hedge_side = "no"
+        hedge_cost = no_px
+    else:
+        entry_side = "no"
+        entry_cost = no_px
+        hedge_side = "yes"
+        hedge_cost = yes_px
+    pos_pct = max(0.001, min(0.5, _parse_float("KALSHI_DELTA_POSITION_PCT", 0.05)))
+    contracts = max(1, int(balance * pos_pct / max(entry_cost, 1e-6)))
+    entry_total = contracts * entry_cost
+    potential_profit = contracts * (1.0 - entry_cost)
+    hedge_contracts = max(
+        1, int(potential_profit * 0.5 / max(1e-6, (1.0 - hedge_cost)))
+    )
+    return {
+        "action": "trade",
+        "entry_side": entry_side,
+        "entry_contracts": contracts,
+        "entry_cost": entry_total,
+        "hedge_side": hedge_side,
+        "hedge_contracts": hedge_contracts,
+        "hedge_cost": hedge_contracts * hedge_cost,
+        "ttr": ttr,
+        "expected_profit": potential_profit * 0.5,
+        "reason": f"Delta-neutral: {ttr}s to expiry",
+    }
+
+
 def _filter_simple_candidates(
     candidates: List[Dict[str, Any]],
     now: float,
@@ -408,6 +466,37 @@ def _filter_simple_candidates(
             interpretation["contracts_for_50c_profit"],
             interpretation["warnings"] or "none",
         )
+        ttr_val = int(float(c.get("ttr") or 0.0))
+        if _env_truthy("KALSHI_DELTA_NEUTRAL", "false"):
+            ttr_lo = _parse_int("KALSHI_DELTA_TTR_MIN", 60)
+            ttr_hi = _parse_int("KALSHI_DELTA_TTR_MAX", 120)
+            ya = float(c.get("yes_ask") or 0.0)
+            na = float(c.get("no_ask") or 0.0)
+            if ya > 0 and na > 0:
+                bal = _available_deployable_usd()
+                dn = _delta_neutral_kalshi_trade(
+                    t,
+                    ya,
+                    na,
+                    ttr_val,
+                    bal,
+                    ttr_min=ttr_lo,
+                    ttr_max=ttr_hi,
+                )
+                if dn.get("action") == "trade":
+                    c = {
+                        **c,
+                        "strategy": "delta_neutral",
+                        "side": dn["entry_side"],
+                        "price": float(ya if dn["entry_side"] == "yes" else na),
+                        "prob": float(ya if dn["entry_side"] == "yes" else na),
+                        "entry_side": dn["entry_side"],
+                        "entry_contracts": dn["entry_contracts"],
+                        "hedge_side": dn["hedge_side"],
+                        "hedge_contracts": dn["hedge_contracts"],
+                        "hedge_ready": True,
+                        "expected_profit": float(dn.get("expected_profit") or 0.0),
+                    }
         out.append(c)
     return out
 
@@ -513,11 +602,11 @@ def _per_position_usd(available: float) -> float:
 
 
 def _profit_pct() -> float:
-    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.10)))
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_PROFIT_PCT", 0.00015)))
 
 
 def _stop_pct() -> float:
-    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_STOP_PCT", 0.05)))
+    return max(1e-6, min(1.0, _parse_float("KALSHI_SIMPLE_STOP_PCT", 0.00012)))
 
 
 def _time_stop_min() -> float:
@@ -713,10 +802,11 @@ def _check_exits_first(
             profit_target_usd = max(0.01, float(raw_tgt_usd))
             stop_usd = max(0.01, float(raw_sl_usd))
         else:
+            min_trade = max(0.0, _parse_float("KALSHI_MIN_PROFIT_PER_TRADE", 0.015))
             per_position = available * position_pct
             stop_usd = per_position * stop_pct
             edge = max(0.0, 1.0 - entry_prob)
-            profit_target_usd = edge * contracts * profit_pct
+            profit_target_usd = max(min_trade, edge * contracts * profit_pct)
 
         exit_reason = ""
         if pnl >= profit_target_usd:
@@ -844,7 +934,10 @@ def _maintain_positions(
             per_slot = _per_position_usd(available)
             hard_cap = min(10.0, available * 0.20 / float(max_n))
         raw_mx = (os.environ.get("KALSHI_SIMPLE_MAX_ORDER_USD") or "").strip()
-        per_order_cap = min(hard_cap, float(raw_mx)) if raw_mx else hard_cap
+        default_mx = _parse_float("KALSHI_SIMPLE_MAX_ORDER_USD", 5.0)
+        per_order_cap = (
+            min(hard_cap, float(raw_mx)) if raw_mx else min(hard_cap, default_mx)
+        )
         cands = _fetch_simple_candidates(client, now)
         ordered = cands
         if cands and _ai_truthy("KALSHI_AI_REVIEW_ENABLED", "true"):
@@ -880,13 +973,23 @@ def _maintain_positions(
             break
 
         ticker = str(picked["ticker"])
-        side = str(picked["side"])
-        px = max(float(picked["price"]), 0.01)
-        cnt = max(1, int(per_slot / px))
-        est_cost = float(cnt * px)
-        if est_cost > per_order_cap:
-            cnt = max(1, int(per_order_cap / px))
+        is_dn = str(picked.get("strategy") or "") == "delta_neutral"
+        if is_dn:
+            side = str(picked.get("entry_side") or picked["side"]).lower()
+            px = max(float(picked.get("price") or 0.01), 0.01)
+            cnt = max(1, int(picked.get("entry_contracts") or 1))
             est_cost = float(cnt * px)
+            if est_cost > per_order_cap:
+                cnt = max(1, int(per_order_cap / px))
+                est_cost = float(cnt * px)
+        else:
+            side = str(picked["side"])
+            px = max(float(picked["price"]), 0.01)
+            cnt = max(1, int(per_slot / px))
+            est_cost = float(cnt * px)
+            if est_cost > per_order_cap:
+                cnt = max(1, int(per_order_cap / px))
+                est_cost = float(cnt * px)
 
         from trading_ai.shark.mission import evaluate_trade_against_mission
 
@@ -914,6 +1017,25 @@ def _maintain_positions(
             continue
 
         cost = fs * fp
+        if is_dn:
+            h_side = str(picked.get("hedge_side") or "").lower()
+            h_cnt = max(0, int(picked.get("hedge_contracts") or 0))
+            if h_side in ("yes", "no") and h_cnt > 0:
+                try:
+                    hres = client.place_order(
+                        ticker=ticker, side=h_side, count=h_cnt, action="buy"
+                    )
+                    hf = float(hres.filled_size or 0.0)
+                    if hf > 0 and hres.success is not False:
+                        logger.info(
+                            "DELTA HEDGE: %s %s x%d filled",
+                            ticker,
+                            h_side,
+                            int(hf),
+                        )
+                except Exception as exc:
+                    logger.warning("delta hedge failed %s: %s", ticker, exc)
+
         pos = {
             "ticker": ticker,
             "side": side,
@@ -924,6 +1046,7 @@ def _maintain_positions(
             "entry_price": fp,
             "position_pct": _position_fraction(),
             "exit_submitted": False,
+            "strategy": str(picked.get("strategy") or "simple_scan"),
         }
         state.setdefault("positions", []).append(pos)
         open_tickers.add(ticker)

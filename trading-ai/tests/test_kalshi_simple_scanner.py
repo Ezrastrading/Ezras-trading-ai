@@ -73,10 +73,11 @@ def test_filter_accepts_gate_a_same_day_in_range(_env_gate_a):
     cands = [
         {
             "ticker": "KXBTCD-TEST-T95000",
-            "prob": 0.92,
+            "prob": 0.45,
             "side": "yes",
-            "yes_bid": 0.9,
-            "no_bid": 0.08,
+            "price": 0.45,
+            "yes_bid": 0.4,
+            "no_bid": 0.55,
             "close_ts": close_ts,
         }
     ]

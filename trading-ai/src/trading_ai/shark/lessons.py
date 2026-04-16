@@ -117,7 +117,7 @@ DEFAULT_LESSONS: Dict[str, Any] = {
     "do_not_repeat": [
         "Buying Kalshi price ranges where BTC is NOT trading",
         "Buying penny coins under $0.01",
-        "Holding positions past 5 minutes",
+        "Holding positions past 3 minutes",
         "Firing stop loss only at 5min instead of immediately",
         "Sending duplicate exit notifications",
         "Using fixed $ amounts instead of %",

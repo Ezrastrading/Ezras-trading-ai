@@ -116,9 +116,9 @@ def run_gate_c() -> Dict[str, Any]:
         return {"ok": False, "reason": "no_credentials", "exits": 0, "placed": 0, "open": 0}
 
     min_prob = max(0.5, min(0.99, _pf("KALSHI_SPORTS_MIN_PROB", 0.85)))
-    ttr_lo = _pf("KALSHI_GATE_C_TTR_MIN_SEC", 300.0)
-    ttr_hi = _pf("KALSHI_GATE_C_TTR_MAX_SEC", 3600.0)
-    time_stop_sec = _pf("KALSHI_GATE_C_TIME_STOP_SEC", 120.0)
+    ttr_lo = _pf("KALSHI_GATE_C_TTR_MIN_SEC", 60.0)
+    ttr_hi = _pf("KALSHI_GATE_C_TTR_MAX_SEC", 120.0)
+    time_stop_sec = _pf("KALSHI_GATE_C_TIME_STOP_SEC", 180.0)
     max_pos = max(1, _pi("KALSHI_GATE_C_POSITIONS", 5))
     pos_pct = max(0.001, min(0.5, _pf("KALSHI_GATE_C_POSITION_PCT", 0.08)))
     profit_pct = max(1e-6, min(1.0, _pf("KALSHI_GATE_C_PROFIT_PCT", 0.10)))
