@@ -744,6 +744,11 @@ def main() -> None:
 
             from trading_ai.shark.lessons import load_lessons
             from trading_ai.shark.million_tracker import START_DATE, update_balance
+            from trading_ai.shark.mission import (
+                MISSION_DAYS,
+                get_mission_briefing,
+                get_mission_status,
+            )
             from trading_ai.shark.reporting import send_telegram_safe
             from trading_ai.shark.trade_reports import get_combined_report
 
@@ -778,8 +783,19 @@ def main() -> None:
             days_left = max(1, 180 - days_elapsed)
             required_daily = (((1_000_000 / max(1, total)) ** (1 / days_left)) - 1) * 100
 
+            send_telegram_safe(get_mission_briefing(total, pnl))
+
+            mst = get_mission_status(total)
+            mission_header = f"""╔══════════════════════════════════════════╗
+║  MISSION: $1,000,000 by Oct 16 2026     ║
+║  Day {mst['days_elapsed']} of {MISSION_DAYS} | {mst['pct_complete']:.3f}% complete         ║
+║  Required today: {mst['required_daily_pct']:.2f}% growth           ║
+╚══════════════════════════════════════════╝"""
+
             now_utc = datetime.now(timezone.utc)
-            msg1 = f"""🏦 CEO BRIEFING — {session}
+            msg1 = f"""{mission_header}
+
+🏦 CEO BRIEFING — {session}
 {'═'*35}
 🕐 {now_utc.strftime('%b %d %Y %H:%M UTC')}
 
@@ -897,8 +913,11 @@ def main() -> None:
     def daily_full_report_job() -> None:
         try:
             from trading_ai.shark.million_tracker import get_daily_briefing
+            from trading_ai.shark.mission import get_directives_summary
             from trading_ai.shark.reporting import send_telegram_safe
             from trading_ai.shark.trade_reports import format_report_for_telegram, get_combined_report
+
+            send_telegram_safe(get_directives_summary())
 
             cb_bal = 0.0
             ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)

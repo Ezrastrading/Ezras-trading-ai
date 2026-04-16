@@ -42,6 +42,23 @@ from trading_ai.shark.supabase_logger import log_trade
 load_shark_dotenv()
 logger = logging.getLogger(__name__)
 
+
+def _mission_allows_coinbase_buy(product_id: str, order_usd: float, usd_balance: float) -> bool:
+    from trading_ai.shark.mission import evaluate_trade_against_mission
+
+    check = evaluate_trade_against_mission(
+        platform="coinbase",
+        product_id=product_id,
+        size_usd=float(order_usd),
+        probability=0.99,
+        total_balance=float(usd_balance or 0.0),
+    )
+    if not check["approved"]:
+        logger.warning("MISSION BLOCK: %s", check["reason"])
+        return False
+    return True
+
+
 _E3_LIQUID = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 _E4_LIQUID = ("BTC-USD", "ETH-USD")
 # Gate A — fixed five products only (ignore env overrides for selection safety).
@@ -1608,6 +1625,8 @@ class CoinbaseAccumulator:
                 continue
             if not self._rate_limiter.allow():
                 break
+            if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                continue
             r = self._client.place_market_buy(pid, order_usd)
             if not r.success:
                 continue
@@ -1658,6 +1677,8 @@ class CoinbaseAccumulator:
                 continue
             if not self._rate_limiter.allow():
                 break
+            if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                continue
             r = self._client.place_market_buy(pid, order_usd)
             if not r.success:
                 continue
@@ -1708,6 +1729,8 @@ class CoinbaseAccumulator:
                 continue
             if not self._rate_limiter.allow():
                 break
+            if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                continue
             r = self._client.place_market_buy(pid, order_usd)
             if not r.success:
                 continue
@@ -1758,6 +1781,8 @@ class CoinbaseAccumulator:
                 continue
             if not self._rate_limiter.allow():
                 break
+            if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                continue
             r = self._client.place_market_buy(pid, order_usd)
             if not r.success:
                 continue
@@ -1835,6 +1860,8 @@ class CoinbaseAccumulator:
                     continue
                 if not self._rate_limiter.allow():
                     return
+                if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                    continue
                 r = self._client.place_market_buy(pid, order_usd)
                 if not r.success:
                     continue
@@ -1902,6 +1929,8 @@ class CoinbaseAccumulator:
                 continue
             if not self._rate_limiter.allow():
                 return any_buy
+            if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                continue
             r = self._client.place_market_buy(pid, order_usd)
             if not r.success:
                 continue
@@ -1991,6 +2020,8 @@ class CoinbaseAccumulator:
                     continue
                 if not self._rate_limiter.allow():
                     return
+                if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                    continue
                 r = self._client.place_market_buy(pid, order_usd)
                 if not r.success:
                     continue
@@ -2099,6 +2130,8 @@ class CoinbaseAccumulator:
                     continue
                 if not self._rate_limiter.allow():
                     return
+                if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                    continue
                 r = self._client.place_market_buy(pid, order_usd)
                 if not r.success:
                     continue
@@ -2182,6 +2215,8 @@ class CoinbaseAccumulator:
                     continue
                 if not self._rate_limiter.allow():
                     return
+                if not _mission_allows_coinbase_buy(pid, order_usd, usd_balance):
+                    continue
                 r = self._client.place_market_buy(pid, order_usd)
                 if not r.success:
                     continue

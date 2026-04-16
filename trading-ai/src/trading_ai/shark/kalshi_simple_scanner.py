@@ -411,6 +411,20 @@ def _maintain_positions(
         side = str(picked["side"])
         px = max(float(picked["price"]), 0.01)
         cnt = max(1, int(per_slot / px))
+        est_cost = float(cnt * px)
+
+        from trading_ai.shark.mission import evaluate_trade_against_mission
+
+        check = evaluate_trade_against_mission(
+            platform="kalshi",
+            product_id=ticker,
+            size_usd=est_cost,
+            probability=float(picked["prob"]),
+            total_balance=available,
+        )
+        if not check["approved"]:
+            logger.warning("MISSION BLOCK: %s", check["reason"])
+            continue
 
         try:
             res = client.place_order(ticker=ticker, side=side, count=cnt, action="buy")
