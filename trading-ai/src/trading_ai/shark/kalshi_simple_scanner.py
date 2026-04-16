@@ -234,7 +234,7 @@ def _interpret_probability(
         market_type = "daily_range"
     elif "KXBTC" in u or "KXETH" in u:
         market_type = "threshold"
-    elif "KXINX" in u or "KXSPX" in u:
+    elif "KXINX" in u or "KXSPX" in u or "KXSP500" in u:
         market_type = "index"
     elif any(s in u for s in ("NBA", "NFL", "MLB", "NHL")):
         market_type = "sports"
