@@ -73,6 +73,7 @@ def build_shark_scheduler(
     kalshi_index_blitz: Optional[Callable[[], None]] = None,
     hourly_report: Optional[Callable[[], None]] = None,
     coinbase_scan: Optional[Callable[[], None]] = None,
+    coinbase_exit_check: Optional[Callable[[], None]] = None,
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
@@ -352,7 +353,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Coinbase 4-engine scan (30s: exits every tick; E4 micro; E1–E3 buys on 60s cadence inside)
+    # ── Coinbase: 5s buy scan (E1–E4 buys throttled inside); 5s exit-only job
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
@@ -363,9 +364,24 @@ def build_shark_scheduler(
 
         sched.add_job(
             _coinbase_scan_wrapper,
-            IntervalTrigger(seconds=30),
+            IntervalTrigger(seconds=5),
             id="coinbase_scan",
             max_instances=2,
+            replace_existing=True,
+        )
+    if coinbase_exit_check is not None:
+        def _coinbase_exit_wrapper() -> None:
+            if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
+                "1", "true", "yes"
+            ):
+                return
+            coinbase_exit_check()  # type: ignore[misc]
+
+        sched.add_job(
+            _coinbase_exit_wrapper,
+            IntervalTrigger(seconds=5),
+            id="coinbase_exit_check",
+            max_instances=1,
             replace_existing=True,
         )
 

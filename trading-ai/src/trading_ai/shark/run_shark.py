@@ -591,6 +591,17 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_gate_c failed: %s", exc)
 
+    def coinbase_exit_check_job() -> None:
+        try:
+            acc = _coinbase_accumulator
+            if acc is None:
+                from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
+
+                acc = CoinbaseAccumulator()
+            acc._check_exits_only()
+        except Exception as exc:
+            log.warning("coinbase_exit_check: %s", exc)
+
     def hourly_report() -> None:
         try:
             from datetime import datetime
@@ -661,6 +672,12 @@ def main() -> None:
         except Exception as exc:
             log.warning("hourly_report failed: %s", exc)
 
+    _coinbase_env_on = (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -697,6 +714,9 @@ def main() -> None:
         kalshi_index_blitz=kalshi_index_blitz,
         hourly_report=hourly_report,
         coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
+        coinbase_exit_check=coinbase_exit_check_job
+        if (_coinbase_accumulator is not None or _coinbase_env_on)
+        else None,
         crypto_market_open_blitz=crypto_market_open_blitz,
         kalshi_simple_scan=kalshi_simple_scan_job,
         kalshi_gate_c=kalshi_gate_c_job,
@@ -710,7 +730,14 @@ def main() -> None:
         jid = job.id.lower()
         if any(
             x in jid
-            for x in ("blitz", "crypto_15min", "simple_scan", "gate_c", "coinbase_scan")
+            for x in (
+                "blitz",
+                "crypto_15min",
+                "simple_scan",
+                "gate_c",
+                "coinbase_scan",
+                "coinbase_exit_check",
+            )
         ):
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)
 

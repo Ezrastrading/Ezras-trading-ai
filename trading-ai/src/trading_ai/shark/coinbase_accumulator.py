@@ -9,9 +9,9 @@ Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reser
 **E1 — Dip buyer**  All USD pairs: 5m dip → buy; TP / SL / time via ``COINBASE_E1_*``.
 **E2 — Gainer hunter**  Hour movers + stats / volume; trail from peak.
 **E3 — Scalp**  BTC, ETH, SOL, XRP, DOGE: short momentum; tight TP/SL/time.
-**E4 — Micro HFT**  BTC-USD & ETH-USD only; fastest cadence (scheduler 30s).
+**E4 — Micro HFT**  BTC-USD & ETH-USD only; buy cadence throttled with E1–E3 (default 30s).
 
-Exits: ``_check_exits`` runs **first** every scan. Per-position: **time stop** (absolute)
+Exits: ``_check_exits_only`` / scheduler job ``coinbase_exit_check`` every 5s; ``scan_and_trade`` is buys-only. Per-position: **time stop** (absolute)
 → take-profit → stop-loss → trail (E2 only). Sells are not gated by the buy rate limiter.
 Sells retry once; on failure ``sell_pending`` is set for the next scan.
 
@@ -846,6 +846,39 @@ class CoinbaseAccumulator:
         time.sleep(0.35)
         return self._client.place_market_sell(product_id, base_str)
 
+    def _get_prices_for_positions(
+        self, state: Dict[str, Any]
+    ) -> Dict[str, Tuple[float, float]]:
+        pids = collect_price_product_ids(state)
+        if not pids:
+            return {}
+        try:
+            prices = self._client.get_prices_batched(pids)
+        except Exception as exc:
+            logger.warning("Coinbase exit-check price fetch failed: %s", exc)
+            return {}
+        missing = [x for x in pids if x and x not in prices]
+        if missing:
+            try:
+                extra = self._client.get_prices_batched(missing)
+                prices.update(extra)
+            except Exception as exc:
+                logger.warning("Coinbase exit-check price salvage: %s", exc)
+        return prices
+
+    def _check_exits_only(self) -> int:
+        if not coinbase_enabled():
+            return 0
+        if not self._client.has_credentials():
+            return 0
+        state = load_coinbase_state()
+        _reset_daily_pnl_if_needed(state)
+        now = time.time()
+        prices = self._get_prices_for_positions(state)
+        exits = self._check_exits(state, prices, now)
+        save_coinbase_state(state)
+        return exits
+
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
         """Returns (profit_pct, stop_pct, time_min, trail_pct). trail only used for E2."""
         if engine == 1:
@@ -882,9 +915,12 @@ class CoinbaseAccumulator:
         prices: Dict[str, Tuple[float, float]],
         now: float,
     ) -> int:
+        # One full pass over all open positions — no break after a successful sell
+        # (time-stop and other exits can flush many positions in a single scan).
+        positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
         exits = 0
-        for pos in list(state.get("positions") or []):
+        for idx, pos in enumerate(positions_snapshot):
             pid = str(pos.get("product_id") or "")
             entry = float(pos.get("entry_price") or 0.0)
             size_base = float(pos.get("size_base") or 0.0)
@@ -1055,6 +1091,7 @@ class CoinbaseAccumulator:
                         )
                 except Exception:
                     pass
+                state["positions"] = remaining + positions_snapshot[idx + 1 :]
                 save_coinbase_state(state)
             else:
                 logger.warning(
@@ -1067,6 +1104,7 @@ class CoinbaseAccumulator:
                 upd["sell_pending"] = True
                 upd["peak_price"] = peak
                 remaining.append(upd)
+                state["positions"] = remaining + positions_snapshot[idx + 1 :]
                 save_coinbase_state(state)
 
         state["positions"] = remaining
@@ -1564,8 +1602,9 @@ class CoinbaseAccumulator:
             usd_balance = 0.0
 
         now = time.time()
-        run_60 = (now - self._last_ac_tick) >= 60.0
-        if run_60:
+        buy_tick_sec = _env_float("COINBASE_BUY_SCAN_INTERVAL_SEC", 30.0)
+        run_buy_tick = (now - self._last_ac_tick) >= buy_tick_sec
+        if run_buy_tick:
             self._last_ac_tick = now
 
         scan_ids = _hf_scan_product_ids(self._client, state, now)
@@ -1612,19 +1651,16 @@ class CoinbaseAccumulator:
 
         self._ingest_prices_into_history(prices, now)
 
-        # ── Exits FIRST (every scan, ~30s scheduler) ───────────────────────
-        exits_this = self._check_exits(state, prices, now)
-
+        # Buys only — exits run on scheduler job ``coinbase_exit_check`` (~5s).
         if _coinbase_gates_mode():
-            self._gate_a_scan(state, prices, usd_balance, now)
-            self._gate_b_gainer(state, prices, usd_balance, now)
-        else:
-            # E4 can fire every scan; E1–E3 buy engines on 60s cadence
+            if run_buy_tick:
+                self._gate_a_scan(state, prices, usd_balance, now)
+                self._gate_b_gainer(state, prices, usd_balance, now)
+        elif run_buy_tick:
             self._engine_4_micro(state, prices, usd_balance, now)
-            if run_60:
-                self._engine_1_dip(state, prices, usd_balance, now)
-                self._engine_2_gainer(state, prices, usd_balance, now)
-                self._engine_3_scalp(state, prices, usd_balance, now)
+            self._engine_1_dip(state, prices, usd_balance, now)
+            self._engine_2_gainer(state, prices, usd_balance, now)
+            self._engine_3_scalp(state, prices, usd_balance, now)
 
         save_coinbase_state(state)
         return {
@@ -1633,6 +1669,6 @@ class CoinbaseAccumulator:
             "usd_balance": round(usd_balance, 2),
             "scan_ids": len(scan_ids),
             "trades_this_scan": int(self._buys_this_scan),
-            "exits_this_scan": int(exits_this),
-            "exits": int(exits_this),
+            "exits_this_scan": 0,
+            "exits": 0,
         }
