@@ -11,6 +11,10 @@ Advanced Trade auth env vars (either name pair works):
   COINBASE_API_PRIVATE_KEY or COINBASE_API_SECRET
       EC PEM private key (P-256 / ES256); literal \\n escapes from Railway / .env are normalised.
 
+Balance / portfolio:
+  COINBASE_PORTFOLIO_ID   Retail portfolio UUID (fiat often only under ``/portfolios/.../balances``).
+  COINBASE_BALANCE_OVERRIDE  Optional fixed USD float for tests (bypasses API).
+
 Base URL (authenticated orders/accounts): https://api.coinbase.com/api/v3/brokerage
 
 Public prices and product list use **unauthenticated** Advanced Trade **market** routes
@@ -54,6 +58,8 @@ _JWT_HOST = "api.coinbase.com"
 _ADV_PUBLIC_BASE = "https://api.coinbase.com/api/v3/brokerage"
 # Coinbase Exchange REST (classic) — fallback only; product ids match (e.g. BTC-USD).
 _EXCHANGE_REST_URL = "https://api.exchange.coinbase.com"
+# Retail consumer portfolio UUID (fiat often only appears here, not in per-asset ``/accounts`` rows).
+KNOWN_PORTFOLIO_ID = "aa4c900f-3580-56ad-930a-a1555233a476"
 
 # ── Legacy public price constant ─────────────────────────────────────────────
 
@@ -413,6 +419,15 @@ class CoinbaseClient:
         return j.get("accounts") or []
 
     @staticmethod
+    def _safe_float(x: Any) -> float:
+        try:
+            if x is None or x == "":
+                return 0.0
+            return float(x)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
     def _account_usd_usdc_spendable(a: Dict[str, Any]) -> float:
         """
         Best-effort spendable fiat from one ``/accounts`` row.
@@ -534,64 +549,123 @@ class CoinbaseClient:
             logger.warning("get_portfolio_balance accounts fallback: %s", e)
             return 0.0
 
+    def _parse_fiat_from_portfolio(
+        self, j: Dict[str, Any], portfolio_id: str
+    ) -> float:
+        """Parse USD/USDC from portfolio ``/balances``, ``/portfolios/{id}``, or list payloads."""
+        total = 0.0
+        breakdown = j.get("breakdown")
+        if isinstance(breakdown, list):
+            for item in breakdown:
+                if not isinstance(item, dict):
+                    continue
+                asset = item.get("asset", {})
+                if not isinstance(asset, dict):
+                    asset = {}
+                code = str(asset.get("asset_code", "") or "").upper()
+                if code in ("USD", "USDC"):
+                    total += self._safe_float(item.get("total_balance_fiat", 0) or 0)
+
+        portfolios = j.get("portfolios")
+        if isinstance(portfolios, list):
+            for p in portfolios:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("uuid") == portfolio_id:
+                    bal = p.get("balance", {})
+                    if isinstance(bal, dict):
+                        total += self._safe_float(bal.get("value", 0) or 0)
+                    else:
+                        total += self._safe_float(bal or 0)
+
+        if not total:
+            bal = j.get("balance", {})
+            if isinstance(bal, dict):
+                total += self._safe_float(bal.get("value", 0) or 0)
+
+        spot = j.get("spot_positions")
+        if isinstance(spot, list):
+            for pos in spot:
+                if not isinstance(pos, dict):
+                    continue
+                asset = str(pos.get("asset", "") or "").upper()
+                if asset in ("USD", "USDC"):
+                    total += self._safe_float(pos.get("total_balance_fiat", 0) or 0)
+
+        if total <= 0:
+            total = self._parse_portfolio_balances_json(j)
+        return total
+
+    def _get_portfolio_fiat(self, portfolio_id: str) -> float:
+        """USD/USDC from portfolio endpoints (consumer cash is often only here)."""
+        endpoints = [
+            f"/portfolios/{portfolio_id}/balances",
+            f"/portfolios/{portfolio_id}",
+            "/portfolios",
+        ]
+        for endpoint in endpoints:
+            try:
+                j = self._request("GET", endpoint)
+                logger.info("Portfolio endpoint %s: %s", endpoint, str(j)[:500])
+                total = self._parse_fiat_from_portfolio(j, portfolio_id)
+                if total > 0:
+                    logger.info("Found $%.2f at %s", total, endpoint)
+                    return total
+            except Exception as e:
+                logger.warning("Portfolio endpoint %s: %s", endpoint, e)
+        return 0.0
+
     def get_usd_balance(self) -> float:
         """
-        Trading cash: USD + USDC from ``/accounts`` (detailed logging + max of
-        ``available_balance`` / ``balance`` per row); portfolio fallback if still zero.
+        Spendable USD + USDC: optional ``COINBASE_BALANCE_OVERRIDE``, then ``/accounts``,
+        then portfolio fiat (``COINBASE_PORTFOLIO_ID``, ``retail_portfolio_id`` from accounts,
+        or ``KNOWN_PORTFOLIO_ID``).
         """
+        override = (os.environ.get("COINBASE_BALANCE_OVERRIDE") or "").strip()
+        if override:
+            try:
+                return float(override)
+            except ValueError:
+                pass
+
         try:
             j = self._request("GET", "/accounts")
-            logger.info("RAW ACCOUNTS RESPONSE: %s", str(j)[:2000])
             accounts = j.get("accounts", []) or []
-            logger.info("Total accounts: %d", len(accounts))
             total = 0.0
+            detected_portfolio_id: Optional[str] = None
             for a in accounts:
                 if not isinstance(a, dict):
                     continue
                 curr = str(a.get("currency", "") or "").upper()
-                bal1 = a.get("available_balance", {})
-                bal2 = a.get("balance", {})
-                if not isinstance(bal1, dict):
-                    bal1 = {}
-                if not isinstance(bal2, dict):
-                    bal2 = {}
-                try:
-                    val1 = float(bal1.get("value", 0) or 0)
-                except (TypeError, ValueError):
-                    val1 = 0.0
-                try:
-                    val2 = float(bal2.get("value", 0) or 0)
-                except (TypeError, ValueError):
-                    val2 = 0.0
-                val = max(val1, val2)
-                logger.info(
-                    "Account: %s available=%s balance=%s",
-                    curr or "?",
-                    bal1,
-                    bal2,
-                )
+                if not detected_portfolio_id:
+                    rp = a.get("retail_portfolio_id")
+                    if rp:
+                        detected_portfolio_id = str(rp).strip()
+                val = self._account_usd_usdc_spendable(a)
                 if curr in ("USD", "USDC"):
                     total += val
-                    logger.info("FOUND: %s = $%.2f", curr, val)
-            logger.info("Total USD+USDC: $%.2f", total)
+                    logger.info("USD row: %s $%.2f", curr, val)
+
             if total > 0:
                 return total
-        except Exception as e:
-            logger.warning("get_usd_balance failed: %s", e)
-            total = 0.0
 
-        portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
-        if portfolio_id:
-            try:
-                pf = float(self.get_portfolio_balance())
-                logger.info("get_usd_balance: USD+USDC (portfolio fallback) = %.2f", pf)
-                return pf
-            except Exception as e2:
-                logger.warning("get_usd_balance portfolio path failed: %s", e2)
-        return total
+            pid = (
+                (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
+                or (detected_portfolio_id or "")
+                or KNOWN_PORTFOLIO_ID
+                or ""
+            ).strip()
+
+            if pid:
+                logger.info("No USD in accounts, trying portfolio %s", pid)
+                return self._get_portfolio_fiat(pid)
+
+        except Exception as e:
+            logger.warning("get_usd_balance: %s", e)
+        return 0.0
 
     def debug_all_balances(self) -> Dict[str, Any]:
-        """Fetch ``/accounts``, ``/portfolios``, and paginated accounts for diagnostics."""
+        """Fetch ``/accounts`` and ``/portfolios`` for diagnostics."""
         results: Dict[str, Any] = {}
         try:
             j = self._request("GET", "/accounts")
@@ -604,12 +678,6 @@ class CoinbaseClient:
             results["portfolios"] = j2
         except Exception as e:
             results["portfolios_error"] = str(e)
-
-        try:
-            j3 = self._request("GET", "/accounts", params={"limit": 250})
-            results["accounts_250"] = j3
-        except Exception as e:
-            results["accounts_250_error"] = str(e)
 
         return results
 
