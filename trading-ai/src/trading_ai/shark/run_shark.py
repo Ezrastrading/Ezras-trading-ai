@@ -680,7 +680,58 @@ def main() -> None:
                 f"🏀 Sports: {sports_status}"
                 f"{cb_section}"
             )
-            send_telegram(msg)
+            try:
+                from trading_ai.shark.supabase_logger import get_win_rate, log_performance
+
+                cb_stats = get_win_rate("coinbase")
+                coinbase_balance = 0.0
+                if _coinbase_accumulator is not None:
+                    try:
+                        coinbase_balance = float(
+                            _coinbase_accumulator._client.get_usd_balance()
+                        )
+                    except Exception:
+                        coinbase_balance = 0.0
+                log_performance(
+                    platform="coinbase",
+                    trades_count=cb_stats["total"],
+                    wins=cb_stats["wins"],
+                    losses=cb_stats["losses"],
+                    profit_usd=cb_stats["pnl"],
+                    balance_usd=coinbase_balance,
+                )
+            except Exception:
+                pass
+
+            try:
+                from trading_ai.shark.lessons import get_rules_summary, load_lessons
+                from trading_ai.shark.progression import generate_ceo_briefing, get_summary
+
+                briefing = generate_ceo_briefing()
+                msg = f"{msg}\n\n{briefing.strip()}\n\n{get_rules_summary()}"
+                send_telegram(msg)
+
+                try:
+                    from trading_ai.shark.supabase_logger import _get_client
+
+                    client = _get_client()
+                    if client:
+                        summary = get_summary("today")
+                        client.table("ceo_briefings").insert(
+                            {
+                                "briefing_text": briefing,
+                                "total_trades": summary.get("trades", 0),
+                                "total_pnl": summary.get("pnl_usd", 0),
+                                "win_rate": summary.get("win_rate", 0),
+                                "balance": summary.get("current_balance", 0),
+                                "lessons_count": len(load_lessons().get("lessons", [])),
+                            }
+                        ).execute()
+                except Exception:
+                    pass
+            except Exception:
+                send_telegram(msg)
+
             log.info("HOURLY_REPORT: sent")
         except Exception as exc:
             log.warning("hourly_report failed: %s", exc)

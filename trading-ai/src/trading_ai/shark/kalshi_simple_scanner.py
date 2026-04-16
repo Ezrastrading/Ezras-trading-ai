@@ -340,6 +340,35 @@ def _check_exits_first(
         except Exception:
             pass
 
+        try:
+            from trading_ai.shark.capital_effective import effective_capital_for_outlet
+            from trading_ai.shark.state_store import load_capital
+            from trading_ai.shark.supabase_logger import log_trade
+
+            book = load_capital()
+            balance = float(
+                effective_capital_for_outlet("kalshi", float(book.current_capital))
+            )
+            exit_prob = float(fp) if fp > 0 else float(y if side == "yes" else n)
+            hold_s = int(now - entry_t) if entry_t > 0 else 0
+            sup_exit = "timeout" if exit_reason == "time" else exit_reason
+            log_trade(
+                platform="kalshi",
+                gate="simple",
+                product_id=tid,
+                side="sell",
+                strategy="simple_scan",
+                entry_price=entry_prob,
+                exit_price=exit_prob,
+                size_usd=float(pos.get("cost") or 0.0),
+                pnl_usd=realized,
+                exit_reason=sup_exit,
+                hold_seconds=hold_s,
+                balance_after=balance,
+            )
+        except Exception:
+            pass
+
         exits += 1
 
     state["positions"] = remaining

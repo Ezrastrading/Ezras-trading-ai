@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from trading_ai.governance.storage_architecture import shark_data_dir, shark_state_path
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 from trading_ai.shark.outlets.coinbase import CoinbaseAuthError, CoinbaseClient
+from trading_ai.shark.supabase_logger import log_trade
 
 load_shark_dotenv()
 logger = logging.getLogger(__name__)
@@ -186,6 +187,22 @@ def _log_trade(record: Dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.warning("Coinbase trade log write error: %s", exc)
+
+
+def _cb_supabase_exit_reason(sell_reason: str, *, profit_scan: bool = False) -> str:
+    """Map internal sell reason to Supabase taxonomy: profit | stop | timeout."""
+    if profit_scan:
+        return "profit"
+    sl = sell_reason.lower()
+    if "time" in sl or ">=" in sell_reason:
+        return "timeout"
+    if "stop" in sl or "trail" in sl or "no_price" in sl:
+        return "stop"
+    if "tp" in sl or sl.startswith("tp"):
+        return "profit"
+    if "pending" in sl:
+        return "stop"
+    return "profit"
 
 
 class _RateLimiter:
@@ -1154,6 +1171,28 @@ class CoinbaseAccumulator:
                     }
                 )
                 try:
+                    bal_after = float(self._client.get_usd_balance())
+                except Exception:
+                    bal_after = 0.0
+                log_trade(
+                    platform="coinbase",
+                    gate=str(pos.get("gate") or ""),
+                    product_id=pid,
+                    side="sell",
+                    strategy=str(pos.get("strategy") or ""),
+                    entry_price=entry,
+                    exit_price=current,
+                    size_usd=cost_usd,
+                    pnl_usd=pnl_usd,
+                    exit_reason=_cb_supabase_exit_reason("profit_scan", profit_scan=True),
+                    hold_seconds=int(now - float(pos.get("entry_time") or now)),
+                    balance_after=bal_after,
+                    metadata={
+                        "gate": pos.get("gate"),
+                        "engine": pos.get("engine"),
+                    },
+                )
+                try:
                     from trading_ai.shark.reporting import send_telegram
 
                     prefix = f"[{gate}] " if _gate_tp_sl_tmin(gate) else ""
@@ -1243,7 +1282,7 @@ class CoinbaseAccumulator:
                     bid = float(quote[0] or 0.0)
                     ask = float(quote[1] or 0.0)
                 except (TypeError, ValueError):
-                    bid, ask = 0.0, 0.0
+                    bid = 0.0
             current = bid
             no_price = quote is None or current <= 0
 
@@ -1368,6 +1407,29 @@ class CoinbaseAccumulator:
                         "exit_price": 0.0 if no_price else current,
                         "pnl_usd": profit_usd,
                     }
+                )
+                try:
+                    bal_after = float(self._client.get_usd_balance())
+                except Exception:
+                    bal_after = 0.0
+                log_trade(
+                    platform="coinbase",
+                    gate=str(pos.get("gate") or ""),
+                    product_id=pid,
+                    side="sell",
+                    strategy=str(pos.get("strategy") or ""),
+                    entry_price=entry,
+                    exit_price=0.0 if no_price else current,
+                    size_usd=cost_usd,
+                    pnl_usd=profit_usd,
+                    exit_reason=_cb_supabase_exit_reason(sell_reason),
+                    hold_seconds=int(now - float(pos.get("entry_time") or now)),
+                    balance_after=bal_after,
+                    metadata={
+                        "gate": pos.get("gate"),
+                        "engine": pos.get("engine"),
+                        "no_price": no_price,
+                    },
                 )
                 try:
                     from trading_ai.shark.reporting import send_telegram
