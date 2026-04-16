@@ -366,6 +366,15 @@ class CoinbaseClient:
 
     def get_usd_balance(self) -> float:
         """Available USD balance in the connected Coinbase account."""
+        override = (os.environ.get("COINBASE_BALANCE_OVERRIDE") or "").strip()
+        if override:
+            try:
+                return float(override)
+            except ValueError:
+                logger.warning(
+                    "COINBASE_BALANCE_OVERRIDE invalid %r — using API balance",
+                    override,
+                )
         return self.get_available_balance("USD")
 
     def get_available_balance(self, currency: str) -> float:
