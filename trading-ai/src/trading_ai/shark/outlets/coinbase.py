@@ -364,18 +364,135 @@ class CoinbaseClient:
         j = self._request("GET", "/accounts")
         return j.get("accounts") or []
 
-    def get_usd_balance(self) -> float:
-        """Available USD balance in the connected Coinbase account."""
-        override = (os.environ.get("COINBASE_BALANCE_OVERRIDE") or "").strip()
-        if override:
+    @staticmethod
+    def _sum_usd_usdc_from_accounts_json(j: Dict[str, Any]) -> float:
+        """Sum ``available_balance.value`` for USD and USDC rows from ``/accounts`` JSON."""
+        total = 0.0
+        for a in j.get("accounts", []) or []:
+            curr = str(a.get("currency") or "").upper()
+            if curr not in ("USD", "USDC"):
+                continue
+            avail = a.get("available_balance") or {}
             try:
-                return float(override)
+                val = float(avail.get("value") or 0.0)
+            except (TypeError, ValueError):
+                val = 0.0
+            total += val
+            logger.info("Balance: %s $%.2f", curr, val)
+        return total
+
+    @staticmethod
+    def _fiat_line_usd_usdc(item: Dict[str, Any]) -> float:
+        """Extract a fiat USD/USDC amount from one portfolio breakdown / balance row."""
+        asset = item.get("asset") if isinstance(item.get("asset"), dict) else {}
+        code = (
+            str(asset.get("asset_code") or item.get("currency") or item.get("asset_code") or "")
+            .upper()
+        )
+        if code not in ("USD", "USDC"):
+            return 0.0
+        for key in (
+            "total_balance_fiat",
+            "available_balance_fiat",
+            "fiat_value",
+            "value",
+            "balance",
+        ):
+            raw = item.get(key)
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    pass
+        for nest_key in ("available_balance", "total_balance", "fiat_balance"):
+            nested = item.get(nest_key)
+            if isinstance(nested, dict):
+                try:
+                    return float(nested.get("value") or nested.get("amount") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0
+
+    def _parse_portfolio_balances_json(self, data: Dict[str, Any]) -> float:
+        """Sum USD + USDC fiat from portfolio ``/balances`` or breakdown payloads (flexible keys)."""
+        total = 0.0
+        for key in ("breakdown", "portfolio_breakdown", "balances", "spot_balances"):
+            block = data.get(key)
+            if isinstance(block, list):
+                for item in block:
+                    if isinstance(item, dict):
+                        add = self._fiat_line_usd_usdc(item)
+                        total += add
+                        if add:
+                            acode = str(
+                                (item.get("asset") or {}).get("asset_code")
+                                or item.get("currency")
+                                or "?"
+                            ).upper()
+                            logger.info("Portfolio balance: %s $%.2f", acode, add)
+        # intx-style nested blocks
+        for pb in data.get("portfolio_balances") or []:
+            if not isinstance(pb, dict):
+                continue
+            for bal in pb.get("balances") or []:
+                if isinstance(bal, dict):
+                    total += self._fiat_line_usd_usdc(bal)
+        return total
+
+    def get_portfolio_balance(self) -> float:
+        """
+        When ``COINBASE_PORTFOLIO_ID`` is set, prefer portfolio balance endpoints, then ``/accounts``.
+        """
+        portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
+        if not portfolio_id:
+            return 0.0
+        for path in (
+            f"/portfolios/{portfolio_id}/balances",
+            f"/portfolios/{portfolio_id}",
+        ):
+            try:
+                j = self._request("GET", path)
+                t = self._parse_portfolio_balances_json(j)
+                if t > 0:
+                    return t
+            except Exception as e:
+                logger.warning("get_portfolio_balance %s: %s", path, e)
+        try:
+            j = self._request("GET", "/accounts")
+            return self._sum_usd_usdc_from_accounts_json(j)
+        except Exception as e:
+            logger.warning("get_portfolio_balance accounts fallback: %s", e)
+            return 0.0
+
+    def get_usd_balance(self) -> float:
+        """
+        Trading cash: USD + USDC available (override, portfolio endpoints, or ``/accounts``).
+
+        Spot crypto is not converted here — only fiat-stable USD and USDC balances.
+        """
+        override = os.environ.get("COINBASE_BALANCE_OVERRIDE")
+        if override is not None and str(override).strip() != "":
+            try:
+                return float(str(override).strip())
             except ValueError:
                 logger.warning(
                     "COINBASE_BALANCE_OVERRIDE invalid %r — using API balance",
                     override,
                 )
-        return self.get_available_balance("USD")
+
+        portfolio_id = (os.environ.get("COINBASE_PORTFOLIO_ID") or "").strip()
+        if portfolio_id:
+            try:
+                return float(self.get_portfolio_balance())
+            except Exception as e:
+                logger.warning("get_usd_balance portfolio path failed: %s", e)
+
+        try:
+            j = self._request("GET", "/accounts")
+            return self._sum_usd_usdc_from_accounts_json(j)
+        except Exception as e:
+            logger.warning("get_usd_balance failed: %s", e)
+            return 0.0
 
     def get_available_balance(self, currency: str) -> float:
         """Available balance for a currency code (e.g. ``USD``, ``BTC``, ``ETH``)."""
