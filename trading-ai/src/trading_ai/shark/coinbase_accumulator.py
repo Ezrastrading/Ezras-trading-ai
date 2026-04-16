@@ -14,9 +14,8 @@ Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reser
 **E3 — Scalp**  BTC, ETH, SOL, XRP, DOGE: short momentum; tight TP/SL/time.
 **E4 — Micro HFT**  BTC-USD & ETH-USD only; buy cadence throttled with E1–E3 (default 30s).
 
-Exits: ``_check_exits_only`` / scheduler job ``coinbase_exit_check`` every 5s; ``scan_and_trade`` is buys-only. Per-position: **time stop** (absolute)
-→ take-profit → stop-loss → trail (E2 only); **no_price_stop** (missing/zero bid) fires
-immediately after ``sell_pending``. Sells are not gated by the buy rate limiter.
+Exits: ``_check_exits_only`` / scheduler job ``coinbase_exit_check`` every 5s; ``scan_and_trade`` is buys-only. Per-position (after ``sell_pending`` retry): **no_price_stop** (missing/zero bid),
+then **time stop** (absolute) → take-profit → stop-loss → trail (E2 only, non-gate). Sells are not gated by the buy rate limiter.
 Sells retry once; on failure ``sell_pending`` is set for the next scan.
 
 Logging: ``CB BUY E{n}``, ``CB SELL E{n}``, ``CB CHECK E{n}``, ``CB EXIT E{n}``.
@@ -1016,8 +1015,7 @@ class CoinbaseAccumulator:
                     d_count,
                 )
                 # Fetch prices for gate products + fallbacks + slice of HF cache (Gate C)
-                ga_env = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
-                ga_pids = _parse_csv_products(ga_env) if ga_env else list(_GATE_A_PRODUCTS_DEFAULT)
+                ga_pids = list(_GATE_A_PRODUCTS)
                 fb_env = (os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS") or "").strip()
                 fb_pids = _parse_csv_products(fb_env) if fb_env else list(_GATE_B_FALLBACK_PRODUCTS)
                 open_pids = collect_price_product_ids(state)
@@ -1028,6 +1026,7 @@ class CoinbaseAccumulator:
                     | set(open_pids)
                     | set(hf_extra)
                     | set(_E4_LIQUID)
+                    | set(_GATE_D_PRODUCTS)
                 )
                 if not all_pids:
                     all_pids = list(_GATE_B_FALLBACK_PRODUCTS)
@@ -1278,7 +1277,8 @@ class CoinbaseAccumulator:
             else:
                 tp, sl, tmin, trail = self._exit_params(eng)
             tlim = tmin * 60.0
-            peak = max(float(pos.get("peak_price") or entry), max(current, 1e-12))
+            peak_ref = current if current > 0 else float(pos.get("peak_price") or entry)
+            peak = max(float(pos.get("peak_price") or entry), peak_ref)
 
             # sell_pending → no_price_stop → time → TP → stop → trail (E2 only).
             sell_reason = ""
@@ -1340,19 +1340,20 @@ class CoinbaseAccumulator:
                     state.setdefault("hunter_cooldown", {})[pid] = now
 
                 xl = f"Gate {gate}" if _gate_tp_sl_tmin(gate) else f"E{eng}"
+                pnl_disp = "n/a" if no_price else f"{pnl_pct * 100.0:+.2f}%"
                 logger.info(
-                    "CB EXIT %s: %s %+.2f%% $%.4f profit (%s)",
+                    "CB EXIT %s: %s %s $%.4f profit (%s)",
                     xl,
                     pid,
-                    pnl_pct * 100.0,
+                    pnl_disp,
                     profit_usd,
                     sell_reason,
                 )
                 logger.info(
-                    "CB SELL %s: %s %+.2f%% $%.4f profit",
+                    "CB SELL %s: %s %s $%.4f profit",
                     xl,
                     pid,
-                    pnl_pct * 100.0,
+                    pnl_disp,
                     profit_usd,
                 )
                 _log_trade(
@@ -1540,6 +1541,9 @@ class CoinbaseAccumulator:
             ok, _ = _can_buy_engine(state, 1, pid, order_usd, usd_balance, max_n)
             if not ok:
                 continue
+            ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+            if not ok_liq:
+                continue
             if not self._rate_limiter.allow():
                 break
             r = self._client.place_market_buy(pid, order_usd)
@@ -1586,6 +1590,9 @@ class CoinbaseAccumulator:
             hg = float(row["hour_pct"])
             ok, _ = _can_buy_engine(state, 2, pid, order_usd, usd_balance, max_n)
             if not ok:
+                continue
+            ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+            if not ok_liq:
                 continue
             if not self._rate_limiter.allow():
                 break
@@ -1634,6 +1641,9 @@ class CoinbaseAccumulator:
             ok, _ = _can_buy_engine(state, 3, pid, order_usd, usd_balance, max_n)
             if not ok:
                 continue
+            ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+            if not ok_liq:
+                continue
             if not self._rate_limiter.allow():
                 break
             r = self._client.place_market_buy(pid, order_usd)
@@ -1681,6 +1691,9 @@ class CoinbaseAccumulator:
             ok, _ = _can_buy_engine(state, 4, pid, order_usd, usd_balance, max_n)
             if not ok:
                 continue
+            ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+            if not ok_liq:
+                continue
             if not self._rate_limiter.allow():
                 break
             r = self._client.place_market_buy(pid, order_usd)
@@ -1709,11 +1722,7 @@ class CoinbaseAccumulator:
             return
         if not _env_bool("COINBASE_GATE_A_ENABLED", True):
             return
-        gate_a_products_env = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
-        if gate_a_products_env:
-            products = _parse_csv_products(gate_a_products_env)
-        else:
-            products = list(_GATE_A_PRODUCTS_DEFAULT)
+        products = list(_GATE_A_PRODUCTS)
         max_n = max(1, int(_env_float("COINBASE_GATE_A_POSITIONS", 50.0)))
         gate_a_min = max(0, int(_env_float("COINBASE_GATE_A_MIN_POSITIONS", 10.0)))
         dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.001)
@@ -1758,6 +1767,9 @@ class CoinbaseAccumulator:
                     continue
                 ok, _ = _can_buy_gate(state, "A", pid, order_usd, usd_balance, max_n)
                 if not ok:
+                    continue
+                ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+                if not ok_liq:
                     continue
                 if not self._rate_limiter.allow():
                     return
@@ -1822,6 +1834,9 @@ class CoinbaseAccumulator:
                 continue
             ok, _ = _can_buy_gate(state, "B", pid, order_usd, usd_balance, max_n)
             if not ok:
+                continue
+            ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+            if not ok_liq:
                 continue
             if not self._rate_limiter.allow():
                 return any_buy
@@ -1909,6 +1924,9 @@ class CoinbaseAccumulator:
                 ok, _ = _can_buy_gate(state, "B", pid, order_usd, usd_balance, max_n)
                 if not ok:
                     continue
+                ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+                if not ok_liq:
+                    continue
                 if not self._rate_limiter.allow():
                     return
                 r = self._client.place_market_buy(pid, order_usd)
@@ -1953,12 +1971,16 @@ class CoinbaseAccumulator:
         min_pct = _env_float("COINBASE_GATE_C_MIN_HOUR_PCT", 0.05)
         min_vol_ratio = _env_float("COINBASE_GATE_C_MIN_VOL_RATIO", 3.0)
         rows = self._e2_candidates(state, prices, now)
+        min_px = _min_product_price_usd()
         out: List[Dict[str, Any]] = []
         for row in rows:
             try:
                 hp = float(row.get("hour_pct") or 0.0)
                 vr = float(row.get("vol_ratio") or 0.0)
+                mid_r = float(row.get("mid") or 0.0)
             except (TypeError, ValueError):
+                continue
+            if mid_r < min_px:
                 continue
             if hp < min_pct or vr < min_vol_ratio:
                 continue
@@ -2009,6 +2031,9 @@ class CoinbaseAccumulator:
                 hg = float(row.get("hour_pct") or 0.0)
                 ok, _ = _can_buy_gate(state, "C", pid, order_usd, usd_balance, max_n)
                 if not ok:
+                    continue
+                ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+                if not ok_liq:
                     continue
                 if not self._rate_limiter.allow():
                     return
@@ -2070,7 +2095,7 @@ class CoinbaseAccumulator:
                     _count_gate(state, "D"),
                     gate_d_min,
                 )
-            for pid in _E4_LIQUID:
+            for pid in _GATE_D_PRODUCTS:
                 if _count_gate(state, "D") >= max_n:
                     break
                 if pid not in prices:
@@ -2089,6 +2114,9 @@ class CoinbaseAccumulator:
                     continue
                 ok, _ = _can_buy_gate(state, "D", pid, order_usd, usd_balance, max_n)
                 if not ok:
+                    continue
+                ok_liq, _why = self._buy_preflight_ok(pid, prices, now)
+                if not ok_liq:
                     continue
                 if not self._rate_limiter.allow():
                     return
@@ -2139,13 +2167,12 @@ class CoinbaseAccumulator:
         scan_ids = _hf_scan_product_ids(self._client, state, now)
         pids = list(set(scan_ids) | set(collect_price_product_ids(state)))
         if _coinbase_gates_mode():
-            ga_raw = (os.environ.get("COINBASE_GATE_A_PRODUCTS") or "").strip()
-            ga = _parse_csv_products(ga_raw) if ga_raw else list(_GATE_A_PRODUCTS_DEFAULT)
+            ga = list(_GATE_A_PRODUCTS)
             fb = _parse_csv_products(
                 os.environ.get("COINBASE_GATE_B_FALLBACK_PRODUCTS")
                 or ",".join(_GATE_B_FALLBACK_PRODUCTS)
             )
-            extra = set(ga) | set(fb) | set(_E4_LIQUID)
+            extra = set(ga) | set(fb) | set(_E4_LIQUID) | set(_GATE_D_PRODUCTS)
             if _env_bool("COINBASE_GATE_C_ENABLED", False):
                 extra |= set(list(state.get("hf_product_cache") or [])[:400])
             pids = list(set(pids) | extra)

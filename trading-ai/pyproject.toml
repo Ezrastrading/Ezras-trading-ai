@@ -16,6 +16,7 @@ dependencies = [
   "py-clob-client>=0.18.0",
   "eth-account>=0.10.0",
   "websocket-client>=1.7",
+  "supabase>=2.0.0",
 ]
 
 [project.optional-dependencies]

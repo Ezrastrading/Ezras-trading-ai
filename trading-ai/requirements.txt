@@ -12,3 +12,4 @@ py-clob-client>=0.18.0
 eth-account>=0.10.0
 robin_stocks>=2.1.0
 coinbase-advanced-py>=1.0.0
+supabase>=2.0.0
