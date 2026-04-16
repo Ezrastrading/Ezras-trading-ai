@@ -9,6 +9,9 @@ momentum (optional; same min-price rule), **D** BTC/ETH micro scalp (optional). 
 Deployable = ``balance * COINBASE_MAX_DEPLOY_PCT`` (default 0.80, i.e. 20% reserve via
 ``COINBASE_RESERVE_PCT``). Each engine may deploy up to **25%** of that deployable pool.
 
+Gates **A** and **B** per-trade USD: ``balance * COINBASE_MAX_DEPLOY_PCT * COINBASE_GATE_AB_SLICE_PCT /
+max(COINBASE_GATE_*_POSITIONS, 10)`` via :func:`_gate_dynamic_order_usd` (default slice ``0.50``).
+
 **E1 — Dip buyer**  All USD pairs: 5m dip → buy; TP / SL / time via ``COINBASE_E1_*``.
 **E2 — Gainer hunter**  Hour movers + stats / volume; trail from peak.
 **E3 — Scalp**  BTC, ETH, SOL, XRP, DOGE: short momentum; tight TP/SL/time.
@@ -109,6 +112,21 @@ def _min_order_usd(usd_balance: float) -> float:
             pass
     pct = _env_float("COINBASE_MIN_ORDER_PCT", 0.001)
     return max(1e-9, float(usd_balance) * pct)
+
+
+def _gate_dynamic_order_usd(usd_balance: float, gate_max_positions: int) -> float:
+    """
+    Per-slot USD for Gates A/B: ``balance * COINBASE_MAX_DEPLOY_PCT * slice / max(max_positions, 10)``.
+
+    Example: $55 × 0.80 × 0.50 / 10 ≈ $2.20 when ``gate_max_positions`` ≤ 10.
+    ``COINBASE_GATE_AB_SLICE_PCT`` defaults to ``0.50`` (half of deploy bucket).
+    """
+    bal = max(0.0, float(usd_balance))
+    deploy_pct = _env_float("COINBASE_MAX_DEPLOY_PCT", 0.80)
+    slice_half = max(0.01, min(0.5, _env_float("COINBASE_GATE_AB_SLICE_PCT", 0.50)))
+    denom = max(10, int(gate_max_positions))
+    raw = bal * deploy_pct * slice_half / float(denom)
+    return max(_min_order_usd(usd_balance), raw)
 
 
 def _max_total_exposure_usd(usd_balance: float) -> float:
@@ -1270,6 +1288,12 @@ class CoinbaseAccumulator:
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
         exits = 0
+        default_ts_sec = int(_env_float("COINBASE_TIME_STOP_MIN", 5.0) * 60.0)
+        logger.info(
+            "Exit check: %d positions, default_gate_time_stop=%ds",
+            len(positions_snapshot),
+            default_ts_sec,
+        )
         for idx, pos in enumerate(positions_snapshot):
             pid = str(pos.get("product_id") or "")
             entry = float(pos.get("entry_price") or 0.0)
@@ -1300,6 +1324,7 @@ class CoinbaseAccumulator:
                     ask = float(quote[1] or 0.0)
                 except (TypeError, ValueError):
                     bid = 0.0
+                    ask = 0.0
             current = bid
             no_price = quote is None or current <= 0
 
@@ -1333,6 +1358,15 @@ class CoinbaseAccumulator:
             else:
                 tp, sl, tmin, trail = self._exit_params(eng)
             tlim = tmin * 60.0
+            time_stop_seconds = int(round(tlim)) if tlim > 0 else 0
+            age = (now - entry_t) if entry_t > 0 else 0.0
+            logger.info(
+                "Position %s age=%.0fs profit=%.3f%% (time_stop=%ds)",
+                pid,
+                age,
+                pnl_pct * 100.0,
+                time_stop_seconds,
+            )
             peak_ref = current if current > 0 else float(pos.get("peak_price") or entry)
             peak = max(float(pos.get("peak_price") or entry), peak_ref)
 
@@ -1342,8 +1376,8 @@ class CoinbaseAccumulator:
                 sell_reason = "sell_pending_retry"
             elif no_price:
                 sell_reason = "no_price_stop"
-            elif entry_t > 0 and tlim > 0 and (now - entry_t) >= tlim:
-                sell_reason = f"time>={tmin:.0f}m"
+            elif tlim > 0 and entry_t > 0 and age >= tlim:
+                sell_reason = "timeout"
             elif pnl_pct >= tp:
                 sell_reason = f"tp +{tp*100:.2f}%"
             elif pnl_pct <= -sl:
@@ -1453,7 +1487,7 @@ class CoinbaseAccumulator:
 
                     sym = _cb_sym(pid)
                     if _gate_tp_sl_tmin(gate):
-                        if "time" in sell_reason.lower():
+                        if "timeout" in sell_reason.lower() or "time" in sell_reason.lower():
                             emoji = "⏰"
                         elif (
                             "stop" in sell_reason.lower()
@@ -1499,7 +1533,7 @@ class CoinbaseAccumulator:
                         )
                 except Exception:
                     pass
-                state["positions"] = remaining + positions_snapshot[idx + 1 :]
+                state["positions"] = remaining + list(positions_snapshot[idx + 1 :])
                 save_coinbase_state(state)
             else:
                 logger.warning(
@@ -1512,10 +1546,11 @@ class CoinbaseAccumulator:
                 upd["sell_pending"] = True
                 upd["peak_price"] = peak
                 remaining.append(upd)
-                state["positions"] = remaining + positions_snapshot[idx + 1 :]
+                state["positions"] = remaining + list(positions_snapshot[idx + 1 :])
                 save_coinbase_state(state)
 
         state["positions"] = remaining
+        save_coinbase_state(state)
         return exits
 
     def _order_size_e(
@@ -1814,12 +1849,7 @@ class CoinbaseAccumulator:
         gate_a_min = max(0, int(_env_float("COINBASE_GATE_A_MIN_POSITIONS", 10.0)))
         dip_pct = _env_float("COINBASE_GATE_A_DIP_PCT", 0.001)
         mom_pct = _env_float("COINBASE_GATE_A_MOM_PCT", 0.0005)
-        budget_frac = _env_float("COINBASE_GATE_AB_BUDGET_PCT", 0.40)
-        # Dynamic sizing: deployable * budget_frac / max_positions (A+B+C+D caps elsewhere)
-        order_usd = max(
-            _min_order_usd(usd_balance),
-            _deployable_usd(usd_balance) * max(0.01, min(0.5, budget_frac)) / max(1, max_n),
-        )
+        order_usd = _gate_dynamic_order_usd(usd_balance, max_n)
         eng = 3
 
         while _count_gate(state, "A") < max_n:
@@ -1979,11 +2009,7 @@ class CoinbaseAccumulator:
             return
         state["gate_b_scan_ts"] = now
 
-        budget_frac = _env_float("COINBASE_GATE_AB_BUDGET_PCT", 0.40)
-        order_usd = max(
-            _min_order_usd(usd_balance),
-            _deployable_usd(usd_balance) * max(0.01, min(0.5, budget_frac)) / max(1, max_n),
-        )
+        order_usd = _gate_dynamic_order_usd(usd_balance, max_n)
         dip_from_high = _env_float("COINBASE_GAINER_DIP_PCT", 0.005)
         ranked = self._e2_candidates(state, prices, now)
         eng = 2
