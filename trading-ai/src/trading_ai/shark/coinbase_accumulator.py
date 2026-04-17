@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.governance.storage_architecture import shark_data_dir, shark_state_path
 from trading_ai.shark.dotenv_load import load_shark_dotenv
+from trading_ai.shark.models import OrderResult
 from trading_ai.shark.outlets.coinbase import CoinbaseAuthError, CoinbaseClient
 from trading_ai.shark.supabase_logger import log_trade
 
@@ -561,6 +562,51 @@ def _can_buy_engine(
     return True, "ok"
 
 
+# Exchange minimum base order size (spot USD pairs). Overwritten from GET /products/{id} on startup.
+_PRODUCT_MIN_BASE_SIZE: Dict[str, float] = {
+    "DOGE-USD": 0.1,
+    "ADA-USD": 1.0,
+    "XRP-USD": 1.0,
+    "SHIB-USD": 1000.0,
+    "PEPE-USD": 1000.0,
+    "BTC-USD": 0.000001,
+    "ETH-USD": 0.00000001,
+    "SOL-USD": 0.000001,
+    "AVAX-USD": 0.001,
+    "DOT-USD": 0.1,
+    "LINK-USD": 0.01,
+    "UNI-USD": 0.01,
+    "MATIC-USD": 1.0,
+}
+
+
+def _min_base_size_for_product(pid: str) -> float:
+    return float(_PRODUCT_MIN_BASE_SIZE.get(pid, 0.000001))
+
+
+def _parse_base_size_str(base_str: str) -> float:
+    try:
+        return max(0.0, float(str(base_str).strip()))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _enforce_min_base_for_sell(pid: str, base_size: float) -> float:
+    """Return base_size if it meets the exchange minimum; else 0 (caller must skip sell)."""
+    if base_size <= 0:
+        return 0.0
+    min_sz = _min_base_size_for_product(pid)
+    if base_size + 1e-18 < min_sz:
+        logger.warning(
+            "Position base size %s < exchange min order %s for %s — skip sell",
+            base_size,
+            min_sz,
+            pid,
+        )
+        return 0.0
+    return base_size
+
+
 def _fmt_base_size(product_id: str, size: float) -> str:
     if product_id.startswith("BTC"):
         return f"{size:.8f}"
@@ -621,6 +667,24 @@ class CoinbaseAccumulator:
         self._buys_this_scan = 0
         self._brokerage_vol_cache: Dict[str, float] = {}
         self._brokerage_vol_cache_ts: float = 0.0
+        self._load_product_min_sizes()
+
+    def _load_product_min_sizes(self) -> None:
+        """Refresh :data:`_PRODUCT_MIN_BASE_SIZE` from ``GET /products/{product_id}``."""
+        for pid in sorted(_PRODUCT_MIN_BASE_SIZE.keys()):
+            try:
+                j = self._client._request("GET", f"/products/{pid}")
+                if not isinstance(j, dict):
+                    continue
+                raw = j.get("base_min_size")
+                if raw is None:
+                    continue
+                min_s = float(raw)
+                if min_s > 0:
+                    _PRODUCT_MIN_BASE_SIZE[pid] = min_s
+                    logger.info("Exchange min base size %s: %s", pid, min_s)
+            except Exception as exc:
+                logger.debug("Min size fetch %s: %s", pid, exc)
 
     def get_state(self) -> Dict[str, Any]:
         """Latest persisted Coinbase state (same as ``load_coinbase_state()``)."""
@@ -1043,6 +1107,30 @@ class CoinbaseAccumulator:
         *,
         size_base_from_pos: Optional[float] = None,
     ) -> Any:
+        raw_sz = _parse_base_size_str(base_str)
+        enforced = _enforce_min_base_for_sell(product_id, raw_sz)
+        if enforced <= 0:
+            logger.warning(
+                "SELL SKIP: %s size too small for exchange min (raw=%s pos_hint=%s)",
+                product_id,
+                base_str,
+                size_base_from_pos,
+            )
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="skipped",
+                outlet="coinbase",
+                success=False,
+                reason="below_min_size",
+                raw={
+                    "raw_base_str": base_str,
+                    "size_base_from_pos": size_base_from_pos,
+                },
+            )
+        base_str = _fmt_base_size(product_id, enforced)
         logger.warning(
             "SELL: %s base_size=%s size_base_from_pos=%s",
             product_id,
