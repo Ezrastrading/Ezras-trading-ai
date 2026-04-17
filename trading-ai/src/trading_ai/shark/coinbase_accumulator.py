@@ -417,31 +417,13 @@ def _count_gate(state: Dict[str, Any], gate: str) -> int:
 
 
 def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
-    """(take_profit_pct, stop_loss_pct, time_stop_minutes) for gates A/B/E/C/D; else None."""
+    """(take_profit_pct, stop_loss_pct, time_stop_minutes) for gates A–E — unified env, no per-gate overrides."""
     g = (gate or "").strip().upper()
-    if g in ("A", "B"):
+    if g in ("A", "B", "C", "D", "E"):
         return (
-            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
-            _env_float("COINBASE_STOP_LOSS_PCT", 0.0012),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.0003),
             _env_float("COINBASE_TIME_STOP_MIN", 3.0),
-        )
-    if g == "E":
-        return (
-            _env_float("COINBASE_GATE_E_PROFIT_PCT", 0.0015),
-            _env_float("COINBASE_GATE_E_STOP_PCT", 0.0012),
-            _env_float("COINBASE_GATE_E_TIME_MIN", 3.0),
-        )
-    if g == "C":
-        return (
-            _env_float("COINBASE_GATE_C_PROFIT_PCT", 0.0015),
-            _env_float("COINBASE_GATE_C_STOP_PCT", 0.0012),
-            _env_float("COINBASE_GATE_C_TIME_MIN", 3.0),
-        )
-    if g == "D":
-        return (
-            _env_float("COINBASE_GATE_D_PROFIT_PCT", 0.0015),
-            _env_float("COINBASE_GATE_D_STOP_PCT", 0.0012),
-            _env_float("COINBASE_GATE_D_TIME_MIN", 3.0),
         )
     return None
 
@@ -1184,7 +1166,8 @@ class CoinbaseAccumulator:
     def _run_profit_scan(self) -> int:
         """Profit + optional delta hedge — every 3s (see ``coinbase_loss_scan`` for stops).
 
-        Full exit at ``COINBASE_PROFIT_TARGET_PCT`` / ``COINBASE_MIN_PROFIT_USD``. When
+        Full exit at ``COINBASE_PROFIT_TARGET_PCT`` / ``COINBASE_MIN_PROFIT_USD``. Time stop is
+        handled by ``coinbase_exit_check``; this scan evaluates PnL only. When
         ``COINBASE_HEDGE_ENABLED``, runs ``_check_hedge_opportunities`` first (50% scale-out
         at ``COINBASE_HEDGE_TRIGGER_PCT``).
         """
@@ -1197,23 +1180,18 @@ class CoinbaseAccumulator:
             "PROFIT SCAN RUNNING: %d positions "
             "profit_pct=%.5f min_usd=$%.4f",
             len(state.get("positions", []) or []),
-            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
-            _env_float("COINBASE_MIN_PROFIT_USD", 0.15),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003),
+            _env_float("COINBASE_MIN_PROFIT_USD", 0.001),
         )
         if not state.get("positions"):
             return 0
 
-        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015)
-        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.15)
+        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003)
+        min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.001)
 
         now = time.time()
         if self._migrate_expiry_fields(state, now):
             save_coinbase_state(state)
-        if self._any_position_expired(state, now):
-            logger.info(
-                "PROFIT SCAN: expired position(s) — running unified exit check first"
-            )
-            return self._check_exits_only()
 
         prices = self._get_prices_for_positions(state)
         if not prices:
@@ -1360,8 +1338,9 @@ class CoinbaseAccumulator:
     def _run_loss_scan(self) -> int:
         """Tight stop for **gate** positions (A–E) — scheduler ``coinbase_loss_scan`` every 3s.
 
-        Uses per-gate stop from :func:`_gate_tp_sl_tmin` (default **0.12%** = 0.0012). Engine-only
-        positions keep their wider stops on the 5s ``coinbase_exit_check`` path.
+        Uses unified TP/SL from :func:`_gate_tp_sl_tmin`. Time stop is handled by
+        ``coinbase_exit_check``; this scan evaluates PnL only. Engine-only positions keep
+        wider stops on the 5s ``coinbase_exit_check`` path.
         """
         if not coinbase_enabled():
             return 0
@@ -1372,7 +1351,7 @@ class CoinbaseAccumulator:
             "LOSS SCAN RUNNING: %d positions "
             "stop_loss=%.5f",
             len(state.get("positions", []) or []),
-            _env_float("COINBASE_STOP_LOSS_PCT", 0.0012),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.0003),
         )
         if not state.get("positions"):
             return 0
@@ -1380,11 +1359,6 @@ class CoinbaseAccumulator:
         now = time.time()
         if self._migrate_expiry_fields(state, now):
             save_coinbase_state(state)
-        if self._any_position_expired(state, now):
-            logger.info(
-                "LOSS SCAN: expired position(s) — running unified exit check first"
-            )
-            return self._check_exits_only()
 
         prices = self._get_prices_for_positions(state)
         if not prices:
@@ -1857,34 +1831,18 @@ class CoinbaseAccumulator:
         return False
 
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
-        """Returns (profit_pct, stop_pct, time_min, trail_pct). trail only used for E2."""
-        if engine == 1:
-            return (
-                _env_float("COINBASE_E1_PROFIT_PCT", 0.0015),
-                _env_float("COINBASE_E1_STOP_PCT", 0.0012),
-                _env_float("COINBASE_E1_TIME_MIN", 3.0),
-                0.0,
-            )
+        """Returns (profit_pct, stop_pct, time_min, trail_pct). Unified TP/SL; trail only for E2."""
+        tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003)
+        sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.0003)
+        tmin = _env_float("COINBASE_TIME_STOP_MIN", 3.0)
         if engine == 2:
             return (
-                _env_float("COINBASE_E2_PROFIT_PCT", 0.0015),
-                _env_float("COINBASE_E2_STOP_PCT", 0.0012),
-                _env_float("COINBASE_E2_TIME_MIN", 3.0),
-                _env_float("COINBASE_E2_TRAIL_PCT", 0.0012),
+                tp,
+                sl,
+                tmin,
+                _env_float("COINBASE_E2_TRAIL_PCT", 0.0003),
             )
-        if engine == 3:
-            return (
-                _env_float("COINBASE_E3_PROFIT_PCT", 0.0015),
-                _env_float("COINBASE_E3_STOP_PCT", 0.0012),
-                _env_float("COINBASE_E3_TIME_MIN", 3.0),
-                0.0,
-            )
-        return (
-            _env_float("COINBASE_E4_PROFIT_PCT", 0.0015),
-            _env_float("COINBASE_E4_STOP_PCT", 0.0012),
-            _env_float("COINBASE_E4_TIME_MIN", 3.0),
-            0.0,
-        )
+        return (tp, sl, tmin, 0.0)
 
     def _check_exits(
         self,

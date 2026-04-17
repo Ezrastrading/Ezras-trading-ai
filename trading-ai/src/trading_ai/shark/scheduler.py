@@ -511,7 +511,7 @@ def build_shark_scheduler(
             _coinbase_profit_scan_wrapper,
             IntervalTrigger(seconds=3),
             id="coinbase_profit_scan",
-            max_instances=1,
+            max_instances=2,
             replace_existing=True,
         )
 
@@ -529,7 +529,7 @@ def build_shark_scheduler(
             _coinbase_loss_scan_wrapper,
             IntervalTrigger(seconds=3),
             id="coinbase_loss_scan",
-            max_instances=1,
+            max_instances=2,
             replace_existing=True,
         )
 
