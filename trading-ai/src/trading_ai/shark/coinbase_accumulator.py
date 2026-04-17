@@ -421,7 +421,7 @@ def _gate_tp_sl_tmin(gate: str) -> Optional[Tuple[float, float, float]]:
     g = (gate or "").strip().upper()
     if g in ("A", "B", "C", "D", "E"):
         return (
-            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
             _env_float("COINBASE_STOP_LOSS_PCT", 0.0003),
             _env_float("COINBASE_TIME_STOP_MIN", 3.0),
         )
@@ -1180,13 +1180,13 @@ class CoinbaseAccumulator:
             "PROFIT SCAN RUNNING: %d positions "
             "profit_pct=%.5f min_usd=$%.4f",
             len(state.get("positions", []) or []),
-            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
             _env_float("COINBASE_MIN_PROFIT_USD", 0.001),
         )
         if not state.get("positions"):
             return 0
 
-        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003)
+        profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015)
         min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.001)
 
         now = time.time()
@@ -1832,7 +1832,7 @@ class CoinbaseAccumulator:
 
     def _exit_params(self, engine: int) -> Tuple[float, float, float, float]:
         """Returns (profit_pct, stop_pct, time_min, trail_pct). Unified TP/SL; trail only for E2."""
-        tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0003)
+        tp = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015)
         sl = _env_float("COINBASE_STOP_LOSS_PCT", 0.0003)
         tmin = _env_float("COINBASE_TIME_STOP_MIN", 3.0)
         if engine == 2:
