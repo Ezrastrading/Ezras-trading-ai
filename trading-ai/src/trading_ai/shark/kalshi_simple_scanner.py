@@ -1257,3 +1257,41 @@ def run_simple_scan() -> Dict[str, Any]:
         "placed": placed,
         "open": len(state.get("positions") or []),
     }
+
+
+def run_gate_a_job_fetch() -> Dict[str, Any]:
+    """Scheduler hook for Gate A only — does not require ``KALSHI_SIMPLE_SCAN_ENABLED``."""
+    if not _env_truthy("KALSHI_GATE_A_ENABLED", "false"):
+        return {"ok": False, "skipped": True, "reason": "gate_a_disabled"}
+
+    from trading_ai.shark.outlets.kalshi import KalshiClient
+
+    client = KalshiClient()
+    if not client.has_kalshi_credentials():
+        logger.info("Kalshi Gate A skipped — no credentials")
+        return {"ok": False, "skipped": True, "reason": "no_credentials"}
+
+    state = load_simple_state()
+    _reset_daily_if_needed(state)
+    now = time.time()
+    if float(state.get("hour_start_unix") or 0.0) <= 0:
+        state["hour_start_unix"] = now
+    _maybe_hourly_report(state)
+
+    state["hour_cycle_count"] = int(state.get("hour_cycle_count") or 0) + 1
+
+    exits = _check_exits_first(state, client)
+
+    open_tickers: Set[str] = {
+        str(p.get("ticker") or "") for p in (state.get("positions") or []) if p.get("ticker")
+    }
+    placed = _maintain_positions(state, client, open_tickers)
+
+    save_simple_state(state)
+
+    return {
+        "ok": True,
+        "exits": exits,
+        "placed": placed,
+        "open": len(state.get("positions") or []),
+    }

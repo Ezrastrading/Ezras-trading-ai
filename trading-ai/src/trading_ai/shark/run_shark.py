@@ -671,13 +671,14 @@ def main() -> None:
 
     def kalshi_gate_a_job() -> None:
         try:
-            from trading_ai.shark.kalshi_scalable_gate import run_gate_a_job_fetch
+            from trading_ai.shark.kalshi_simple_scanner import run_gate_a_job_fetch
 
-            n = run_gate_a_job_fetch()
-            if n:
-                log.info("kalshi_gate_a: cycle=%s", n)
+            result = run_gate_a_job_fetch()
+            placed = result.get("placed", 0) if isinstance(result, dict) else 0
+            if placed:
+                log.info("kalshi_gate_a: placed=%s", placed)
         except Exception as exc:
-            log.warning("kalshi_gate_a failed: %s", exc)
+            log.warning("kalshi_gate_a: %s", exc)
 
     def kalshi_gate_b_job() -> None:
         try:
@@ -687,7 +688,7 @@ def main() -> None:
             if n:
                 log.info("kalshi_gate_b: cycle=%s", n)
         except Exception as exc:
-            log.warning("kalshi_gate_b failed: %s", exc)
+            log.warning("kalshi_gate_b: %s", exc)
 
     def kalshi_hv_gate_job() -> None:
         """High-value long-shot NO trades (index/crypto range far from spot). Hourly ET."""
@@ -712,22 +713,50 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_hv_gate failed: %s", exc)
 
-    def kalshi_resolution_check_job() -> None:
-        """Settle Gate A/B open positions (shared state file)."""
+    def kalshi_scalable_gate_job() -> None:
+        """Single Kalshi strategy: scalable obvious-NO gate (see kalshi_scalable_gate)."""
         try:
-            ga = (os.environ.get("KALSHI_GATE_A_ENABLED") or "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-            )
-            gb = (os.environ.get("KALSHI_GATE_B_ENABLED") or "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-            )
-            if not ga and not gb:
+            from datetime import datetime
+
+            try:
+                from zoneinfo import ZoneInfo
+
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+            except Exception:
+                from datetime import datetime as _dt, timedelta, timezone
+
+                now_et = _dt.now(timezone(timedelta(hours=-5)))
+            if not (9 <= now_et.hour <= 16):
                 return
-            from trading_ai.shark.kalshi_gate_b import check_resolutions
+            if (os.environ.get("KALSHI_SCALABLE_ENABLED") or "").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            from trading_ai.shark.kalshi_scalable_gate import run_scalable_gate
+            from trading_ai.shark.outlets.kalshi import KalshiClient
+            from trading_ai.shark.state_store import load_capital
+
+            client = KalshiClient()
+            book = load_capital()
+            balance = float(os.environ.get("KALSHI_ACTUAL_BALANCE", str(book.current_capital or 0)))
+            n = run_scalable_gate(client, balance)
+            if n:
+                log.info("kalshi_scalable_gate: cycle=%s", n)
+        except Exception as exc:
+            log.warning("kalshi_scalable_gate: %s", exc)
+
+    def kalshi_resolution_check_job() -> None:
+        """Resolve open Kalshi scalable-gate positions (~60s)."""
+        try:
+            if (os.environ.get("KALSHI_SCALABLE_ENABLED") or "").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            from trading_ai.shark.kalshi_scalable_gate import check_resolutions
             from trading_ai.shark.outlets.kalshi import KalshiClient
             from trading_ai.shark.state_store import load_capital
 
@@ -1013,7 +1042,6 @@ def main() -> None:
         crypto_scalp_scan=_crypto_scalp_sched,
         near_resolution_sweep=near_resolution_sweep if polymarket_enabled() else None,
         arb_sweep=arb_sweep if polymarket_enabled() else None,
-        # Legacy Kalshi jobs disabled — use kalshi_scalable_gate only.
         kalshi_near_resolution=None,
         ceo_session=ceo_brief,
         daily_excel_report=_daily_excel_report,
@@ -1049,7 +1077,7 @@ def main() -> None:
         kalshi_gate_a=kalshi_gate_a_job,
         kalshi_gate_b=kalshi_gate_b_job,
         kalshi_hv_gate=None,
-        kalshi_scalable_gate=None,
+        kalshi_scalable_gate=kalshi_scalable_gate_job,
         kalshi_scalable_resolution=kalshi_resolution_check_job,
     )
     if sched is None:
@@ -1066,6 +1094,8 @@ def main() -> None:
                 "crypto_15min",
                 "simple_scan",
                 "gate_c",
+                "kalshi_gate_a",
+                "kalshi_gate_b",
                 "gate_a",
                 "gate_b",
                 "kalshi_hv_gate",
