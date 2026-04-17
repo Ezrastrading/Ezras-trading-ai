@@ -81,7 +81,11 @@ def build_shark_scheduler(
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
+    kalshi_gate_a: Optional[Callable[[], None]] = None,
+    kalshi_gate_b: Optional[Callable[[], None]] = None,
     kalshi_hv_gate: Optional[Callable[[], None]] = None,
+    kalshi_scalable_gate: Optional[Callable[[], None]] = None,
+    kalshi_scalable_resolution: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -148,7 +152,7 @@ def build_shark_scheduler(
         )
 
     def _kalshi_hf_wrapper() -> None:
-        if (os.environ.get("KALSHI_HF_ENABLED") or "true").strip().lower() != "true":
+        if (os.environ.get("KALSHI_HF_ENABLED") or "false").strip().lower() != "true":
             return
         if kalshi_hf_scan is not None:
             kalshi_hf_scan()
@@ -382,6 +386,60 @@ def build_shark_scheduler(
             _gate_c_wrapper,
             IntervalTrigger(seconds=30),
             id="kalshi_gate_c",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_gate_a is not None and IntervalTrigger is not None:
+        def _gate_a_wrapper() -> None:
+            if (os.environ.get("KALSHI_GATE_A_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            kalshi_gate_a()  # type: ignore[misc]
+
+        sched.add_job(
+            _gate_a_wrapper,
+            IntervalTrigger(minutes=5),
+            id="kalshi_gate_a",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_gate_b is not None and IntervalTrigger is not None:
+        def _gate_b_wrapper() -> None:
+            if (os.environ.get("KALSHI_GATE_B_ENABLED") or "false").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return
+            kalshi_gate_b()  # type: ignore[misc]
+
+        sched.add_job(
+            _gate_b_wrapper,
+            IntervalTrigger(seconds=60),
+            id="kalshi_gate_b",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_scalable_gate is not None and IntervalTrigger is not None:
+        sched.add_job(
+            kalshi_scalable_gate,
+            IntervalTrigger(seconds=300),
+            id="kalshi_scalable_gate",
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if kalshi_scalable_resolution is not None and IntervalTrigger is not None:
+        sched.add_job(
+            kalshi_scalable_resolution,
+            IntervalTrigger(seconds=60),
+            id="kalshi_scalable_resolution",
             max_instances=1,
             replace_existing=True,
         )

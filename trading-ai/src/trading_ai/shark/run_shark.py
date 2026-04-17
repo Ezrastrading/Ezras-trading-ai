@@ -309,9 +309,14 @@ def main() -> None:
 
     def resolution_monitor() -> None:
         try:
-            from trading_ai.shark.kalshi_profit_exit import run_kalshi_profit_exit_scan
+            if (os.environ.get("KALSHI_PROFIT_EXIT_ENABLED") or "false").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                from trading_ai.shark.kalshi_profit_exit import run_kalshi_profit_exit_scan
 
-            run_kalshi_profit_exit_scan()
+                run_kalshi_profit_exit_scan()
         except Exception as exc:
             log.warning("kalshi profit exit scan failed (non-blocking): %s", exc)
         try:
@@ -632,7 +637,7 @@ def main() -> None:
             return True
 
     def kalshi_index_blitz() -> None:
-        if (os.environ.get("KALSHI_INDEX_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
+        if (os.environ.get("KALSHI_INDEX_BLITZ_ENABLED") or "false").strip().lower() not in ("1", "true", "yes"):
             return
         try:
             from trading_ai.shark.kalshi_index_blitz import run_kalshi_index_blitz
@@ -664,6 +669,26 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_gate_c failed: %s", exc)
 
+    def kalshi_gate_a_job() -> None:
+        try:
+            from trading_ai.shark.kalshi_scalable_gate import run_gate_a_job_fetch
+
+            n = run_gate_a_job_fetch()
+            if n:
+                log.info("kalshi_gate_a: cycle=%s", n)
+        except Exception as exc:
+            log.warning("kalshi_gate_a failed: %s", exc)
+
+    def kalshi_gate_b_job() -> None:
+        try:
+            from trading_ai.shark.kalshi_gate_b import run_gate_b_job_fetch
+
+            n = run_gate_b_job_fetch()
+            if n:
+                log.info("kalshi_gate_b: cycle=%s", n)
+        except Exception as exc:
+            log.warning("kalshi_gate_b failed: %s", exc)
+
     def kalshi_hv_gate_job() -> None:
         """High-value long-shot NO trades (index/crypto range far from spot). Hourly ET."""
         try:
@@ -686,6 +711,32 @@ def main() -> None:
                 log.info("kalshi_hv_gate: placed=%s", n)
         except Exception as exc:
             log.warning("kalshi_hv_gate failed: %s", exc)
+
+    def kalshi_resolution_check_job() -> None:
+        """Settle Gate A/B open positions (shared state file)."""
+        try:
+            ga = (os.environ.get("KALSHI_GATE_A_ENABLED") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            gb = (os.environ.get("KALSHI_GATE_B_ENABLED") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if not ga and not gb:
+                return
+            from trading_ai.shark.kalshi_gate_b import check_resolutions
+            from trading_ai.shark.outlets.kalshi import KalshiClient
+            from trading_ai.shark.state_store import load_capital
+
+            client = KalshiClient()
+            book = load_capital()
+            balance = float(os.environ.get("KALSHI_ACTUAL_BALANCE", str(book.current_capital or 0)))
+            check_resolutions(client, balance)
+        except Exception as exc:
+            log.debug("kalshi_resolution_check: %s", exc)
 
     def coinbase_exit_check_job() -> None:
         try:
@@ -962,22 +1013,23 @@ def main() -> None:
         crypto_scalp_scan=_crypto_scalp_sched,
         near_resolution_sweep=near_resolution_sweep if polymarket_enabled() else None,
         arb_sweep=arb_sweep if polymarket_enabled() else None,
-        kalshi_near_resolution=kalshi_near_resolution,
+        # Legacy Kalshi jobs disabled — use kalshi_scalable_gate only.
+        kalshi_near_resolution=None,
         ceo_session=ceo_brief,
         daily_excel_report=_daily_excel_report,
-        kalshi_hf_scan=kalshi_hf_scan,
-        kalshi_convergence_scan=kalshi_convergence_scan,
-        kalshi_full_scan=kalshi_full_scan,
+        kalshi_hf_scan=None,
+        kalshi_convergence_scan=None,
+        kalshi_full_scan=None,
         avenue_pulse=avenue_pulse,
-        live_sports_scan=live_sports_hv_scan,
-        kalshi_stale_order_sweep=kalshi_stale_order_sweep,
-        kalshi_blitz=kalshi_blitz,
-        kalshi_sports_blitz=kalshi_sports_blitz,
-        kalshi_non_crypto_hf=kalshi_non_crypto_hf,
+        live_sports_scan=None,
+        kalshi_stale_order_sweep=None,
+        kalshi_blitz=None,
+        kalshi_sports_blitz=None,
+        kalshi_non_crypto_hf=None,
         market_open_alert=None,
         market_close_alert=None,
-        kalshi_blitz_cron=kalshi_blitz,
-        kalshi_index_blitz=kalshi_index_blitz,
+        kalshi_blitz_cron=None,
+        kalshi_index_blitz=None,
         hourly_report=hourly_report,
         daily_briefing=daily_briefing_job,
         daily_full_report=daily_full_report_job,
@@ -992,9 +1044,13 @@ def main() -> None:
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
         crypto_market_open_blitz=crypto_market_open_blitz,
-        kalshi_simple_scan=kalshi_simple_scan_job,
-        kalshi_gate_c=kalshi_gate_c_job,
-        kalshi_hv_gate=kalshi_hv_gate_job,
+        kalshi_simple_scan=None,
+        kalshi_gate_c=None,
+        kalshi_gate_a=kalshi_gate_a_job,
+        kalshi_gate_b=kalshi_gate_b_job,
+        kalshi_hv_gate=None,
+        kalshi_scalable_gate=None,
+        kalshi_scalable_resolution=kalshi_resolution_check_job,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)
@@ -1010,7 +1066,10 @@ def main() -> None:
                 "crypto_15min",
                 "simple_scan",
                 "gate_c",
+                "gate_a",
+                "gate_b",
                 "kalshi_hv_gate",
+                "kalshi_scalable",
                 "coinbase_scan",
                 "coinbase_exit_check",
                 "coinbase_profit_scan",
