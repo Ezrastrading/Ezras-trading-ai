@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from collections import deque
@@ -579,16 +580,26 @@ _PRODUCT_MIN_BASE_SIZE: Dict[str, float] = {
     "MATIC-USD": 1.0,
 }
 
+# Decimal places for base_size strings (floor to avoid overselling). Default 8 for unknown pairs.
+_PRODUCT_BASE_PRECISION: Dict[str, int] = {
+    "BTC-USD": 8,
+    "ETH-USD": 8,
+    "SOL-USD": 2,
+    "DOGE-USD": 1,
+    "ADA-USD": 6,
+    "XRP-USD": 6,
+    "LINK-USD": 4,
+    "DOT-USD": 2,
+    "AVAX-USD": 4,
+    "UNI-USD": 4,
+    "MATIC-USD": 2,
+    "SHIB-USD": 0,
+    "PEPE-USD": 0,
+}
+
 
 def _min_base_size_for_product(pid: str) -> float:
     return float(_PRODUCT_MIN_BASE_SIZE.get(pid, 0.000001))
-
-
-def _parse_base_size_str(base_str: str) -> float:
-    try:
-        return max(0.0, float(str(base_str).strip()))
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _enforce_min_base_for_sell(pid: str, base_size: float) -> float:
@@ -607,12 +618,11 @@ def _enforce_min_base_for_sell(pid: str, base_size: float) -> float:
     return base_size
 
 
-def _fmt_base_size(product_id: str, size: float) -> str:
-    if product_id.startswith("BTC"):
-        return f"{size:.8f}"
-    if product_id.startswith("ETH"):
-        return f"{size:.6f}"
-    return f"{size:.6f}"
+def _fmt_base_size(product_id: str, base_size: float) -> str:
+    precision = int(_PRODUCT_BASE_PRECISION.get(product_id, 8))
+    factor = 10**precision
+    rounded = math.floor(base_size * factor + 1e-18) / factor
+    return f"{rounded:.{precision}f}"
 
 
 def _parse_csv_products(raw: Optional[str]) -> List[str]:
@@ -1067,6 +1077,8 @@ class CoinbaseAccumulator:
                     )
                 except Exception:
                     pass
+            elif self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                pass
             else:
                 logger.warning(
                     "FORCE SELL failed %s (%s) — sell_pending=True",
@@ -1100,21 +1112,78 @@ class CoinbaseAccumulator:
         )
         return self.force_sell_all_positions()
 
+    def _verify_holdings(self, product_id: str, required_size: float) -> float:
+        """Return spendable base balance for ``product_id``; ``0`` if none. On API error, fail open."""
+        currency = product_id.replace("-USD", "")
+        try:
+            for a in self._client.get_accounts():
+                if not isinstance(a, dict):
+                    continue
+                if str(a.get("currency") or "").upper() != currency.upper():
+                    continue
+                available = float(CoinbaseClient._account_usd_usdc_spendable(a))
+                logger.warning(
+                    "HOLDINGS: %s available=%.8f required=%.8f",
+                    product_id,
+                    available,
+                    required_size,
+                )
+                return max(0.0, available)
+        except Exception as exc:
+            logger.warning("Holdings check failed: %s", exc)
+            return float(required_size)
+        return 0.0
+
+    def _maybe_remove_phantom_after_failed_sell(
+        self, state: Dict[str, Any], product_id: str, result: Any
+    ) -> bool:
+        if result is None:
+            return False
+        reason = str(getattr(result, "reason", None) or "")
+        if reason not in ("below_min_size", "insufficient_holdings"):
+            return False
+        logger.warning(
+            "PHANTOM POSITION: %s not in Coinbase — removing from state (reason=%s)",
+            product_id,
+            reason,
+        )
+        state["positions"] = [
+            p
+            for p in (state.get("positions") or [])
+            if str(p.get("product_id") or "") != product_id
+        ]
+        save_coinbase_state(state)
+        return True
+
     def _try_market_sell_twice(
         self,
         product_id: str,
-        base_str: str,
-        *,
-        size_base_from_pos: Optional[float] = None,
-    ) -> Any:
-        raw_sz = _parse_base_size_str(base_str)
-        enforced = _enforce_min_base_for_sell(product_id, raw_sz)
+        base_size: str,
+        size_base_from_pos: float = 0.0,
+    ) -> OrderResult:
+        """Market sell with diagnostics; two attempts, 0.5s between."""
+        try:
+            size_float = float(base_size)
+        except (ValueError, TypeError):
+            logger.warning("SELL FAIL: %s invalid size=%s", product_id, base_size)
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="error",
+                outlet="coinbase",
+                success=False,
+                reason="invalid_size",
+                raw={"base_size": base_size, "size_base_from_pos": size_base_from_pos},
+            )
+
+        enforced = _enforce_min_base_for_sell(product_id, size_float)
         if enforced <= 0:
             logger.warning(
-                "SELL SKIP: %s size too small for exchange min (raw=%s pos_hint=%s)",
+                "SELL SKIP: %s size=%.8f below exchange minimum",
                 product_id,
-                base_str,
-                size_base_from_pos,
+                size_float,
             )
             return OrderResult(
                 order_id="",
@@ -1126,44 +1195,113 @@ class CoinbaseAccumulator:
                 success=False,
                 reason="below_min_size",
                 raw={
-                    "raw_base_str": base_str,
+                    "size_float": size_float,
                     "size_base_from_pos": size_base_from_pos,
                 },
             )
+
+        available = self._verify_holdings(product_id, enforced)
+        if available < enforced * 0.5:
+            logger.warning(
+                "SELL SKIP: %s available=%.8f needed=%.8f — not enough to sell",
+                product_id,
+                available,
+                enforced,
+            )
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="skipped",
+                outlet="coinbase",
+                success=False,
+                reason="insufficient_holdings",
+                raw={
+                    "available": available,
+                    "enforced": enforced,
+                    "size_base_from_pos": size_base_from_pos,
+                },
+            )
+
+        if available < enforced:
+            enforced = available
+            enforced = _enforce_min_base_for_sell(product_id, enforced)
+            if enforced <= 0:
+                logger.warning(
+                    "SELL SKIP: %s after cap to available, size below exchange minimum",
+                    product_id,
+                )
+                return OrderResult(
+                    order_id="",
+                    filled_price=0.0,
+                    filled_size=0.0,
+                    timestamp=time.time(),
+                    status="skipped",
+                    outlet="coinbase",
+                    success=False,
+                    reason="below_min_size",
+                    raw={"available": available, "size_base_from_pos": size_base_from_pos},
+                )
+            logger.warning(
+                "SELL ADJUSTED: %s using available=%.8f",
+                product_id,
+                enforced,
+            )
+
         base_str = _fmt_base_size(product_id, enforced)
         logger.warning(
-            "SELL: %s base_size=%s size_base_from_pos=%s",
+            "SELL: %s size_raw=%s size_enforced=%.8f size_formatted=%s pos_hint=%s",
             product_id,
+            base_size,
+            enforced,
             base_str,
             size_base_from_pos,
         )
-        last: Any = None
-        for attempt in (1, 2):
+
+        last: Optional[OrderResult] = None
+        for attempt in range(1, 3):
             try:
                 result = self._client.place_market_sell(product_id, base_str)
                 last = result
                 logger.warning(
-                    "SELL ATTEMPT %d/2: %s size=%s success=%s reason=%s",
+                    "SELL ATTEMPT %d/2: %s success=%s reason=%s order_id=%s",
                     attempt,
                     product_id,
-                    base_str,
-                    getattr(result, "success", None) if result is not None else None,
-                    getattr(result, "reason", None) if result is not None else "None",
+                    result.success if result else None,
+                    result.reason if result else "None",
+                    result.order_id if result else "None",
                 )
-                if result is not None and result.success:
+                if result and result.success:
                     return result
-            except Exception as e:
                 logger.warning(
-                    "SELL EXCEPTION %d/2: %s size=%s error=%s",
+                    "SELL FAILED %d/2: %s reason=%s",
                     attempt,
                     product_id,
-                    base_str,
-                    str(e),
+                    result.reason if result else "no result",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "SELL EXCEPTION %d/2: %s error=%s type=%s",
+                    attempt,
+                    product_id,
+                    str(exc),
+                    type(exc).__name__,
                 )
                 last = None
             if attempt == 1:
-                time.sleep(0.35)
-        return last
+                time.sleep(0.5)
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="error",
+            outlet="coinbase",
+            success=False,
+            reason="all_attempts_failed",
+            raw={"last_reason": getattr(last, "reason", None) if last else None},
+        )
 
     def _get_prices_for_positions(
         self, state: Dict[str, Any]
@@ -1455,6 +1593,8 @@ class CoinbaseAccumulator:
                 except Exception:
                     pass
             else:
+                if self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                    continue
                 logger.warning(
                     "PROFIT SCAN: sell failed %s — will retry on next scan", pid
                 )
@@ -1592,7 +1732,8 @@ class CoinbaseAccumulator:
                     except Exception:
                         pass
                 else:
-                    remaining.append(pos)
+                    if not self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                        remaining.append(pos)
                 continue
 
             if not entry:
@@ -1683,8 +1824,11 @@ class CoinbaseAccumulator:
                 except Exception:
                     pass
             else:
-                logger.warning("LOSS SCAN: sell failed %s — retry next tick", pid)
-                remaining.append(pos)
+                if self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                    pass
+                else:
+                    logger.warning("LOSS SCAN: sell failed %s — retry next tick", pid)
+                    remaining.append(pos)
 
         state["positions"] = remaining
         save_coinbase_state(state)
@@ -1794,7 +1938,10 @@ class CoinbaseAccumulator:
                 pid, base_str, size_base_from_pos=hedge_size
             )
             if result is None or not result.success:
-                logger.warning("HEDGE: sell failed %s", pid)
+                if self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                    pass
+                else:
+                    logger.warning("HEDGE: sell failed %s", pid)
                 continue
 
             hedged += 1
@@ -2278,18 +2425,21 @@ class CoinbaseAccumulator:
                 state["positions"] = remaining + list(positions_snapshot[idx + 1 :])
                 save_coinbase_state(state)
             else:
-                logger.warning(
-                    "CB SELL failed E%d %s (%s) — sell_pending=True",
-                    eng,
-                    pid,
-                    result.reason,
-                )
-                upd = dict(pos)
-                upd["sell_pending"] = True
-                upd["peak_price"] = peak
-                remaining.append(upd)
-                state["positions"] = remaining + list(positions_snapshot[idx + 1 :])
-                save_coinbase_state(state)
+                if self._maybe_remove_phantom_after_failed_sell(state, pid, result):
+                    pass
+                else:
+                    logger.warning(
+                        "CB SELL failed E%d %s (%s) — sell_pending=True",
+                        eng,
+                        pid,
+                        getattr(result, "reason", None),
+                    )
+                    upd = dict(pos)
+                    upd["sell_pending"] = True
+                    upd["peak_price"] = peak
+                    remaining.append(upd)
+                    state["positions"] = remaining + list(positions_snapshot[idx + 1 :])
+                    save_coinbase_state(state)
 
         state["positions"] = remaining
         save_coinbase_state(state)
@@ -3172,6 +3322,8 @@ def sell_expired_positions_on_startup() -> int:
         if res is not None and res.success:
             sold += 1
             logger.info("STARTUP: sold expired %s", pid)
+        elif acc._maybe_remove_phantom_after_failed_sell(state, pid, res):
+            pass
         else:
             logger.warning("STARTUP: sell failed for expired %s — keeping in state", pid)
             still_open.append(pos)

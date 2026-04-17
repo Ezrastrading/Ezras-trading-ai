@@ -1027,8 +1027,15 @@ class CoinbaseClient:
                 "market_market_ioc": {"base_size": str(base_size)}
             },
         }
+        logger.warning("PLACE SELL: %s size=%s", product_id, base_size)
+        logger.warning("SELL ORDER BODY: %s", json.dumps(body))
         try:
             j = self._request("POST", "/orders", body=body)
+            try:
+                resp_s = json.dumps(j) if isinstance(j, dict) else str(j)
+            except (TypeError, ValueError):
+                resp_s = str(j)
+            logger.warning("SELL RESPONSE: %s", resp_s[:500])
             success = bool(j.get("success"))
             sr = j.get("success_response") or {}
             order_id = str(sr.get("order_id") or j.get("order_id") or client_order_id)
