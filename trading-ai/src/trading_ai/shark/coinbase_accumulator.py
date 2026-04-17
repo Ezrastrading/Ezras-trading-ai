@@ -37,6 +37,7 @@ import logging
 import math
 import os
 import time
+from decimal import ROUND_DOWN, Decimal
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -580,6 +581,9 @@ _PRODUCT_MIN_BASE_SIZE: Dict[str, float] = {
     "MATIC-USD": 1.0,
 }
 
+# ``base_increment`` from GET /products/{id} (optional; improves sell sizing).
+_PRODUCT_BASE_INCREMENT: Dict[str, float] = {}
+
 # Decimal places for base_size strings (floor to avoid overselling). Default 8 for unknown pairs.
 _PRODUCT_BASE_PRECISION: Dict[str, int] = {
     "BTC-USD": 8,
@@ -619,10 +623,18 @@ def _enforce_min_base_for_sell(pid: str, base_size: float) -> float:
 
 
 def _fmt_base_size(product_id: str, base_size: float) -> str:
+    """Floor ``base_size`` to product precision, then snap down to ``base_increment`` when known."""
     precision = int(_PRODUCT_BASE_PRECISION.get(product_id, 8))
-    factor = 10**precision
-    rounded = math.floor(base_size * factor + 1e-18) / factor
-    return f"{rounded:.{precision}f}"
+    q = Decimal("1").scaleb(-precision)
+    # ``str(float)`` avoids binary float artifacts from ``format(..., ".18f")`` (e.g. 0.6 → 0.5999…).
+    d = Decimal(str(base_size)).quantize(q, rounding=ROUND_DOWN)
+    inc = float(_PRODUCT_BASE_INCREMENT.get(product_id) or 0.0)
+    if inc > 0:
+        inc_d = Decimal(str(inc))
+        if inc_d > 0:
+            n = (d / inc_d).quantize(Decimal(1), rounding=ROUND_DOWN)
+            d = (n * inc_d).quantize(q, rounding=ROUND_DOWN)
+    return format(d, f".{precision}f")
 
 
 def _parse_csv_products(raw: Optional[str]) -> List[str]:
@@ -687,12 +699,23 @@ class CoinbaseAccumulator:
                 if not isinstance(j, dict):
                     continue
                 raw = j.get("base_min_size")
-                if raw is None:
-                    continue
-                min_s = float(raw)
-                if min_s > 0:
-                    _PRODUCT_MIN_BASE_SIZE[pid] = min_s
-                    logger.info("Exchange min base size %s: %s", pid, min_s)
+                if raw is not None:
+                    try:
+                        min_s = float(raw)
+                        if min_s > 0:
+                            _PRODUCT_MIN_BASE_SIZE[pid] = min_s
+                            logger.info("Exchange min base size %s: %s", pid, min_s)
+                    except (TypeError, ValueError):
+                        pass
+                raw_inc = j.get("base_increment")
+                if raw_inc is not None:
+                    try:
+                        incf = float(raw_inc)
+                        if incf > 0:
+                            _PRODUCT_BASE_INCREMENT[pid] = incf
+                            logger.info("Exchange base increment %s: %s", pid, incf)
+                    except (TypeError, ValueError):
+                        pass
             except Exception as exc:
                 logger.debug("Min size fetch %s: %s", pid, exc)
 
@@ -1121,7 +1144,12 @@ class CoinbaseAccumulator:
                     continue
                 if str(a.get("currency") or "").upper() != currency.upper():
                     continue
-                available = float(CoinbaseClient._account_usd_usdc_spendable(a))
+                # Sells must use *available* only — ``balance`` can exceed what is spendable
+                # (open orders / holds), and max(available, balance) caused INSUFFICIENT_FUND.
+                ab = a.get("available_balance")
+                if not isinstance(ab, dict):
+                    ab = {}
+                available = float(ab.get("value", 0) or 0)
                 logger.warning(
                     "HOLDINGS: %s available=%.8f required=%.8f",
                     product_id,

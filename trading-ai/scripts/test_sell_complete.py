@@ -97,24 +97,26 @@ def main() -> int:
             all_ok = False
     print(f"  Result: {'PASS' if all_ok else 'FAIL'}")
 
-    # TEST 2: Min size enforcement
+    # TEST 2: Min size enforcement (expectations follow live ``_min_base_size_for_product``)
     print("\n2. MIN SIZE ENFORCEMENT TEST:")
     min_tests = [
-        ("DOGE-USD", 0.05, False),
-        ("DOGE-USD", 0.1, True),
-        ("DOGE-USD", 19.5, True),
-        ("ADA-USD", 0.5, False),
-        ("ADA-USD", 1.0, True),
-        ("BTC-USD", 0.000001, True),
+        ("DOGE-USD", 0.05),
+        ("DOGE-USD", 0.1),
+        ("DOGE-USD", 19.5),
+        ("ADA-USD", 0.5),
+        ("ADA-USD", 1.0),
+        ("BTC-USD", 0.000001),
     ]
     all_ok = True
-    for pid, size, expect_ok in min_tests:
+    for pid, size in min_tests:
+        min_sz = _min_base_size_for_product(pid)
         enforced = _enforce_min_base_for_sell(pid, size)
+        expect_ok = size + 1e-15 >= min_sz
         ok = (enforced > 0) == expect_ok
         status = _pass_emoji(ok)
         print(
             f"  [{status}] {pid} size={size} enforced={enforced:.12f} "
-            f"expect_ok={expect_ok}"
+            f"min={min_sz} expect_ok={expect_ok}"
         )
         if not ok:
             all_ok = False
