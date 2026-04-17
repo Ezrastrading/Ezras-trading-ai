@@ -768,41 +768,59 @@ def main() -> None:
             log.debug("kalshi_resolution_check: %s", exc)
 
     def coinbase_exit_check_job() -> None:
+        nonlocal _coinbase_accumulator
         try:
-            acc = _coinbase_accumulator
-            if acc is None:
+            if _coinbase_accumulator is None:
                 from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
 
-                acc = CoinbaseAccumulator()
-            acc._run_exits_only()
+                _coinbase_accumulator = CoinbaseAccumulator()
+            _coinbase_accumulator._run_exits_only()
         except Exception as exc:
             log.warning("coinbase_exit_check: %s", exc)
 
     def coinbase_profit_scan_job() -> None:
+        nonlocal _coinbase_accumulator
         try:
-            acc = _coinbase_accumulator
-            if acc is None:
+            if _coinbase_accumulator is None:
                 from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
 
-                acc = CoinbaseAccumulator()
-            n = acc._run_profit_scan()
+                _coinbase_accumulator = CoinbaseAccumulator()
+            n = _coinbase_accumulator._run_profit_scan()
             if n:
                 log.info("coinbase_profit_scan: exits=%s", n)
         except Exception as exc:
             log.warning("coinbase_profit_scan failed: %s", exc)
 
     def coinbase_loss_scan_job() -> None:
+        nonlocal _coinbase_accumulator
         try:
-            acc = _coinbase_accumulator
-            if acc is None:
+            if _coinbase_accumulator is None:
                 from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
 
-                acc = CoinbaseAccumulator()
-            n = acc._run_loss_scan()
+                _coinbase_accumulator = CoinbaseAccumulator()
+            n = _coinbase_accumulator._run_loss_scan()
             if n:
                 log.info("coinbase_loss_scan: exits=%s", n)
         except Exception as exc:
             log.warning("coinbase_loss_scan failed: %s", exc)
+
+    def coinbase_scan_job() -> None:
+        """Shared singleton — same ``CoinbaseAccumulator`` as profit/loss/exit jobs."""
+        nonlocal _coinbase_accumulator
+        try:
+            from trading_ai.shark.coinbase_accumulator import (
+                CoinbaseAccumulator,
+                coinbase_enabled,
+            )
+
+            if not coinbase_enabled():
+                return
+            if _coinbase_accumulator is None:
+                _coinbase_accumulator = CoinbaseAccumulator()
+                log.info("CoinbaseAccumulator lazy init (coinbase_scan)")
+            _coinbase_accumulator.scan_and_trade()
+        except Exception as exc:
+            log.warning("coinbase_scan failed: %s", exc)
 
     def hourly_report() -> None:
         try:
@@ -1061,7 +1079,9 @@ def main() -> None:
         hourly_report=hourly_report,
         daily_briefing=daily_briefing_job,
         daily_full_report=daily_full_report_job,
-        coinbase_scan=_coinbase_accumulator.scan_and_trade if _coinbase_accumulator is not None else None,
+        coinbase_scan=coinbase_scan_job
+        if (_coinbase_accumulator is not None or _coinbase_env_on)
+        else None,
         coinbase_exit_check=coinbase_exit_check_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,

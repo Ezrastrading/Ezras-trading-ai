@@ -1176,10 +1176,13 @@ class CoinbaseAccumulator:
         if not self._client.has_credentials():
             return 0
         state = load_coinbase_state()
+        _stp = _positions_path()
         logger.warning(
-            "PROFIT SCAN RUNNING: %d positions "
+            "PROFIT SCAN: loaded %d positions from %s exists=%s "
             "profit_pct=%.5f min_usd=$%.4f",
             len(state.get("positions", []) or []),
+            _stp,
+            _stp.is_file(),
             _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
             _env_float("COINBASE_MIN_PROFIT_USD", 0.001),
         )
@@ -1347,10 +1350,13 @@ class CoinbaseAccumulator:
         if not self._client.has_credentials():
             return 0
         state = load_coinbase_state()
+        _stl = _positions_path()
         logger.warning(
-            "LOSS SCAN RUNNING: %d positions "
+            "LOSS SCAN: loaded %d positions from %s exists=%s "
             "stop_loss=%.5f",
             len(state.get("positions", []) or []),
+            _stl,
+            _stl.is_file(),
             _env_float("COINBASE_STOP_LOSS_PCT", 0.0003),
         )
         if not state.get("positions"):
