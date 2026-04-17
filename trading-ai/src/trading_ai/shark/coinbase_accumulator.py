@@ -1193,19 +1193,18 @@ class CoinbaseAccumulator:
         if not self._client.has_credentials():
             return 0
         state = load_coinbase_state()
+        logger.warning(
+            "PROFIT SCAN RUNNING: %d positions "
+            "profit_pct=%.5f min_usd=$%.4f",
+            len(state.get("positions", []) or []),
+            _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015),
+            _env_float("COINBASE_MIN_PROFIT_USD", 0.15),
+        )
         if not state.get("positions"):
             return 0
 
         profit_pct = _env_float("COINBASE_PROFIT_TARGET_PCT", 0.0015)
         min_profit_usd = _env_float("COINBASE_MIN_PROFIT_USD", 0.15)
-        positions = list(state.get("positions") or [])
-        logger.info(
-            "PROFIT SCAN: checking %d positions "
-            "profit_pct=%.4f%% min_usd=$%.4f",
-            len(positions),
-            profit_pct * 100,
-            min_profit_usd,
-        )
 
         now = time.time()
         if self._migrate_expiry_fields(state, now):
@@ -1218,6 +1217,7 @@ class CoinbaseAccumulator:
 
         prices = self._get_prices_for_positions(state)
         if not prices:
+            logger.warning("PROFIT SCAN: _get_prices_for_positions returned empty")
             return 0
 
         hedge_n = 0
@@ -1261,11 +1261,12 @@ class CoinbaseAccumulator:
             pnl_pct = (current - entry) / entry
             pnl_usd = current * size_base - cost_usd
 
-            logger.info(
-                "PROFIT SCAN pos: %s pnl=%.4f%% pnl_usd=$%.4f",
+            logger.warning(
+                "SCAN POS: %s entry=%.6f current=%.6f pnl=%.4f%%",
                 pid,
-                pnl_pct * 100,
-                pnl_usd,
+                entry,
+                current,
+                pnl_pct * 100.0,
             )
 
             gtrip = _gate_tp_sl_tmin(gate)
@@ -1367,21 +1368,14 @@ class CoinbaseAccumulator:
         if not self._client.has_credentials():
             return 0
         state = load_coinbase_state()
+        logger.warning(
+            "LOSS SCAN RUNNING: %d positions "
+            "stop_loss=%.5f",
+            len(state.get("positions", []) or []),
+            _env_float("COINBASE_STOP_LOSS_PCT", 0.0012),
+        )
         if not state.get("positions"):
             return 0
-
-        stop_loss_pct = _env_float("COINBASE_STOP_LOSS_PCT", 0.0012)
-        positions = list(state.get("positions") or [])
-        logger.info(
-            "LOSS SCAN: checking %d positions "
-            "stop_loss_pct=%.4f%%",
-            len(positions),
-            stop_loss_pct * 100,
-        )
-        logger.info(
-            "Stop loss threshold: %.4f%%",
-            stop_loss_pct * 100,
-        )
 
         now = time.time()
         if self._migrate_expiry_fields(state, now):
@@ -1394,6 +1388,7 @@ class CoinbaseAccumulator:
 
         prices = self._get_prices_for_positions(state)
         if not prices:
+            logger.warning("LOSS SCAN: _get_prices_for_positions returned empty")
             return 0
 
         exits = 0
@@ -1409,8 +1404,8 @@ class CoinbaseAccumulator:
             gtrip_loss = _gate_tp_sl_tmin(gate)
             if gtrip_loss is None:
                 pid_skip = str(pos.get("product_id") or "")
-                logger.info(
-                    "LOSS SCAN pos: %s skipped (no gate stop; engine-only)",
+                logger.warning(
+                    "SCAN POS: %s skipped loss_scan (no gate trip; engine-only exit_check)",
                     pid_skip,
                 )
                 remaining.append(pos)
@@ -1499,12 +1494,12 @@ class CoinbaseAccumulator:
             pnl_pct = (current - entry) / entry
             pnl_usd = current * size_base - cost_usd
 
-            logger.info(
-                "LOSS SCAN pos: %s pnl=%.4f%% "
-                "threshold=%.4f%%",
+            logger.warning(
+                "SCAN POS: %s entry=%.6f current=%.6f pnl=%.4f%%",
                 pid,
-                pnl_pct * 100,
-                -gate_stop_loss_pct * 100,
+                entry,
+                current,
+                pnl_pct * 100.0,
             )
 
             if pnl_pct > -gate_stop_loss_pct:
