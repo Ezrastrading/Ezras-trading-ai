@@ -948,7 +948,9 @@ class CoinbaseAccumulator:
             logger.info("FORCE SELL: %s age=%.0fs (entry_time from state)", pid, age)
             base_str = _fmt_base_size(pid, size_base)
             try:
-                result = self._try_market_sell_twice(pid, base_str)
+                result = self._try_market_sell_twice(
+                    pid, base_str, size_base_from_pos=size_base
+                )
             except Exception as exc:
                 logger.warning("FORCE SELL ALL: exception %s: %s", pid, exc)
                 upd = dict(pos)
@@ -959,7 +961,7 @@ class CoinbaseAccumulator:
             profit_usd = (
                 -float(cost_usd) if current <= 0 else current * size_base - cost_usd
             )
-            if result.success:
+            if result is not None and result.success:
                 sold += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
                 state["total_realized_usd"] = (
@@ -1034,12 +1036,46 @@ class CoinbaseAccumulator:
         )
         return self.force_sell_all_positions()
 
-    def _try_market_sell_twice(self, product_id: str, base_str: str) -> Any:
-        r = self._client.place_market_sell(product_id, base_str)
-        if r.success:
-            return r
-        time.sleep(0.35)
-        return self._client.place_market_sell(product_id, base_str)
+    def _try_market_sell_twice(
+        self,
+        product_id: str,
+        base_str: str,
+        *,
+        size_base_from_pos: Optional[float] = None,
+    ) -> Any:
+        logger.warning(
+            "SELL: %s base_size=%s size_base_from_pos=%s",
+            product_id,
+            base_str,
+            size_base_from_pos,
+        )
+        last: Any = None
+        for attempt in (1, 2):
+            try:
+                result = self._client.place_market_sell(product_id, base_str)
+                last = result
+                logger.warning(
+                    "SELL ATTEMPT %d/2: %s size=%s success=%s reason=%s",
+                    attempt,
+                    product_id,
+                    base_str,
+                    getattr(result, "success", None) if result is not None else None,
+                    getattr(result, "reason", None) if result is not None else "None",
+                )
+                if result is not None and result.success:
+                    return result
+            except Exception as e:
+                logger.warning(
+                    "SELL EXCEPTION %d/2: %s size=%s error=%s",
+                    attempt,
+                    product_id,
+                    base_str,
+                    str(e),
+                )
+                last = None
+            if attempt == 1:
+                time.sleep(0.35)
+        return last
 
     def _get_prices_for_positions(
         self, state: Dict[str, Any]
@@ -1268,9 +1304,11 @@ class CoinbaseAccumulator:
                 pnl_usd,
             )
             base_str = _fmt_base_size(pid, size_base)
-            result = self._try_market_sell_twice(pid, base_str)
+            result = self._try_market_sell_twice(
+                pid, base_str, size_base_from_pos=size_base
+            )
 
-            if result.success:
+            if result is not None and result.success:
                 exits += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
                 state["total_realized_usd"] = (
@@ -1413,8 +1451,10 @@ class CoinbaseAccumulator:
                     remaining.append(pos)
                     continue
                 base_str = _fmt_base_size(pid, size_base)
-                result = self._try_market_sell_twice(pid, base_str)
-                if result.success:
+                result = self._try_market_sell_twice(
+                    pid, base_str, size_base_from_pos=size_base
+                )
+                if result is not None and result.success:
                     exits += 1
                     pnl_usd = -float(cost_usd)
                     state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
@@ -1495,9 +1535,11 @@ class CoinbaseAccumulator:
             )
 
             base_str = _fmt_base_size(pid, size_base)
-            result = self._try_market_sell_twice(pid, base_str)
+            result = self._try_market_sell_twice(
+                pid, base_str, size_base_from_pos=size_base
+            )
 
-            if result.success:
+            if result is not None and result.success:
                 exits += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + pnl_usd
                 state["total_realized_usd"] = (
@@ -1660,8 +1702,10 @@ class CoinbaseAccumulator:
                 pid,
                 pnl_pct * 100.0,
             )
-            result = self._try_market_sell_twice(pid, base_str)
-            if not result.success:
+            result = self._try_market_sell_twice(
+                pid, base_str, size_base_from_pos=hedge_size
+            )
+            if result is None or not result.success:
                 logger.warning("HEDGE: sell failed %s", pid)
                 continue
 
@@ -2015,13 +2059,15 @@ class CoinbaseAccumulator:
 
             # Exits must not be blocked by the per-minute buy rate limiter.
             base_str = _fmt_base_size(pid, size_base)
-            result = self._try_market_sell_twice(pid, base_str)
+            result = self._try_market_sell_twice(
+                pid, base_str, size_base_from_pos=size_base
+            )
             if no_price:
                 profit_usd = -float(cost_usd)
             else:
                 profit_usd = current * size_base - cost_usd
 
-            if result.success:
+            if result is not None and result.success:
                 exits += 1
                 state["daily_pnl_usd"] = float(state.get("daily_pnl_usd") or 0.0) + profit_usd
                 state["total_realized_usd"] = (
@@ -3034,8 +3080,8 @@ def sell_expired_positions_on_startup() -> int:
             still_open.append(pos)
             continue
         base_str = _fmt_base_size(pid, size)
-        res = acc._try_market_sell_twice(pid, base_str)
-        if res.success:
+        res = acc._try_market_sell_twice(pid, base_str, size_base_from_pos=size)
+        if res is not None and res.success:
             sold += 1
             logger.info("STARTUP: sold expired %s", pid)
         else:
