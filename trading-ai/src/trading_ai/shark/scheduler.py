@@ -76,8 +76,7 @@ def build_shark_scheduler(
     daily_full_report: Optional[Callable[[], None]] = None,
     coinbase_scan: Optional[Callable[[], None]] = None,
     coinbase_exit_check: Optional[Callable[[], None]] = None,
-    coinbase_profit_scan: Optional[Callable[[], None]] = None,
-    coinbase_loss_scan: Optional[Callable[[], None]] = None,
+    coinbase_dawn_sweep: Optional[Callable[[], None]] = None,
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
@@ -467,7 +466,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Coinbase: 30s full scan (exits + buys); separate 5s exit-only job ─────
+    # ── Coinbase: 5m scan (exits + buys); 10s exit-only; optional 8am Gate A dawn ─
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
@@ -478,7 +477,7 @@ def build_shark_scheduler(
 
         sched.add_job(
             _coinbase_scan_wrapper,
-            IntervalTrigger(seconds=30),
+            IntervalTrigger(minutes=5),
             id="coinbase_scan",
             max_instances=2,
             replace_existing=True,
@@ -493,43 +492,27 @@ def build_shark_scheduler(
 
         sched.add_job(
             _coinbase_exit_wrapper,
-            IntervalTrigger(seconds=5),
+            IntervalTrigger(seconds=10),
             id="coinbase_exit_check",
             max_instances=1,
             replace_existing=True,
         )
 
-    if coinbase_profit_scan is not None:
-        def _coinbase_profit_scan_wrapper() -> None:
-            if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
-                "1", "true", "yes"
-            ):
-                return
-            coinbase_profit_scan()  # type: ignore[misc]
-
-        sched.add_job(
-            _coinbase_profit_scan_wrapper,
-            IntervalTrigger(seconds=3),
-            id="coinbase_profit_scan",
-            max_instances=2,
-            replace_existing=True,
-        )
-
-    if coinbase_loss_scan is not None:
-        def _coinbase_loss_scan_wrapper() -> None:
+    if coinbase_dawn_sweep is not None and CronTrigger is not None:
+        def _coinbase_dawn_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
                 "1",
                 "true",
                 "yes",
             ):
                 return
-            coinbase_loss_scan()  # type: ignore[misc]
+            coinbase_dawn_sweep()  # type: ignore[misc]
 
         sched.add_job(
-            _coinbase_loss_scan_wrapper,
-            IntervalTrigger(seconds=3),
-            id="coinbase_loss_scan",
-            max_instances=2,
+            _coinbase_dawn_wrapper,
+            CronTrigger(hour=8, minute=0, timezone="America/New_York"),
+            id="coinbase_dawn_sweep",
+            max_instances=1,
             replace_existing=True,
         )
 

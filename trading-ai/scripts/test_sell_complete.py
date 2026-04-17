@@ -169,27 +169,49 @@ def main() -> int:
     elif not has_creds:
         print("  SKIP: no credentials.")
     elif holdings:
-        test_curr = min(holdings.keys(), key=lambda k: holdings[k])
-        test_pid = f"{test_curr}-USD"
-        test_size = holdings[test_curr]
-
-        print(f"  Testing sell: {test_pid} size={test_size:.8f}")
-
-        enforced = _enforce_min_base_for_sell(test_pid, test_size)
-
-        if enforced <= 0:
-            print("  WARN: Size below minimum — skipping actual sell")
-        else:
-            print(f"  Attempting sell of {enforced:.8f} {test_curr}...")
-            result = acc._try_market_sell_twice(
-                test_pid,
-                _fmt_base_size(test_pid, enforced),
-                size_base_from_pos=test_size,
+        viable: list[tuple[str, float]] = []
+        for c, sz in holdings.items():
+            p = f"{c}-USD"
+            if _enforce_min_base_for_sell(p, sz) > 0:
+                viable.append((c, sz))
+        if not viable:
+            print(
+                "  SKIP: every holding is below exchange minimum (dust) — "
+                "no live sell attempted"
             )
-            if result.success:
-                print(f"  [OK] SELL SUCCESS: {test_pid} order_id={result.order_id}")
+        else:
+            # Smallest *sellable* lot (min avoids picking dust that only fails below_min).
+            test_curr, test_size = min(viable, key=lambda x: x[1])
+            test_pid = f"{test_curr}-USD"
+
+            print(f"  Testing sell: {test_pid} size={test_size:.8f}")
+
+            enforced = _enforce_min_base_for_sell(test_pid, test_size)
+
+            if enforced <= 0:
+                print("  WARN: Size below minimum — skipping actual sell")
             else:
-                print(f"  [FAIL] SELL FAILED: {test_pid} reason={result.reason}")
+                print(f"  Attempting sell of {enforced:.8f} {test_curr}...")
+                result = acc._try_market_sell_twice(
+                    test_pid,
+                    _fmt_base_size(test_pid, enforced),
+                    size_base_from_pos=test_size,
+                )
+                if result.success:
+                    print(
+                        f"  [OK] SELL SUCCESS: {test_pid} "
+                        f"order_id={result.order_id}"
+                    )
+                elif result.reason in (
+                    "below_min_size",
+                    "insufficient_holdings",
+                ):
+                    print(f"  [SKIP] {test_pid}: {result.reason}")
+                else:
+                    print(
+                        f"  [FAIL] SELL FAILED: {test_pid} "
+                        f"reason={result.reason}"
+                    )
     else:
         print("  No holdings to test sell")
 
@@ -218,7 +240,13 @@ def main() -> int:
         print(f"  Sells attempted: {len(results)}")
         print(f"  Successful: {wins}/{len(results)}")
         for pid, success, reason in results:
-            print(f"  [{'OK' if success else 'FAIL'}] {pid}: {reason}")
+            if success:
+                tag = "OK"
+            elif reason in ("below_min_size", "insufficient_holdings"):
+                tag = "SKIP"
+            else:
+                tag = "FAIL"
+            print(f"  [{tag}] {pid}: {reason}")
     else:
         print("  Need 2+ holdings for stress test (or skipped).")
 

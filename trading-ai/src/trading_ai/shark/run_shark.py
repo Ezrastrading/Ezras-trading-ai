@@ -778,31 +778,18 @@ def main() -> None:
         except Exception as exc:
             log.warning("coinbase_exit_check: %s", exc)
 
-    def coinbase_profit_scan_job() -> None:
+    def coinbase_dawn_sweep_job() -> None:
         nonlocal _coinbase_accumulator
         try:
             if _coinbase_accumulator is None:
                 from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
 
                 _coinbase_accumulator = CoinbaseAccumulator()
-            n = _coinbase_accumulator._run_profit_scan()
+            n = _coinbase_accumulator.dawn_sweep_gate_a()
             if n:
-                log.info("coinbase_profit_scan: exits=%s", n)
+                log.info("coinbase_dawn_sweep: exits=%s", n)
         except Exception as exc:
-            log.warning("coinbase_profit_scan failed: %s", exc)
-
-    def coinbase_loss_scan_job() -> None:
-        nonlocal _coinbase_accumulator
-        try:
-            if _coinbase_accumulator is None:
-                from trading_ai.shark.coinbase_accumulator import CoinbaseAccumulator
-
-                _coinbase_accumulator = CoinbaseAccumulator()
-            n = _coinbase_accumulator._run_loss_scan()
-            if n:
-                log.info("coinbase_loss_scan: exits=%s", n)
-        except Exception as exc:
-            log.warning("coinbase_loss_scan failed: %s", exc)
+            log.warning("coinbase_dawn_sweep failed: %s", exc)
 
     def coinbase_scan_job() -> None:
         """Shared singleton — same ``CoinbaseAccumulator`` as profit/loss/exit jobs."""
@@ -855,7 +842,7 @@ def main() -> None:
             sports_enabled = (os.environ.get("KALSHI_SPORTS_BLITZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
             sports_status = "ACTIVE" if sports_enabled else "QUIET"
 
-            # ── Coinbase accumulator snapshot ─────────────────────────────────
+            # ── Coinbase accumulator + gates + $1M mission ───────────────────
             cb_section = ""
             try:
                 if _coinbase_accumulator is not None:
@@ -868,11 +855,46 @@ def main() -> None:
                     pid_line = " | ".join(
                         f"{k}: {v}" for k, v in sorted(by_pid.items())
                     ) or "none"
+                    gate_lines = ""
+                    try:
+                        from trading_ai.shark.trade_reports import get_platform_report
+
+                        cb_day = get_platform_report("coinbase", "day")
+                        bg = cb_day.get("by_gate") or {}
+                        for g in ("A", "B", "C"):
+                            info = bg.get(g) or {}
+                            tr = int(info.get("trades") or 0)
+                            wi = int(info.get("wins") or 0)
+                            lo = max(0, tr - wi)
+                            gp = float(info.get("pnl") or 0.0)
+                            gate_lines += (
+                                f"\n  Gate {g}: trades={tr} | wins={wi} | losses={lo} | "
+                                f"P&L ${gp:+.2f}"
+                            )
+                    except Exception:
+                        pass
+                    mission_lines = ""
+                    try:
+                        from trading_ai.shark.mission import get_mission_status
+
+                        cb_bal = float(_coinbase_accumulator._client.get_usd_balance())
+                        ka_bal = float(os.environ.get("KALSHI_ACTUAL_BALANCE", 0) or 0)
+                        total_m = cb_bal + ka_bal
+                        st = get_mission_status(total_m)
+                        mission_lines = (
+                            f"\n  Mission: balance ${total_m:,.2f} | "
+                            f"to $1M: {st['pct_complete']:.3f}% | "
+                            f"required daily: {st['required_daily_pct']:.2f}%"
+                        )
+                    except Exception:
+                        pass
                     cb_section = (
                         f"\n\n📊 COINBASE:\n"
-                        f"  BTC/ETH/SOL open: {pid_line}\n"
+                        f"  Open by product: {pid_line}\n"
                         f"  Deployed: ${cb_cost:.2f} | Positions: {cb_open}\n"
-                        f"  Today P&L: ${cb_pnl:+.2f} | All-time: ${cb_total:+.2f}"
+                        f"  Today P&L: ${cb_pnl:+.2f} | All-time realized: ${cb_total:+.2f}"
+                        f"{gate_lines}"
+                        f"{mission_lines}"
                     )
             except Exception:
                 pass
@@ -1085,10 +1107,7 @@ def main() -> None:
         coinbase_exit_check=coinbase_exit_check_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
-        coinbase_profit_scan=coinbase_profit_scan_job
-        if (_coinbase_accumulator is not None or _coinbase_env_on)
-        else None,
-        coinbase_loss_scan=coinbase_loss_scan_job
+        coinbase_dawn_sweep=coinbase_dawn_sweep_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
         crypto_market_open_blitz=crypto_market_open_blitz,
@@ -1122,8 +1141,7 @@ def main() -> None:
                 "kalshi_scalable",
                 "coinbase_scan",
                 "coinbase_exit_check",
-                "coinbase_profit_scan",
-                "coinbase_loss_scan",
+                "coinbase_dawn_sweep",
             )
         ):
             log.info("BLITZ JOB CONFIRMED: id=%s trigger=%s", job.id, job.trigger)

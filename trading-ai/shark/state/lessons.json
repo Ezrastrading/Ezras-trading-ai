@@ -211,6 +211,18 @@
       "cost": 0,
       "lesson": "DELTA-NEUTRAL COINBASE: Enter Gate E at RSI band (40-60 by default) with MACD positive and EMA9 crossing EMA21 on BTC/ETH. Hedge 50% when unrealized gain reaches COINBASE_HEDGE_TRIGGER_PCT (default 0.1%) to lock partial profit; full take-profit and loss-scan thresholds via COINBASE_PROFIT_TARGET_PCT / per-gate stops. Time stop 3 min. Compound micro edges — surgical, consistent sizing.",
       "applied": true
+    },
+    {
+      "date": "2026-04-16",
+      "session": "Kalshi_scalable_gate",
+      "platform": "kalshi",
+      "category": "ai_validation",
+      "severity": "CRITICAL",
+      "cost": -100.0,
+      "lesson": "Day A Kalshi: Bot bought high-probability contracts on the WRONG side because approval was tied to headline probability/ROI, not feasibility. Claude+GPT for Kalshi must ONLY answer: can the YES condition realistically occur before expiry (spot vs target vs time)? If YES is still physically possible or confidence is not high, skip the NO bet. Never approve from ROI or implied prob alone.",
+      "what_went_wrong": "Treated 97% as 'safe' without checking whether betting NO was appropriate for where price could actually go.",
+      "what_to_do": "kalshi_scalable_gate: both models must return approve_no_bet with physically_possible=false and confidence not low; missing API keys rejects the trade.",
+      "applied": true
     }
   ],
   "rules": [

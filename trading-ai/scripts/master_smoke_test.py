@@ -85,8 +85,6 @@ def main() -> None:
     print(f"   Has credentials: {acc._client.has_credentials()}")
     exits = acc._run_exits_only()
     print(f"   Exit check returned: {exits}")
-    profits = acc._run_profit_scan()
-    print(f"   Profit scan returned: {profits}")
     print(f"   Status: {'✅ PASS' if acc._client.has_credentials() else '⚠️ NEEDS USD'}")
 
     # ── 5. EXIT TIMING TEST ────────────────────

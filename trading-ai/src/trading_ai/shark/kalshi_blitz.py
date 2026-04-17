@@ -86,7 +86,7 @@ def run_kalshi_blitz() -> int:
     Targets KXBTCD, KXBTC, KXETH, KXETHD using **yes_bid_dollars** / **no_bid_dollars** only
     (no inferred mids). Side must meet KALSHI_BLITZ_MIN_PROB (default 90 %).
     """
-    if (os.environ.get("KALSHI_BLITZ_ENABLED") or "true").strip().lower() not in ("1", "true", "yes"):
+    if (os.environ.get("KALSHI_BLITZ_ENABLED") or "false").strip().lower() not in ("1", "true", "yes"):
         return 0
 
     from trading_ai.shark.capital_effective import effective_capital_for_outlet

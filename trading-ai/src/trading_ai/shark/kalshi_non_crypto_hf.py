@@ -69,7 +69,7 @@ def run_kalshi_non_crypto_hf() -> None:
     """Game-series scan + MVE-filtered broad scan; non-crypto; TTR 5–60m; small tickets."""
     import os
 
-    if not _env_truthy("KALSHI_NC_HF_ENABLED", "true"):
+    if not _env_truthy("KALSHI_NC_HF_ENABLED", "false"):
         return
 
     min_prob = _parse_env_float("KALSHI_NC_MIN_PROB", 0.85)

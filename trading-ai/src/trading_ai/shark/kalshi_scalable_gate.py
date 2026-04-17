@@ -1,10 +1,10 @@
 """
-Kalshi Gate A — high ROI hunter (legacy filename: ``kalshi_scalable_gate``).
+Kalshi Scalable Gate — obvious-NO / mispriced-NO strategy.
 
-Scans all open markets for trades with minimum ROI (default 400%%), contract cost cap,
-3–5 trades per day spread across the session, Claude+GPT confirmation via Gate B helpers.
-State for daily cadence: ``shark/state/kalshi_gate_a_state.json``.
-Open positions use the same file as Gate B: ``kalshi_gate_b_state.json``.
+Scans open markets, sizes from balance, requires Claude + GPT to agree that the YES
+condition cannot realistically occur before expiry (not ROI/probability alone).
+
+Legacy name ``kalshi_scalable_gate`` was previously Gate A; Gate A helpers were removed.
 """
 
 from __future__ import annotations
@@ -13,316 +13,460 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List
-
-from trading_ai.governance.storage_architecture import shark_state_path
+import urllib.request
+from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_ROI_PCT = float(os.environ.get("KALSHI_GA_MIN_ROI", "400.0"))
-MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GA_MAX_CONTRACT_COST", "0.80"))
-MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GA_MIN_CONTRACT_COST", "0.01"))
-MIN_TRADES_PER_DAY = int(os.environ.get("KALSHI_GA_MIN_TRADES_DAY", "3"))
-MAX_TRADES_PER_DAY = int(os.environ.get("KALSHI_GA_MAX_TRADES_DAY", "5"))
-MIN_CONTRACTS = int(os.environ.get("KALSHI_GA_MIN_CONTRACTS", "5"))
-ALLOCATION_PCT = float(os.environ.get("KALSHI_GA_ALLOCATION_PCT", "0.20"))
-TTR_MIN = int(os.environ.get("KALSHI_GA_TTR_MIN", "60"))
-TTR_MAX = int(os.environ.get("KALSHI_GA_TTR_MAX", "86400"))
-MAX_MARKETS_FETCH = int(os.environ.get("KALSHI_GA_MAX_MARKETS", "8000"))
-TOP_CANDIDATES = int(os.environ.get("KALSHI_GA_TOP_CANDIDATES", "10"))
+MIN_NO_PROBABILITY = float(os.environ.get("KALSHI_SG_MIN_PROB", "0.90"))
+MIN_PRICE_DISTANCE_PCT = float(os.environ.get("KALSHI_SG_MIN_DISTANCE_PCT", "0.10"))
+MAX_CONTRACT_COST = float(os.environ.get("KALSHI_SG_MAX_CONTRACT_COST", "0.10"))
+MAX_NO_ASK = float(os.environ.get("KALSHI_SG_MAX_NO_ASK", "0.99"))
+MIN_CONTRACTS = int(os.environ.get("KALSHI_SG_MIN_CONTRACTS", "10"))
+# Env often set to ``5.0`` meaning 500%% ROI; values ``> 50`` are treated as literal %%.
+MIN_EXPECTED_ROI_PCT = float(os.environ.get("KALSHI_SG_MIN_ROI_PCT", "5.0"))
+TTR_MIN_SECONDS = int(os.environ.get("KALSHI_SG_TTR_MIN", "300"))
+TTR_MAX_SECONDS = int(os.environ.get("KALSHI_SG_TTR_MAX", "14400"))
+ALLOCATION_PCT = float(os.environ.get("KALSHI_SG_ALLOCATION_PCT", "0.15"))
+MAX_CONCURRENT_TRADES = int(os.environ.get("KALSHI_SG_MAX_CONCURRENT", "10"))
+SCAN_INTERVAL_SECONDS = int(os.environ.get("KALSHI_SG_SCAN_INTERVAL", "300"))
+MAX_MARKETS = int(os.environ.get("KALSHI_SG_MAX_MARKETS", "4000"))
 
-SKIP_SUBSTR = tuple(
-    x.strip().upper()
-    for x in (os.environ.get("KALSHI_GA_SKIP_TICKER_SUBSTR") or "").split(",")
-    if x.strip()
+# If true: filter on cheap NO asks (no_ask <= MAX_CONTRACT_COST) and lean on AI for edge.
+CHEAP_NO_MODE = (os.environ.get("KALSHI_SG_CHEAP_NO") or "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
 )
 
+VALID_SERIES = (
+    "KXINX",
+    "KXSPX",
+    "KXNDX",
+    "KXBTCD",
+    "KXETHD",
+    "KXDOW",
+    "KXGLD",
+    "KXOIL",
+)
 
-def _tz_name() -> str:
-    return (os.environ.get("SHARK_TZ") or "UTC").strip() or "UTC"
+_open_trades: Dict[str, Dict[str, Any]] = {}
+_last_scan_time = 0.0
+_daily_trades: List[Dict[str, Any]] = []
+_daily_pnl = 0.0
 
 
-def _now_local() -> datetime:
+def _min_roi_threshold_pct() -> float:
+    v = MIN_EXPECTED_ROI_PCT
+    return v * 100.0 if v <= 50.0 else v
+
+
+def get_trade_size(balance: float) -> float:
+    raw = balance * ALLOCATION_PCT
+    return min(raw, 100.0)
+
+
+def get_max_trades_per_hour(balance: float) -> int:
+    if balance < 50:
+        return 2
+    if balance < 200:
+        return 5
+    if balance < 500:
+        return 10
+    return 20
+
+
+def get_contracts(trade_size: float, contract_cost: float) -> int:
+    if contract_cost <= 0:
+        return 0
+    n = int(trade_size / contract_cost)
+    return max(MIN_CONTRACTS, n)
+
+
+def _is_valid_series(ticker: str) -> bool:
+    u = ticker.upper()
+    return any(s in u for s in VALID_SERIES)
+
+
+def _get_ttr(market: Dict[str, Any]) -> int:
+    from trading_ai.shark.outlets.kalshi import _parse_close_timestamp_unix
+
+    ts = _parse_close_timestamp_unix(market)
+    if ts is None:
+        return 0
+    return max(0, int(ts - time.time()))
+
+
+def _calculate_roi(
+    contracts: int, cost_per_contract: float, probability: float
+) -> Tuple[float, float]:
+    total_cost = contracts * cost_per_contract
+    max_payout = contracts * 1.0
+    expected = max_payout * probability
+    if total_cost <= 0:
+        return 0.0, 0.0
+    roi = (expected - total_cost) / total_cost * 100.0
+    return roi, expected
+
+
+def _get_sp500_estimate() -> float:
+    """Approximate S&P 500 via Yahoo ``^GSPC`` last price."""
     try:
-        from zoneinfo import ZoneInfo
-
-        return datetime.now(ZoneInfo(_tz_name()))
-    except Exception:
-        return datetime.utcnow()
-
-
-def _ga_daily_path() -> Path:
-    return shark_state_path("kalshi_gate_a_state.json")
-
-
-def _default_ga_daily() -> Dict[str, Any]:
-    return {
-        "date": "",
-        "trades_today": 0,
-        "filled_hours": [],  # type: ignore[list-item]
-        "trade_slots": [],
-    }
-
-
-def _load_ga_daily() -> Dict[str, Any]:
-    p = _ga_daily_path()
-    if not p.is_file():
-        return _default_ga_daily()
-    try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            s = _default_ga_daily()
-            s.update(raw)
-            return s
-    except Exception as exc:
-        logger.warning("kalshi_gate_a_state load: %s", exc)
-    return _default_ga_daily()
-
-
-def _save_ga_daily(state: Dict[str, Any]) -> None:
-    try:
-        _ga_daily_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.error("kalshi_gate_a_state save: %s", exc)
-
-
-def _get_trade_slots(n_trades: int) -> List[int]:
-    n = max(1, min(24, int(n_trades)))
-    return [int(i * 24 / n) for i in range(n)]
-
-
-def _should_trade_now() -> bool:
-    """Spread trades across the day; optional end-of-day catch-up."""
-    st = _load_ga_daily()
-    today = _now_local().strftime("%Y-%m-%d")
-    current_hour = _now_local().hour
-
-    if today != st.get("date"):
-        st["date"] = today
-        st["trades_today"] = 0
-        st["filled_hours"] = []
-        st["trade_slots"] = _get_trade_slots(MAX_TRADES_PER_DAY)
-        _save_ga_daily(st)
-
-    trades_today = int(st.get("trades_today") or 0)
-    if trades_today >= MAX_TRADES_PER_DAY:
-        return False
-
-    filled = {int(h) for h in (st.get("filled_hours") or []) if h is not None}
-    slots = list(st.get("trade_slots") or _get_trade_slots(MAX_TRADES_PER_DAY))
-    slot_set = set(slots)
-
-    if current_hour in slot_set and current_hour not in filled:
-        return True
-
-    trades_needed = MIN_TRADES_PER_DAY - trades_today
-    hours_left = 23 - current_hour
-    if trades_needed > 0 and hours_left <= trades_needed:
-        logger.info(
-            "Gate A: forcing trade — %d needed, %d hours left",
-            trades_needed,
-            hours_left,
+        url = (
+            "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC"
+            "?range=1d&interval=5m"
         )
-        return True
-
-    return False
-
-
-def _mark_traded_this_hour(*, slot_trade: bool) -> None:
-    st = _load_ga_daily()
-    h = _now_local().hour
-    if slot_trade:
-        filled = list(st.get("filled_hours") or [])
-        if h not in filled:
-            filled.append(h)
-        st["filled_hours"] = filled
-    st["trades_today"] = int(st.get("trades_today") or 0) + 1
-    _save_ga_daily(st)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            j = json.loads(resp.read().decode())
+        meta = j["chart"]["result"][0]["meta"]
+        for key in ("regularMarketPrice", "chartPreviousClose", "previousClose"):
+            v = meta.get(key)
+            if v is not None:
+                return float(v)
+    except Exception as exc:
+        logger.debug("S&P proxy fetch: %s", exc)
+    return 0.0
 
 
-def _roi_pct(cost: float) -> float:
-    if cost <= 0:
-        return 0.0
-    return (1.0 - cost) / cost * 100.0
+def _validate_underlying_price(market: Dict[str, Any]) -> bool:
+    ticker = str(market.get("ticker") or "")
+    try:
+        if "KXBTCD" in ticker.upper() or "KXBTC" in ticker.upper():
+            from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+            prices = CoinbaseClient().get_prices(["BTC-USD"])
+            current = float(prices.get("BTC-USD", (0, 0))[0] or 0)
+            if current <= 0:
+                return True
+            parts = ticker.split("-")
+            last = parts[-1] if parts else ""
+            if last.upper().startswith(("T", "B")):
+                try:
+                    threshold = float(last[1:].replace(".99", ""))
+                    distance_pct = abs(current - threshold) / current
+                    if distance_pct < MIN_PRICE_DISTANCE_PCT:
+                        return False
+                except ValueError:
+                    pass
+
+        elif "KXETHD" in ticker.upper() or "KXETH" in ticker.upper():
+            from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+            prices = CoinbaseClient().get_prices(["ETH-USD"])
+            current = float(prices.get("ETH-USD", (0, 0))[0] or 0)
+            if current <= 0:
+                return True
+            parts = ticker.split("-")
+            last = parts[-1] if parts else ""
+            if last.upper().startswith(("T", "B")):
+                try:
+                    threshold = float(last[1:].replace(".99", ""))
+                    distance_pct = abs(current - threshold) / current
+                    if distance_pct < MIN_PRICE_DISTANCE_PCT:
+                        return False
+                except ValueError:
+                    pass
+    except Exception as exc:
+        logger.debug("Price validation: %s", exc)
+    return True
 
 
-def _scan_all_markets_gate_a(
-    markets: List[Dict[str, Any]],
-    balance: float,
-) -> List[Dict[str, Any]]:
-    from trading_ai.shark.kalshi_gate_b import _get_ttr_sec
+def fetch_markets_for_gate(kalshi_client: Any) -> List[Dict[str, Any]]:
+    from trading_ai.shark.kalshi_gate_b import _ensure_asks
 
-    trade_size = min(max(0.0, float(balance)) * ALLOCATION_PCT, 100.0)
+    cap = max(200, min(20000, MAX_MARKETS))
+    rows = kalshi_client.fetch_all_open_markets(max_rows=cap)
+    out: List[Dict[str, Any]] = []
+    for m in rows:
+        if not isinstance(m, dict):
+            continue
+        try:
+            out.append(_ensure_asks(kalshi_client, m))
+        except Exception:
+            out.append(dict(m))
+    return out
+
+
+def _confirm_with_claude_gpt(market: Dict[str, Any], balance: float) -> Tuple[bool, str]:
+    """
+    Single question: can the YES condition realistically occur before expiry?
+    Both models must approve ``approve_no_bet`` with ``physically_possible == false``
+    and confidence not low. Missing API keys → reject.
+    """
+    ticker = str(market.get("ticker") or "")
+    title = str(market.get("title") or market.get("subtitle") or "")
+    ttr = _get_ttr(market)
+    ttr_min = max(1, ttr // 60)
+
+    current_prices: Dict[str, float] = {}
+    try:
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+        pr = CoinbaseClient().get_prices(["BTC-USD", "ETH-USD"])
+        current_prices["BTC"] = float(pr.get("BTC-USD", (0, 0))[0] or 0)
+        current_prices["ETH"] = float(pr.get("ETH-USD", (0, 0))[0] or 0)
+    except Exception:
+        pass
+
+    spx = _get_sp500_estimate()
+    price_context = ""
+    tu = ticker.upper()
+    if "BTC" in tu and current_prices.get("BTC", 0) > 0:
+        price_context = f"Current BTC price: ${current_prices['BTC']:,.0f}"
+    elif "ETH" in tu and current_prices.get("ETH", 0) > 0:
+        price_context = f"Current ETH price: ${current_prices['ETH']:,.2f}"
+    elif any(s in ticker for s in ("KXINX", "KXSPX", "KXNDX")):
+        if spx > 0:
+            price_context = f"Approx S&P 500 (Yahoo ^GSPC proxy): ${spx:,.2f}"
+        else:
+            price_context = "Index: verify whether the strike/range is reachable in the time left."
+
+    prompt = f"""You are validating a prediction market trade.
+
+MARKET: {title}
+TIME TO RESOLVE: {ttr_min} minutes
+BOOK BALANCE (hint): ${balance:.2f}
+{price_context}
+
+ONLY QUESTION: Will the YES condition actually happen in roughly {ttr_min} minutes?
+
+We are betting NO (it will NOT happen). We need you to confirm it CANNOT happen.
+
+Answer JSON only:
+{{"approve_no_bet": true/false,
+  "current_vs_target": "short text",
+  "gap": "short text",
+  "time_available": "{ttr_min} minutes",
+  "physically_possible": true/false,
+  "confidence": "high/medium/low",
+  "reason": "one sentence max"}}
+
+IMPORTANT:
+approve_no_bet = true ONLY if you are CERTAIN the YES condition cannot happen.
+If ANY doubt → approve_no_bet = false."""
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return False, "Claude unavailable"
+    if not os.environ.get("OPENAI_API_KEY"):
+        return False, "GPT unavailable"
+
+    # Claude
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        s, e = text.find("{"), text.rfind("}") + 1
+        if s < 0 or e <= s:
+            return False, "Claude bad response"
+        data = json.loads(text[s:e])
+        claude_ok = bool(data.get("approve_no_bet", False))
+        possible = bool(data.get("physically_possible", True))
+        reason = str(data.get("reason") or "")
+        conf = str(data.get("confidence") or "low").lower()
+        if not claude_ok:
+            return False, f"Claude: {reason}"
+        if possible:
+            return False, "Claude: YES still possible"
+        if conf == "low":
+            return False, "Claude: low confidence"
+    except Exception as exc:
+        logger.debug("Claude error: %s", exc)
+        return False, "Claude unavailable"
+
+    # GPT
+    try:
+        import openai
+
+        gpt = openai.OpenAI()
+        resp = gpt.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.choices[0].message.content or ""
+        s, e = text.find("{"), text.rfind("}") + 1
+        if s < 0 or e <= s:
+            return False, "GPT bad response"
+        data = json.loads(text[s:e])
+        gpt_ok = bool(data.get("approve_no_bet", False))
+        possible = bool(data.get("physically_possible", True))
+        reason = str(data.get("reason") or "")
+        conf = str(data.get("confidence") or "low").lower()
+        if not gpt_ok:
+            return False, f"GPT: {reason}"
+        if possible:
+            return False, "GPT: YES still possible"
+        if conf == "low":
+            return False, "GPT: low confidence"
+        final = f"Claude+GPT: {reason}"
+        return True, final
+    except Exception as exc:
+        logger.debug("GPT error: %s", exc)
+        return False, "GPT unavailable"
+
+
+def scan_for_trades(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str, Any]]:
+    trade_size = get_trade_size(balance)
     candidates: List[Dict[str, Any]] = []
 
     for m in markets:
-        if not isinstance(m, dict):
-            continue
         ticker = str(m.get("ticker") or "")
-        tu = ticker.upper()
-        if any(s in tu for s in SKIP_SUBSTR if s):
+        if not _is_valid_series(ticker):
             continue
 
-        close_str = str(m.get("close_time") or "")
-        if any(y in close_str for y in ("2027", "2028", "2029")):
+        ya = float(m.get("yes_ask_dollars") or m.get("yes_ask") or 0.0)
+        na = float(m.get("no_ask_dollars") or m.get("no_ask") or 0.0)
+        if ya > 1.0:
+            ya /= 100.0
+        if na > 1.0:
+            na /= 100.0
+        if ya <= 0 or na <= 0:
             continue
 
-        status = str(m.get("status") or "").strip().lower()
-        if status and status not in ("open", "active", ""):
-            continue
+        implied_no_wins = 1.0 - ya
+        no_cost = na
 
-        yes_ask = float(m.get("yes_ask_dollars") or m.get("yes_ask") or 0.0)
-        no_ask = float(m.get("no_ask_dollars") or m.get("no_ask") or 0.0)
-        if yes_ask > 1.0:
-            yes_ask /= 100.0
-        if no_ask > 1.0:
-            no_ask /= 100.0
-
-        if yes_ask <= 0 or no_ask <= 0:
-            continue
-
-        best_side: str | None = None
-        best_cost = 0.0
-        best_prob = 0.0
-        best_roi = -1.0
-
-        for side, cost in (("yes", yes_ask), ("no", no_ask)):
-            if not (MIN_CONTRACT_COST <= cost <= MAX_CONTRACT_COST):
+        if CHEAP_NO_MODE:
+            if no_cost <= 0 or no_cost > MAX_CONTRACT_COST:
                 continue
-            roi = _roi_pct(cost)
-            if roi < MIN_ROI_PCT:
+            no_prob = implied_no_wins
+        else:
+            if implied_no_wins < MIN_NO_PROBABILITY:
                 continue
-            if roi > best_roi:
-                best_roi = roi
-                best_side = side
-                best_cost = cost
-                best_prob = cost
+            if ya > MAX_CONTRACT_COST:
+                continue
+            if no_cost > MAX_NO_ASK:
+                continue
+            no_prob = implied_no_wins
 
-        if not best_side:
+        ttr = _get_ttr(m)
+        if not (TTR_MIN_SECONDS <= ttr <= TTR_MAX_SECONDS):
             continue
 
-        ttr = _get_ttr_sec(m)
-        if not (TTR_MIN <= ttr <= TTR_MAX):
+        if not _validate_underlying_price(m):
             continue
 
-        contracts = max(MIN_CONTRACTS, int(trade_size / max(best_cost, 1e-6)))
-        total_cost = contracts * best_cost
-        max_payout = float(contracts)
-        expected = max_payout * best_prob
+        contracts = get_contracts(trade_size, no_cost)
+        total_cost = contracts * no_cost
+        roi, expected = _calculate_roi(contracts, no_cost, no_prob)
+        if roi < _min_roi_threshold_pct():
+            continue
 
         candidates.append(
             {
-                "ticker": ticker,
-                "title": str(m.get("title") or m.get("subtitle") or ""),
-                "side": best_side,
-                "probability": best_prob,
-                "contract_cost": best_cost,
-                "roi_pct": best_roi,
-                "ttr": ttr,
+                **m,
+                "no_prob": no_prob,
+                "no_cost": no_cost,
+                "yes_ask": ya,
                 "contracts": contracts,
                 "total_cost": total_cost,
-                "max_payout": max_payout,
                 "expected_payout": expected,
+                "roi_pct": roi,
+                "ttr": ttr,
                 "trade_size": trade_size,
-                "balance": balance,
-                "market": m,
             }
         )
 
-    candidates.sort(key=lambda x: -float(x["roi_pct"]))
+    candidates.sort(key=lambda x: -float(x.get("expected_payout") or 0.0))
     logger.info(
-        "Gate A scan: %d candidates (>= %.0f%% ROI) from %d markets",
+        "Scalable gate: %d candidates (markets=%d balance=$%.2f)",
         len(candidates),
-        MIN_ROI_PCT,
         len(markets),
+        balance,
     )
     return candidates
 
 
-def _place_gate_a_trade(
-    trade: Dict[str, Any],
-    kalshi_client: Any,
-    balance: float,
-    ai_reason: str,
-) -> bool:
-    from trading_ai.shark.kalshi_gate_b import _load_state, _save_state
-    from trading_ai.shark.outlets.kalshi import KalshiClient
+def place_trade(market: Dict[str, Any], kalshi_client: Any, balance: float) -> bool:
+    global _open_trades, _daily_trades
 
-    if not isinstance(kalshi_client, KalshiClient):
+    ticker = str(market["ticker"])
+    contracts = int(market["contracts"])
+    total_cost = float(market["total_cost"])
+    expected = float(market["expected_payout"])
+    roi = float(market["roi_pct"])
+    no_prob = float(market["no_prob"])
+    ttr = int(market["ttr"])
+
+    if ticker in _open_trades:
         return False
-
-    ticker = str(trade["ticker"])
-    side = str(trade["side"]).lower()
-    contracts = int(trade["contracts"])
-    total_cost = float(trade["total_cost"])
-    expected = float(trade["expected_payout"])
-    roi = float(trade["roi_pct"])
-    prob = float(trade["probability"])
-    ttr = int(trade["ttr"])
-    title = str(trade["title"])
-
-    state = _load_state()
-    open_trades: Dict[str, Any] = dict(state.get("open_trades") or {})
-    if ticker in open_trades:
+    if len(_open_trades) >= MAX_CONCURRENT_TRADES:
         return False
 
     try:
-        res = kalshi_client.place_order(
+        from trading_ai.shark.mission import evaluate_trade_against_mission
+
+        check = evaluate_trade_against_mission(
+            platform="kalshi",
+            product_id=ticker,
+            size_usd=total_cost,
+            probability=no_prob,
+            total_balance=balance,
+        )
+        if not check.get("approved", True):
+            logger.info("Mission blocked: %s", check.get("reason"))
+            return False
+    except Exception:
+        pass
+
+    approved, reason = _confirm_with_claude_gpt(market, balance)
+    if not approved:
+        logger.info("AI rejected %s — %s", ticker, reason)
+        return False
+
+    try:
+        result = kalshi_client.place_order(
             ticker=ticker,
-            side=side,
+            side="no",
             count=contracts,
             action="buy",
             order_type="market",
             skip_pretrade_buy_gates=True,
             min_order_prob=0.01,
         )
-        oid = str(res.order_id or "")
-        if not res.success or not oid:
+        if not result.success or not (result.order_id or "").strip():
+            logger.warning("Order failed %s", ticker)
             return False
 
-        open_trades[ticker] = {
+        _open_trades[ticker] = {
             "ticker": ticker,
-            "title": title,
-            "side": side,
             "contracts": contracts,
-            "contract_cost": trade["contract_cost"],
             "total_cost": total_cost,
             "expected_payout": expected,
             "roi_pct": roi,
-            "probability": prob,
+            "no_prob": no_prob,
+            "no_cost": float(market.get("no_cost") or 0),
             "ttr": ttr,
             "entry_time": time.time(),
-            "order_id": oid,
-            "gate": "A",
+            "order_id": result.order_id,
+            "ai_reason": reason,
         }
-        state["open_trades"] = open_trades
-        _save_state(state)
+        _daily_trades.append(dict(_open_trades[ticker]))
 
         try:
             from trading_ai.shark.supabase_logger import log_trade
 
             log_trade(
                 platform="kalshi",
-                gate="A",
+                gate="scalable",
                 product_id=ticker,
-                side=side,
-                strategy="gate_a_high_roi",
-                entry_price=float(trade["contract_cost"]),
+                side="no",
+                strategy="obvious_no",
+                entry_price=float(market.get("no_cost") or 0),
                 exit_price=0.0,
                 size_usd=total_cost,
                 pnl_usd=0.0,
                 exit_reason="open",
                 hold_seconds=0,
                 balance_after=balance,
-                metadata={
-                    "contracts": contracts,
-                    "roi_pct": roi,
-                    "prob": prob,
-                    "ttr_min": ttr // 60,
-                    "ai_approval": ai_reason[:500],
-                },
+                metadata={"contracts": contracts, "roi_pct": roi, "ai": reason},
             )
         except Exception:
             pass
@@ -330,128 +474,137 @@ def _place_gate_a_trade(
         try:
             from trading_ai.shark.reporting import send_telegram
 
-            td = int(_load_ga_daily().get("trades_today") or 0) + 1
             send_telegram(
-                f"🏆 KALSHI GATE A\n"
-                f"{'─'*32}\n"
-                f"Market: {title[:60]}\n"
-                f"Bet: {side.upper()} ({prob*100:.0f}% implied)\n"
-                f"Contracts: {contracts}\n"
-                f"Cost/contract: ${float(trade['contract_cost']):.3f}\n"
-                f"Total cost: ${total_cost:.2f}\n"
-                f"Max payout: ${contracts:.0f}\n"
-                f"Expected: ${expected:.2f}\n"
-                f"ROI: {roi:.0f}%\n"
-                f"Resolves: ~{ttr//60} min\n"
-                f"AI: {ai_reason[:200]}\n"
-                f"{'─'*32}\n"
-                f"Trade {td}/{MAX_TRADES_PER_DAY} today"
+                f"🎯 KALSHI SCALABLE\n{ticker}\nNO ×{contracts} ${total_cost:.2f} "
+                f"exp ${expected:.2f} ROI {roi:.0f}%\n{reason[:200]}"
             )
         except Exception:
             pass
-
-        logger.info(
-            "Gate A PLACED: %s %s %d contracts $%.2f ROI=%.0f%%",
-            ticker,
-            side.upper(),
-            contracts,
-            total_cost,
-            roi,
-        )
         return True
     except Exception as exc:
-        logger.warning("Gate A place error: %s", exc)
+        logger.warning("place_trade %s: %s", ticker, exc)
         return False
 
 
-def run_gate_a(
-    kalshi_client: Any,
-    markets: List[Dict[str, Any]],
-    balance: float,
-) -> int:
-    """Resolve first, then maybe one Gate A trade if schedule + candidates + AI allow."""
-    if (os.environ.get("KALSHI_GATE_A_ENABLED") or "").strip().lower() not in (
-        "1",
-        "true",
-        "yes",
-    ):
+def check_resolutions(kalshi_client: Any, balance: float) -> int:
+    global _open_trades, _daily_pnl
+
+    if not _open_trades:
         return 0
 
-    from trading_ai.shark.kalshi_gate_b import (
-        _confirm_trade,
-        check_resolutions,
-    )
-    from trading_ai.shark.kalshi_gate_b import _ensure_asks
-    from trading_ai.shark.outlets.kalshi import KalshiClient
+    resolved = 0
+    for ticker in list(_open_trades.keys()):
+        trade = _open_trades[ticker]
+        try:
+            mj = kalshi_client.get_market(ticker)
+            inner = mj.get("market") if isinstance(mj.get("market"), dict) else mj
+            if not isinstance(inner, dict):
+                inner = {}
+            st = str(inner.get("status") or "").strip().lower()
+            terminal = st in (
+                "finalized",
+                "settled",
+                "closed",
+                "determined",
+                "expired",
+            ) or bool(inner.get("settled") or inner.get("is_settled"))
 
-    if not isinstance(kalshi_client, KalshiClient) or not kalshi_client.has_kalshi_credentials():
-        return 0
+            if not terminal:
+                age = time.time() - float(trade.get("entry_time") or 0.0)
+                if age > float(trade.get("ttr") or 0.0) + 300:
+                    del _open_trades[ticker]
+                continue
 
-    resolved = check_resolutions(kalshi_client, balance)
+            result = str(inner.get("result") or inner.get("yes_result") or "").strip().lower()
+            won = result == "no"
+            payout = float(trade["contracts"]) * 1.0 if won else 0.0
+            pnl = payout - float(trade["total_cost"])
+            _daily_pnl += pnl
+            del _open_trades[ticker]
+            resolved += 1
 
-    if not _should_trade_now():
-        return resolved
+            logger.info(
+                "SCALABLE RESOLVED: %s %s payout=$%.2f pnl=$%.2f",
+                ticker,
+                "WIN" if won else "LOSS",
+                payout,
+                pnl,
+            )
+            try:
+                from trading_ai.shark.reporting import send_telegram
 
-    enriched: List[Dict[str, Any]] = []
-    cap = max(500, min(12000, MAX_MARKETS_FETCH))
-    for m in markets[:cap]:
-        if not isinstance(m, dict):
-            continue
-        enriched.append(_ensure_asks(kalshi_client, m))
+                emoji = "💰" if won else "❌"
+                send_telegram(
+                    f"{emoji} KALSHI SCALABLE RESULT\n{ticker}\n"
+                    f"{'WIN' if won else 'LOSS'} PnL ${pnl:+.2f}"
+                )
+            except Exception:
+                pass
+            try:
+                from trading_ai.shark.supabase_logger import log_trade
 
-    candidates = _scan_all_markets_gate_a(enriched, balance)
-    if not candidates:
-        logger.info("Gate A: no qualifying trades in %d markets", len(enriched))
-        return resolved
-
-    st0 = _load_ga_daily()
-    slot_set = set(st0.get("trade_slots") or _get_trade_slots(MAX_TRADES_PER_DAY))
-    slot_trade = _now_local().hour in slot_set
-
-    for candidate in candidates[:TOP_CANDIDATES]:
-        approved, reason = _confirm_trade(candidate, balance)
-        if not approved:
-            logger.info("Gate A skip %s: %s", candidate["ticker"], reason)
-            continue
-        if _place_gate_a_trade(candidate, kalshi_client, balance, reason):
-            _mark_traded_this_hour(slot_trade=slot_trade)
-            break
+                log_trade(
+                    platform="kalshi",
+                    gate="scalable",
+                    product_id=ticker,
+                    side="no",
+                    strategy="obvious_no",
+                    entry_price=float(trade.get("no_cost") or 0),
+                    exit_price=1.0 if won else 0.0,
+                    size_usd=float(trade["total_cost"]),
+                    pnl_usd=pnl,
+                    exit_reason="win" if won else "loss",
+                    hold_seconds=int(time.time() - float(trade["entry_time"])),
+                    balance_after=balance + pnl,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("resolution %s: %s", ticker, exc)
 
     return resolved
 
 
-def _available_balance() -> float:
-    try:
-        from trading_ai.shark.capital_effective import effective_capital_for_outlet
-        from trading_ai.shark.state_store import load_capital
+def run_scalable_gate(kalshi_client: Any, balance: float) -> int:
+    global _last_scan_time
 
-        book = load_capital()
-        return max(0.0, effective_capital_for_outlet("kalshi", float(book.current_capital)))
-    except Exception:
-        raw = (os.environ.get("KALSHI_ACTUAL_BALANCE") or "0").strip()
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            return 0.0
+    check_resolutions(kalshi_client, balance)
+
+    now = time.time()
+    if now - _last_scan_time < SCAN_INTERVAL_SECONDS:
+        return 0
+    _last_scan_time = now
+
+    if not kalshi_client.has_kalshi_credentials():
+        return 0
+
+    markets = fetch_markets_for_gate(kalshi_client)
+    candidates = scan_for_trades(markets, balance)
+    if not candidates:
+        return 0
+
+    max_h = get_max_trades_per_hour(balance)
+    capacity = min(MAX_CONCURRENT_TRADES, max(0, max_h - len(_open_trades)))
+    if capacity <= 0:
+        return 0
+
+    placed = 0
+    for cand in candidates[:capacity]:
+        if place_trade(cand, kalshi_client, balance):
+            placed += 1
+            time.sleep(1.0)
+    return placed
+
+
+def get_status_report(balance: float) -> str:
+    return (
+        f"Kalshi scalable: open={len(_open_trades)}/{MAX_CONCURRENT_TRADES} "
+        f"daily_pnl=${_daily_pnl:+.2f} size=${get_trade_size(balance):.2f} "
+        f"max/hr≈{get_max_trades_per_hour(balance)}"
+    )
 
 
 def run_gate_a_job_fetch() -> int:
-    """Fetch open markets and run Gate A (scheduler entrypoint)."""
-    from trading_ai.shark.outlets.kalshi import KalshiClient
-
-    cap = max(500, min(12000, MAX_MARKETS_FETCH))
-    client = KalshiClient()
-    if not client.has_kalshi_credentials():
-        return 0
-    markets = client.fetch_all_open_markets(max_rows=cap)
-    bal = _available_balance()
-    return run_gate_a(client, markets, bal)
-
-
-# Back-compat name used by older docs
-def run_scalable_gate(kalshi_client: Any, balance: float) -> int:
-    cap = max(500, min(12000, MAX_MARKETS_FETCH))
-    markets = kalshi_client.fetch_all_open_markets(max_rows=cap) if hasattr(
-        kalshi_client, "fetch_all_open_markets"
-    ) else []
-    return run_gate_a(kalshi_client, markets, balance)
+    """Deprecated: Gate A removed from this module. Use ``run_scalable_gate``."""
+    logger.warning("run_gate_a_job_fetch is deprecated; enable KALSHI_SCALABLE_ENABLED instead")
+    return 0

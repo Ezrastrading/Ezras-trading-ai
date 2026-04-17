@@ -29,7 +29,7 @@ def _parse_pct(name: str, default: float) -> float:
 
 def run_kalshi_profit_exit_scan() -> None:
     """Poll Kalshi open positions; market-sell when +take-profit or -stop-loss vs entry."""
-    if not _env_truthy("KALSHI_PROFIT_EXIT_ENABLED", "true"):
+    if not _env_truthy("KALSHI_PROFIT_EXIT_ENABLED", "false"):
         return
 
     take_pct = _parse_pct("KALSHI_PROFIT_EXIT_PCT", 0.0015)
