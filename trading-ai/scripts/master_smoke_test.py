@@ -97,58 +97,79 @@ def main() -> None:
     else:
         state = load_coinbase_state()
         original_positions = list(state.get("positions", []))
+        _t = time.time()
+        _exp = _t - 220.0
         fake_positions = [
             {
                 "product_id": "BTC-USD",
-                "gate": "A",
+                "gate": "C",
                 "engine": 1,
+                "strategy": "test",
                 "entry_price": 74000.0,
-                "entry_time": time.time() - 400,
+                "entry_time": _t - 400.0,
+                "expiry_time": _exp,
+                "must_sell_by": _exp,
                 "cost_usd": 2.0,
-                "size_base": 0.000027,
+                "size_base": 2.0 / 74000.0,
+                "size_usd": 2.0,
                 "peak_price": 74000.0,
+                "trail_stop": 73000.0,
                 "exit_submitted": False,
                 "exit_notified": False,
                 "sell_pending": False,
+                "min_hold_until": 0.0,
             },
             {
                 "product_id": "ETH-USD",
                 "gate": "A",
                 "engine": 1,
+                "strategy": "test",
                 "entry_price": 2350.0,
-                "entry_time": time.time() - 400,
+                "entry_time": _t - 400.0,
+                "expiry_time": _exp,
+                "must_sell_by": _exp,
                 "cost_usd": 2.0,
-                "size_base": 0.00085,
+                "size_base": 2.0 / 2350.0,
+                "size_usd": 2.0,
                 "peak_price": 2350.0,
+                "trail_stop": 2320.0,
                 "exit_submitted": False,
                 "exit_notified": False,
                 "sell_pending": False,
+                "min_hold_until": 0.0,
             },
             {
                 "product_id": "SOL-USD",
                 "gate": "B",
                 "engine": 1,
+                "strategy": "test",
                 "entry_price": 85.0,
-                "entry_time": time.time() - 400,
+                "entry_time": _t - 400.0,
+                "expiry_time": _exp,
+                "must_sell_by": _exp,
                 "cost_usd": 2.0,
-                "size_base": 0.0235,
+                "size_base": 2.0 / 85.0,
+                "size_usd": 2.0,
                 "peak_price": 85.0,
+                "trail_stop": 84.0,
                 "exit_submitted": False,
                 "exit_notified": False,
                 "sell_pending": False,
+                "min_hold_until": 0.0,
             },
         ]
         state["positions"] = fake_positions
         save_coinbase_state(state)
         print("   Injected 3 positions (400s old)")
 
+        exits_fired = 0
         try:
-            acc._run_exits_only()
+            exits_fired = acc._run_exits_only()
             state_after = load_coinbase_state()
             remaining = [
                 p
                 for p in state_after.get("positions", [])
-                if p.get("product_id") in ("BTC-USD", "ETH-USD", "SOL-USD") and not p.get("exit_submitted")
+                if p.get("product_id") in ("BTC-USD", "ETH-USD", "SOL-USD")
             ]
         except Exception as e:
             print(f"   Exit test error: {e}")
@@ -156,8 +177,9 @@ def main() -> None:
         state_after = load_coinbase_state()
         state_after["positions"] = original_positions
         save_coinbase_state(state_after)
-        print(f"   Stuck positions (non-exit_submitted): {len(remaining)}")
-        print(f"   Status: {'✅ PASS - ALL SOLD' if len(remaining) == 0 else '❌ FAIL - STUCK POSITIONS'}")
+        print(f"   Exits fired: {exits_fired}")
+        print(f"   Stuck positions (still open): {len(remaining)}")
+        print(f"   Status: {'✅ PASS' if len(remaining) == 0 else '❌ FAIL - STUCK POSITIONS'}")
 
     # ── 6. TRADE REPORTS ───────────────────────
     print("\n6. TRADE REPORTS:")

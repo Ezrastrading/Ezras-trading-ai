@@ -1625,6 +1625,10 @@ class CoinbaseAccumulator:
         positions_snapshot = list(state.get("positions") or [])
         remaining: List[Dict[str, Any]] = []
         exits = 0
+        logger.warning(
+            "EXIT CHECK: %d positions to check",
+            len(state.get("positions", []) or []),
+        )
         logger.info("Exit check: %d open position(s)", len(positions_snapshot))
         try:
             from zoneinfo import ZoneInfo
@@ -1648,6 +1652,15 @@ class CoinbaseAccumulator:
             eng = int(pos.get("engine") or _infer_engine_from_legacy(pos))
             sell_pending = bool(pos.get("sell_pending"))
             gate = str(pos.get("gate") or "").strip().upper()
+
+            logger.warning(
+                "EXIT CHECK pos: %s gate=%s age=%.0fs expiry=%s trail_stop=%s",
+                pid,
+                pos.get("gate", "?"),
+                now - float(entry_t),
+                pos.get("expiry_time", "missing"),
+                pos.get("trail_stop", "missing"),
+            )
 
             if size_base <= 0:
                 remaining.append(pos)
@@ -1740,6 +1753,13 @@ class CoinbaseAccumulator:
                             sell_reason = "profit_target"
                         elif age >= max_hold_s:
                             sell_reason = "timeout"
+
+                if not sell_reason:
+                    exp_u = float(pos.get("expiry_time") or pos.get("must_sell_by") or 0.0)
+                    if exp_u <= 0:
+                        exp_u = float(pos.get("entry_time") or 0.0) + 300.0
+                    if exp_u > 0 and now >= exp_u:
+                        sell_reason = "timeout"
 
                 if not sell_reason:
                     remaining.append(upd)
@@ -1906,6 +1926,13 @@ class CoinbaseAccumulator:
                 and current < peak * (1.0 - trail)
             ):
                 sell_reason = f"trail -{trail*100:.3f}% peak"
+
+            if not sell_reason:
+                exp_u = float(pos.get("expiry_time") or pos.get("must_sell_by") or 0.0)
+                if exp_u <= 0:
+                    exp_u = float(pos.get("entry_time") or 0.0) + 300.0
+                if exp_u > 0 and now >= exp_u:
+                    sell_reason = "timeout"
 
             if not sell_reason:
                 upd = dict(pos)
