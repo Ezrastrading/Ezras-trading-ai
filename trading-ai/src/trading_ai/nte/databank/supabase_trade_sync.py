@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
 from trading_ai.global_layer.supabase_env_keys import resolve_supabase_jwt_key
+from trading_ai.governance.storage_architecture import shark_state_path
 from trading_ai.nte.paths import nte_memory_dir
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,68 @@ def _format_response_error(exc: BaseException) -> str:
     if code is not None:
         parts.append(f"code={code}")
     return " | ".join(parts)
+
+
+def _sync_metrics_path() -> Path:
+    return shark_state_path("supabase_sync_metrics.json")
+
+
+def _read_sync_metrics() -> Dict[str, int]:
+    p = _sync_metrics_path()
+    if not p.is_file():
+        return {"total": 0, "success": 0}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"total": 0, "success": 0}
+        return {
+            "total": int(raw.get("total") or 0),
+            "success": int(raw.get("success") or 0),
+        }
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {"total": 0, "success": 0}
+
+
+def _write_sync_metrics(d: Dict[str, int]) -> None:
+    p = _sync_metrics_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
+
+def record_sync_attempt_outcome(ok: bool) -> None:
+    m = _read_sync_metrics()
+    m["total"] = int(m.get("total") or 0) + 1
+    if ok:
+        m["success"] = int(m.get("success") or 0) + 1
+    _write_sync_metrics(m)
+
+
+def supabase_sync_rate() -> Optional[float]:
+    m = _read_sync_metrics()
+    t = int(m.get("total") or 0)
+    if t <= 0:
+        return None
+    return float(m.get("success") or 0) / float(t)
+
+
+def supabase_sync_rate_unhealthy() -> bool:
+    """True when sample is large enough and success rate is below env threshold (default 95%)."""
+    try:
+        min_n = int((os.environ.get("SUPABASE_SYNC_MIN_SAMPLES") or "20").strip() or "20")
+        thr = float((os.environ.get("SUPABASE_SYNC_RATE_MIN") or "0.95").strip() or "0.95")
+    except ValueError:
+        min_n, thr = 20, 0.95
+    m = _read_sync_metrics()
+    t = int(m.get("total") or 0)
+    if t < min_n:
+        return False
+    r = supabase_sync_rate()
+    return r is not None and r < thr
+
+
+def queue_locally(row: Mapping[str, Any]) -> None:
+    """Mandatory durability path when remote write is not confirmed."""
+    _append_local_unsynced(row)
 
 
 def _append_local_unsynced(row: Mapping[str, Any]) -> None:
@@ -203,11 +266,13 @@ def upsert_trade_event(
         out["error"] = err
         logger.warning("upsert_trade_event failed: %s key_source_used=%s", err, out["key_source_used"])
         if queue_on_failure:
-            _append_local_unsynced(row)
+            queue_locally(row)
             out["queued_locally"] = True
+        record_sync_attempt_outcome(False)
         return out
 
     payload = _sanitize_row(dict(row))
+    tid = str(payload.get("trade_id") or "").strip()
     last_exc: Optional[BaseException] = None
     for attempt in range(_RETRY_ATTEMPTS):
         out["attempts"] = attempt + 1
@@ -222,6 +287,17 @@ def upsert_trade_event(
                 attempt + 1,
                 out["key_source_used"],
             )
+            if tid and tid != _DIAG_PROBE_TRADE_ID:
+                if not verify_trade_exists(tid):
+                    out["success"] = False
+                    out["write_status"] = "verify_failed"
+                    out["error"] = "post_write_verify_missing_row"
+                    logger.error("upsert reported success but row missing trade_id=%s — queueing locally", tid)
+                    queue_locally(row)
+                    out["queued_locally"] = True
+                    record_sync_attempt_outcome(False)
+                    return out
+            record_sync_attempt_outcome(True)
             return out
         except Exception as exc:
             last_exc = exc
@@ -237,6 +313,8 @@ def upsert_trade_event(
                 delay = 0.5 * (2**attempt)
                 time.sleep(delay)
 
+    out["success"] = False
+    out["write_status"] = "failed"
     out["error"] = _format_response_error(last_exc) if last_exc else "unknown"
     logger.warning(
         "upsert_trade_event write_status=failed trade_id=%s error=%s key_source_used=%s",
@@ -245,8 +323,9 @@ def upsert_trade_event(
         out["key_source_used"],
     )
     if queue_on_failure:
-        _append_local_unsynced(row)
+        queue_locally(row)
         out["queued_locally"] = True
+    record_sync_attempt_outcome(False)
     return out
 
 
@@ -294,6 +373,11 @@ def flush_unsynced_trades() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning("flush_unsynced_trades rewrite failed: %s", _format_response_error(exc))
     return result
+
+
+def verify_trade_exists(trade_id: str) -> bool:
+    """Alias for row existence check after write (PostgREST SELECT)."""
+    return select_trade_event_exists(trade_id)
 
 
 def select_trade_event_exists(trade_id: str) -> bool:
