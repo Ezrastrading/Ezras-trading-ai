@@ -1,0 +1,51 @@
+{
+  "schema": "live_flag_matrix_v1",
+  "description": "NTE live first-20 preflight check 4 (live_mode_flags_intentional). All five must be true for PASS.",
+  "pass_condition": {
+    "COINBASE_ENABLED": "truthy: 1, true, yes (case-insensitive)",
+    "NTE_PAPER_MODE": "must NOT be truthy (unset, false, 0, empty)",
+    "NTE_EXECUTION_MODE": "exactly the string live (lowercase)",
+    "LIVE_FIRST_20_ENABLED": "truthy",
+    "FIRST_TWENTY_ALLOW_LIVE": "must be exactly truthy: 1, true, yes (see code — uses strip.lower in ('1','true','yes'))"
+  },
+  "critical_note": "FIRST_TWENTY_ALLOW_LIVE uses a stricter check than other vars: only 1/true/yes after strip; other 'truthy' strings may fail.",
+  "combinations": {
+    "PASS_all_explicit_live": {
+      "COINBASE_ENABLED": "true",
+      "NTE_PAPER_MODE": "false",
+      "NTE_EXECUTION_MODE": "live",
+      "LIVE_FIRST_20_ENABLED": "true",
+      "FIRST_TWENTY_ALLOW_LIVE": "true"
+    },
+    "FAIL_paper_safe": {
+      "NTE_PAPER_MODE": "true",
+      "effect": "Check 4 FAIL — paper blocks live"
+    },
+    "FAIL_coinbase_disabled": {
+      "COINBASE_ENABLED": "false",
+      "effect": "Check 4 FAIL"
+    },
+    "FAIL_nte_not_live": {
+      "NTE_EXECUTION_MODE": "paper",
+      "effect": "Check 4 FAIL — must be exactly live"
+    },
+    "FAIL_first_twenty_not_acknowledged": {
+      "FIRST_TWENTY_ALLOW_LIVE": "unset_or_false",
+      "effect": "Check 4 FAIL"
+    },
+    "FAIL_live_first_20_disabled": {
+      "LIVE_FIRST_20_ENABLED": "false",
+      "effect": "Check 4 FAIL"
+    },
+    "ACCIDENTAL_safe_nte_paper_or_missing_live": {
+      "description": "Any combination where COINBASE_ENABLED is false, NTE_EXECUTION_MODE is not live, or NTE_PAPER_MODE is true leaves you in paper/safe territory — preflight should FAIL check 4",
+      "effect": "No accidental live: preflight blocks"
+    },
+    "AMBIGUOUS": {
+      "NTE_EXECUTION_MODE": "LIVE",
+      "effect": "Compared lowercase — LIVE uppercase may fail; use live",
+      "FIRST_TWENTY_ALLOW_LIVE": "yes ",
+      "effect": "Should pass if strip works — prefer exact true/1/yes without odd whitespace"
+    }
+  }
+}

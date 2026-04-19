@@ -740,6 +740,23 @@ def main() -> None:
         except Exception as exc:
             log.warning("kalshi_scalable_gate: %s", exc)
 
+    def ai_review_tick_job() -> None:
+        """Owned by Shark scheduler — calls global :func:`tick_scheduler` (morning/midday/EOD gates)."""
+        if (os.environ.get("AI_REVIEW_TICK_ENABLED") or "true").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return
+        try:
+            from trading_ai.global_layer.review_scheduler import tick_scheduler
+
+            runs = tick_scheduler()
+            if runs:
+                log.info("ai_review_tick: completed %s", [r[0] for r in runs])
+        except Exception as exc:
+            log.warning("ai_review_tick failed (non-blocking): %s", exc)
+
     def kalshi_resolution_check_job() -> None:
         """Resolve open Kalshi scalable-gate positions (~60s)."""
         try:
@@ -1149,6 +1166,7 @@ def main() -> None:
         kalshi_hv_gate=None,
         kalshi_scalable_gate=kalshi_scalable_gate_job,
         kalshi_scalable_resolution=kalshi_resolution_check_job,
+        ai_review_tick=ai_review_tick_job,
     )
     if sched is None:
         print("Install apscheduler: pip install apscheduler", file=sys.stderr)

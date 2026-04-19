@@ -13,6 +13,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from trading_ai.runtime_paths import ezras_runtime_root
+
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 
@@ -20,10 +22,8 @@ _STATE_VERSION = 1
 
 
 def runtime_root() -> Path:
-    raw = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
+    """Canonical runtime root — see :mod:`trading_ai.runtime_paths`."""
+    return ezras_runtime_root()
 
 
 def risk_state_path() -> Path:

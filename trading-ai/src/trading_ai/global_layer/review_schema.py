@@ -21,6 +21,50 @@ def extract_json_dict(text: str) -> Optional[Dict[str, Any]]:
 LIVE_MODES = frozenset({"normal", "caution", "paused"})
 REVIEW_TYPES = frozenset({"morning", "midday", "eod", "exception"})
 
+# Contract top-level keys only (extras stripped after successful validation).
+CLAUDE_OUTPUT_KEYS = frozenset(
+    {
+        "review_id",
+        "packet_id",
+        "review_type",
+        "generated_at",
+        "what_is_working",
+        "what_is_not_working",
+        "biggest_risk_now",
+        "most_fragile_part_of_system",
+        "best_safe_improvement",
+        "worst_live_behavior_to_cut",
+        "best_shadow_candidate_to_watch",
+        "capital_preservation_note",
+        "path_to_first_million_note",
+        "risk_mode_recommendation",
+        "confidence_score",
+    }
+)
+GPT_OUTPUT_KEYS = frozenset(
+    {
+        "review_id",
+        "packet_id",
+        "review_type",
+        "generated_at",
+        "top_3_decisions",
+        "top_3_warnings",
+        "top_3_next_actions",
+        "live_status_recommendation",
+        "best_live_edge_now",
+        "weakest_live_edge_now",
+        "best_growth_opportunity",
+        "main_bottleneck_to_first_million",
+        "short_ceo_note",
+        "confidence_score",
+    }
+)
+
+
+def whitelist_model_output(d: Dict[str, Any], allowed: frozenset) -> Dict[str, Any]:
+    """Drop unknown top-level keys so storage matches the contract."""
+    return {k: v for k, v in d.items() if k in allowed}
+
 
 def _is_str_list(x: Any) -> bool:
     return isinstance(x, list) and all(isinstance(i, str) for i in x)
@@ -121,3 +165,39 @@ def strip_internal_keys(d: Dict[str, Any]) -> Dict[str, Any]:
         "_raw_response_truncated",
     }
     return {k: v for k, v in d.items() if k not in drop}
+
+
+# --- Canonical federated trade row (observability; not required for organism routing) ---
+#
+# {
+#   "trade_id": str,
+#   "avenue": str,
+#   "timestamp_open": float | str,
+#   "timestamp_close": float | str,
+#   "net_pnl": float | None,
+#   "fees": float | None,
+#   "slippage_bps": float | None,  # or entry_slippage_bps / exit_slippage_bps per venue
+#   "execution_latency_ms": int | None,
+#   "strategy_class": str | None,
+#   "route_bucket": str | None,
+#   "truth_provenance": dict,
+# }
+#
+# Strategy, edge, latency, and fees are optional metadata — federation must merge without
+# requiring them for numeric truth (see trade_truth module).
+CANONICAL_TRADE_RECORD_METADATA_KEYS = frozenset(
+    {
+        "strategy_class",
+        "route_bucket",
+        "router_bucket",
+        "route_label",
+        "expected_edge_bps",
+        "expected_net_edge_bps",
+        "execution_latency_ms",
+        "entry_slippage_bps",
+        "exit_slippage_bps",
+        "fees",
+        "fees_usd",
+        "fees_paid",
+    }
+)

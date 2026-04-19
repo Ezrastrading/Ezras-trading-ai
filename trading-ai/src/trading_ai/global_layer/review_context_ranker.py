@@ -25,7 +25,10 @@ def rank_packet_sections(raw: Dict[str, Any]) -> Dict[str, Any]:
     candidates: List[str] = []
 
     rs = raw.get("risk_summary") or {}
-    if int(rs.get("hard_stop_events") or 0) > 0:
+    lt = raw.get("live_trading_summary") or {}
+    # Hard-stop signal: packet builder sets live_trading_summary.hard_stop_events; also mirror in risk_summary when present.
+    hs = int(rs.get("hard_stop_events") or 0) or int(lt.get("hard_stop_events") or 0)
+    if hs > 0:
         anomalies.append("hard_stop_events>0")
     if int(rs.get("write_verification_failures") or 0) > 0:
         anomalies.append("write_verification_failures")

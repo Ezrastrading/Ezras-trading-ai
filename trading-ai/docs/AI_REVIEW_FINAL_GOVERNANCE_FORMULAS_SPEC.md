@@ -16,6 +16,8 @@ All scores clamped **0–100**. Labels: 0–24 low, 25–49 medium, 50–74 high
 
 **Promotion gates:** `promotion_gates_ok()` — thresholds on candidate/shadow/drawdown/governance, no paused live mode, no verification failure, no hard-stop cluster.
 
+**Applied at runtime:** After each full review cycle (and when queues are refreshed), `queue_priority_refresh.refresh_queue_priorities` sorts queue items by these scores, writes `governance_priority_score` on each item, and sets `promotion_gates_ok` on promotion rows using joint-review context (`joint_review_latest.json`) for paused / verification / risk-cluster flags.
+
 ## Anomaly severity
 
 Helpers: `anomaly_severity_label`, `ws_stale_severity_market`, `ws_stale_severity_user`. Aggregate: `compute_anomaly_aggregate_score` in `review_confidence.py` (packet + optional components).
@@ -25,6 +27,8 @@ Default thresholds (see `PRODUCTION_DEFAULTS` in `governance_formulas.py`): mark
 ## Packet completeness
 
 `compute_packet_completeness_score(packet)` — ten sections aligned to `ai_review_packet_builder` keys (capital, avenue_state, live, risk, route, shadow, goal, lesson, review_context_rank, verification signal from `risk_summary`).
+
+`adjust_completeness_for_packet_truth` further lowers the score when `packet_truth.limitations` is long, `federation_conflict_count` is non-zero, slippage/net coverage labels are thin (`field_quality_summary`), or an expected avenue is **missing** in `avenue_representation` — so weak evidence cannot present as a full-quality packet.
 
 ## Model agreement
 

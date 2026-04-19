@@ -21,6 +21,14 @@ from trading_ai.nte.databank.query_helpers import (
 from trading_ai.nte.databank.trade_intelligence_databank import TradeIntelligenceDatabank
 
 
+def _supabase_ok(*_a: object, **_kw: object) -> dict:
+    return {"success": True, "write_status": "success"}
+
+
+def _supabase_fail(*_a: object, **_kw: object) -> dict:
+    return {"success": False, "write_status": "failed"}
+
+
 def _minimal_trade(trade_id: str, avenue_id: str, avenue_name: str) -> dict:
     return {
         "trade_id": trade_id,
@@ -50,7 +58,7 @@ def test_one_closed_trade_full_local_record(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     raw = _minimal_trade("tid_smoke_1", "A", "coinbase")
     out = TradeIntelligenceDatabank().process_closed_trade(raw)
@@ -71,9 +79,9 @@ def test_supabase_upsert_called(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     calls: list = []
 
-    def capture(row) -> bool:
+    def capture(row) -> dict:
         calls.append(row)
-        return True
+        return _supabase_ok()
 
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
@@ -91,7 +99,7 @@ def test_scores_computed(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     raw = _minimal_trade("tid_sc", "B", "kalshi")
     out = TradeIntelligenceDatabank().process_closed_trade(raw)
@@ -106,7 +114,7 @@ def test_summaries_update(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     TradeIntelligenceDatabank().process_closed_trade(_minimal_trade("tid_sum", "A", "coinbase"))
     daily = json.loads(path_daily_summary().read_text(encoding="utf-8"))
@@ -117,7 +125,7 @@ def test_failed_supabase_logged(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: False,
+        _supabase_fail,
     )
     out = TradeIntelligenceDatabank().process_closed_trade(_minimal_trade("tid_fail", "A", "coinbase"))
     assert out["ok"] is False
@@ -132,7 +140,7 @@ def test_duplicate_trade_id_no_second_row(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     t = _minimal_trade("tid_dup", "A", "coinbase")
     assert TradeIntelligenceDatabank().process_closed_trade(t)["ok"] is True
@@ -154,7 +162,7 @@ def test_avenue_tagging(aid: str, name: str, monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     tid = f"tid_{aid}_av"
     TradeIntelligenceDatabank().process_closed_trade(_minimal_trade(tid, aid, name))
@@ -167,7 +175,7 @@ def test_route_fields_persist(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     raw = _minimal_trade("tid_route", "A", "coinbase")
     TradeIntelligenceDatabank().process_closed_trade(raw)
@@ -181,7 +189,7 @@ def test_first_twenty_query(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     for i in range(25):
         TradeIntelligenceDatabank().process_closed_trade(
@@ -196,7 +204,7 @@ def test_goal_and_learning_hooks(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADE_DATABANK_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "trading_ai.nte.databank.trade_intelligence_databank.upsert_trade_event",
-        lambda row: True,
+        _supabase_ok,
     )
     TradeIntelligenceDatabank().process_closed_trade(_minimal_trade("tid_hook", "A", "coinbase"))
     goal = tmp_path / "goal_progress_snapshot.json"

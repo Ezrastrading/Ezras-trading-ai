@@ -28,6 +28,42 @@ logger = logging.getLogger(__name__)
 SleepFn = Callable[[float], None]
 
 
+def _governance_preflight_live_submit(
+    intent: ExecutionIntent,
+    *,
+    operation: str,
+    route: str,
+) -> Optional[OrderResult]:
+    """
+    Returns a failed OrderResult if joint governance blocks; None if caller should proceed.
+    Always records ``check_new_order_allowed_full`` (JSON log) before any venue submit.
+    """
+    from trading_ai.global_layer.governance_order_gate import check_new_order_allowed_full
+
+    meta = intent.meta if isinstance(intent.meta, dict) else {}
+    tid = str(meta.get("trade_id") or meta.get("journal_trade_id") or "").strip() or None
+    ok, reason, _audit = check_new_order_allowed_full(
+        venue=str(intent.outlet or "unknown").lower(),
+        operation=operation,
+        route=route,
+        intent_id=tid,
+        log_decision=True,
+    )
+    if ok:
+        return None
+    return OrderResult(
+        order_id="",
+        filled_price=0.0,
+        filled_size=0.0,
+        timestamp=time.time(),
+        status="governance_blocked",
+        outlet=str(intent.outlet or ""),
+        raw={"governance_reason": reason},
+        success=False,
+        reason=f"governance: {reason}",
+    )
+
+
 def ezras_dry_run_from_env() -> bool:
     """True when ``EZRAS_DRY_RUN`` is set to a truthy value (1, true, yes). Default: false → live execution."""
     v = (os.environ.get("EZRAS_DRY_RUN") or "").strip().lower()
@@ -37,6 +73,67 @@ def ezras_dry_run_from_env() -> bool:
 def manifold_real_money_execution_enabled() -> bool:
     """Manifold is play-money (mana) unless ``MANIFOLD_REAL_MONEY`` is exactly ``true``."""
     return (os.environ.get("MANIFOLD_REAL_MONEY") or "").strip().lower() == "true"
+
+
+def _core_execution_preflight(intent: ExecutionIntent) -> Optional[OrderResult]:
+    """
+    Strategy score + capital limits before venue submit (after Polymarket early exits).
+    Best-effort: failures in this layer do not block trading.
+    """
+    meta = intent.meta if isinstance(intent.meta, dict) else {}
+    sk = str(meta.get("strategy_key") or "shark_default")
+    try:
+        from trading_ai.strategy.strategy_validation_engine import get_strategy_validation_engine
+
+        sve = get_strategy_validation_engine()
+        if sve.is_strategy_disabled(sk):
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="strategy_blocked",
+                outlet=str(intent.outlet or ""),
+                raw={"strategy_key": sk},
+                success=False,
+                reason="strategy_disabled_validation",
+            )
+    except Exception as exc:
+        logger.debug("strategy validation preflight skipped: %s", exc)
+
+    prop = float(getattr(intent, "notional_usd", 0.0) or 0.0)
+    if prop <= 0:
+        return None
+    try:
+        from trading_ai.core.capital_engine import capital_preflight_block
+        from trading_ai.shark.state_store import load_capital, load_positions
+
+        cap = load_capital()
+        bal = float(cap.current_capital or 0.0)
+        pos = load_positions()
+        exposure = sum(float(p.get("notional_usd") or 0) for p in (pos.get("open_positions") or []))
+        blocked, reason = capital_preflight_block(
+            proposed_trade_usd=prop,
+            account_balance_usd=bal,
+            open_exposure_usd=exposure,
+            daily_pnl_usd=0.0,
+            day_start_balance_usd=bal,
+        )
+        if blocked:
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="capital_blocked",
+                outlet=str(intent.outlet or ""),
+                raw={"reason": reason},
+                success=False,
+                reason=f"capital: {reason}",
+            )
+    except Exception as exc:
+        logger.debug("capital preflight skipped: %s", exc)
+    return None
 
 
 def submit_order(intent: ExecutionIntent) -> OrderResult:
@@ -74,18 +171,46 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             success=False,
             reason="US geoblock — scan only",
         )
+    blocked_core = _core_execution_preflight(intent)
+    if blocked_core is not None:
+        return blocked_core
     if o == "kalshi":
+        blocked = _governance_preflight_live_submit(
+            intent,
+            operation="shark_live_submit",
+            route=str((intent.meta or {}).get("strategy_key") or "kalshi_default"),
+        )
+        if blocked is not None:
+            return blocked
         from trading_ai.shark.outlets.kalshi import KalshiClient
 
         client = KalshiClient()
         ticker = intent.market_id
         if ":" in ticker:
             ticker = ticker.split(":")[-1]
-        return client.place_order(
+        res = client.place_order(
             ticker=ticker,
             side=intent.side,
             count=max(1, int(intent.shares)),
         )
+        try:
+            from trading_ai.global_layer.kalshi_execution_mirror import append_kalshi_execution_mirror
+
+            append_kalshi_execution_mirror(
+                intent_summary={
+                    "outlet": intent.outlet,
+                    "market_id": intent.market_id,
+                    "side": intent.side,
+                    "shares": intent.shares,
+                    "strategy_key": (intent.meta or {}).get("strategy_key"),
+                },
+                order_id=str(res.order_id or ""),
+                success=bool(res.success),
+                raw_status=str(res.status or ""),
+            )
+        except Exception as exc:
+            logger.warning("kalshi execution mirror append skipped: %s", exc)
+        return res
     if o == "manifold":
         if not manifold_real_money_execution_enabled():
             logger.info("Manifold skipped — play money only")
@@ -119,6 +244,13 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 success=False,
                 reason="COINBASE_EXECUTION_ENABLED is not true",
             )
+        blocked = _governance_preflight_live_submit(
+            intent,
+            operation="shark_live_coinbase_submit",
+            route=str((intent.meta or {}).get("strategy_key") or "coinbase_shark"),
+        )
+        if blocked is not None:
+            return blocked
         from trading_ai.shark.outlets.coinbase import CoinbaseFetcher
 
         pid = str(intent.meta.get("product_id") or intent.market_id or "BTC-USD")
@@ -149,6 +281,13 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 success=False,
                 reason="ROBINHOOD_EXECUTION_ENABLED is not true",
             )
+        blocked = _governance_preflight_live_submit(
+            intent,
+            operation="shark_live_robinhood_submit",
+            route=str((intent.meta or {}).get("strategy_key") or "robinhood_shark"),
+        )
+        if blocked is not None:
+            return blocked
         from trading_ai.shark.outlets.robinhood import RobinhoodFetcher
 
         sym = str(intent.market_id or intent.meta.get("symbol") or "").upper()
@@ -304,6 +443,15 @@ def handle_resolution(
     from trading_ai.shark.state_store import apply_win_loss_to_capital
 
     apply_win_loss_to_capital(pnl)
+
+    try:
+        from trading_ai.core.portfolio_engine import PortfolioEngine
+        from trading_ai.core.system_guard import get_system_guard
+
+        get_system_guard().record_closed_trade_pnl(float(pnl))
+        PortfolioEngine().record_realized_pnl(str(position.outlet or "unknown").strip().lower(), float(pnl))
+    except Exception:
+        logger.debug("system_guard/portfolio resolution hook skipped", exc_info=True)
 
     data = load_positions()
     ops = [p for p in (data.get("open_positions") or []) if p.get("position_id") != position.position_id]

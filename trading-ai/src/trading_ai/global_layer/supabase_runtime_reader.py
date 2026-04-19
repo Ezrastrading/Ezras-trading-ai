@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from trading_ai.global_layer.supabase_env_keys import resolve_supabase_jwt_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ def read_supabase_snapshot(
         "errors": [],
     }
     url = (os.environ.get("SUPABASE_URL") or "").strip()
-    key = (os.environ.get("SUPABASE_KEY") or "").strip()
+    key, _key_src = resolve_supabase_jwt_key()
     if not url or not key:
         out["missing_sources"].append("supabase_credentials")
         return out

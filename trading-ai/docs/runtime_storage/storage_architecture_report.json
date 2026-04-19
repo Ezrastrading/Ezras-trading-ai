@@ -1,0 +1,22 @@
+{
+  "schema": "storage_architecture_report_v1",
+  "generated": "2026-04-19",
+  "principles": {
+    "local_source_of_truth": "Runtime JSON/JSONL under EZRAS_RUNTIME_ROOT (NTE memory, global memory, databank) is the authoritative artifact chain for execution, federation, and governance reads.",
+    "remote_role": "Supabase (when configured) is remote durability, inspection, and optional aggregation — not a replacement for local append-only truth during the session.",
+    "mirroring": "trade_events rows and selected shark_state keys may be upserted to Supabase after local write succeeds; local write is never rolled back on remote failure.",
+    "live_requirement": "Live trading requires explicit EZRAS_RUNTIME_ROOT (or equivalent session root), resolvable databank root (TRADE_DATABANK_MEMORY_ROOT or EZRAS_RUNTIME_ROOT/databank), writable governance log sink, and for remote-sync stance: SUPABASE_URL + SUPABASE_KEY (or service role via preflight-accepted vars)."
+  },
+  "sync_semantics": {
+    "local_raw_event_success": "Row appended to local trade_events.jsonl and/or trade_memory updated on disk.",
+    "remote_sync_success": "supabase_trade_sync.upsert_trade_event returns True (PostgREST 2xx).",
+    "partial_success": "Local OK, remote upsert False (logged warning — operator should monitor).",
+    "hard_failure": "Local write fails or DatabankRootUnsetError — must not claim trade recorded."
+  },
+  "code_references": {
+    "databank_root": "trading_ai.nte.databank.local_trade_store.resolve_databank_root",
+    "supabase_upsert": "trading_ai.nte.databank.supabase_trade_sync",
+    "shark_state_push": "trading_ai.shark.remote_state.push_state_to_supabase",
+    "supabase_reader": "trading_ai.global_layer.supabase_runtime_reader.read_supabase_snapshot"
+  }
+}

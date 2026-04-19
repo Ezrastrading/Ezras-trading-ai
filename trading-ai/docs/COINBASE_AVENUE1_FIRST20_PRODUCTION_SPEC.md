@@ -6,6 +6,8 @@ This file defines the exact production requirements for Coinbase Avenue 1 launch
 
 This file is the source of truth for the first live Coinbase launch.
 
+**Close-path wiring (structural):** On each NTE position close, the engine writes to NTE `trade_memory.json` (via `GlobalLearningEngine.on_trade_closed`) **and** invokes the Trade Intelligence databank pipeline (`process_closed_trade` with payloads from `nte/databank/coinbase_close_adapter.py`) so local `trade_events.jsonl` and verification health stay aligned with operational memory. Governance packets federate both sources (memory primary, databank enrichment). **Packet:** `packet_truth.field_quality_summary` and `readiness_caveats` surface missing slippage/fees or federation conflicts — not a profitability claim.
+
 ---
 
 ## 1. Launch objective

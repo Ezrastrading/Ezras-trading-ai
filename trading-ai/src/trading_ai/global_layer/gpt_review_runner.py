@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -13,7 +12,13 @@ from typing import Any, Dict, List, Optional
 from trading_ai.global_layer.review_policy import load_policy_from_environ
 from trading_ai.global_layer.review_prompts import GPT_SYSTEM_PROMPT, REPAIR_PROMPT, gpt_user_prompt
 from trading_ai.global_layer.review_retry_policy import MAX_JSON_REPAIR_ATTEMPTS, MAX_MODEL_CALL_RETRIES
-from trading_ai.global_layer.review_schema import extract_json_dict, strip_internal_keys, validate_gpt_output
+from trading_ai.global_layer.review_schema import (
+    GPT_OUTPUT_KEYS,
+    extract_json_dict,
+    strip_internal_keys,
+    validate_gpt_output,
+    whitelist_model_output,
+)
 from trading_ai.global_layer.review_storage import ReviewStorage
 
 logger = logging.getLogger(__name__)
@@ -156,11 +161,14 @@ def run_gpt_review(
         )
         return out
 
-    parsed["stub"] = False
-    parsed["_repair_used"] = repair_used
-    st.save_json("gpt_review_latest.json", strip_internal_keys(parsed))
+    contract = whitelist_model_output(parsed, GPT_OUTPUT_KEYS)
+    contract["stub"] = False
+    st.save_json("gpt_review_latest.json", strip_internal_keys(contract))
     st.append_jsonl(
         "gpt_review_history.jsonl",
-        {"ts": time.time(), "review_id": parsed.get("review_id"), "stub": False, "validation_ok": True},
+        {"ts": time.time(), "review_id": contract.get("review_id"), "stub": False, "validation_ok": True},
     )
-    return parsed
+    out = dict(contract)
+    out["_validation_ok"] = True
+    out["_repair_used"] = repair_used
+    return out

@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
+from trading_ai.global_layer.avenue_truth_contract import normalize_avenue_key
 from trading_ai.global_layer.global_memory_store import GlobalMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,14 @@ def aggregate_from_trades(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     m_net = defaultdict(float)
     by_avenue: Dict[str, float] = defaultdict(float)
     for t in trades:
-        net = float(t.get("net_pnl_usd") or 0.0)
-        av = str(t.get("avenue") or t.get("avenue_id") or "coinbase")
+        raw = t.get("net_pnl_usd")
+        if raw is None:
+            raw = t.get("net_pnl")
+        try:
+            net = float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            net = 0.0
+        av = normalize_avenue_key(t.get("avenue") or t.get("avenue_name") or t.get("avenue_id") or "coinbase")
         by_avenue[av] += net
         ts = _parse_ts(t.get("logged_at") or t.get("exit_time") or t.get("ts"))
         if ts >= day_cut:
@@ -61,7 +68,7 @@ def refresh_global_pnl_files(store: GlobalMemoryStore, trades: List[Dict[str, An
     daily["period_net_usd"] = sum(agg["daily_buckets"].values()) if agg["daily_buckets"] else 0.0
     daily["by_avenue"] = agg["by_avenue"]
     daily["trade_count"] = len(trades)
-    daily["notes"] = "from trade_memory aggregation"
+    daily["notes"] = "from federated trade list (nte memory + databank enrichment)"
     store.save_json("daily_pnl_summary.json", daily)
 
     w = store.load_json("weekly_pnl_summary.json")

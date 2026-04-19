@@ -1,0 +1,9 @@
+{
+  "schema": "env_handling_verification_v1",
+  "python_dotenv_available": true,
+  "load_dotenv_used_in_script": true,
+  "shell_source_dotenv_safe": false,
+  "reason_not_shell_safe": "Multiline unquoted PEM in .env breaks POSIX source; use python-dotenv or file-based export",
+  "coinbase_pem_normalization": "live_first_20_operator replaces \\\\n before PEM parse",
+  "reference": "docs/runtime_storage/env_handling_report.json"
+}

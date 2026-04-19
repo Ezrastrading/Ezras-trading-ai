@@ -1,4 +1,10 @@
-"""Trade Intelligence Databank — global trade truth, scores, summaries, Supabase sync."""
+"""Trade Intelligence Databank — global trade truth, scores, summaries, Supabase sync.
+
+Heavy modules (e.g. :class:`TradeIntelligenceDatabank`) are **not** imported here to avoid
+cycles with ``edge`` / ``organism``; import them explicitly:
+
+  ``from trading_ai.nte.databank.trade_intelligence_databank import TradeIntelligenceDatabank``
+"""
 
 from __future__ import annotations
 
@@ -7,15 +13,12 @@ from trading_ai.nte.databank.databank_schema import (
     DATABANK_SCHEMA_VERSION,
     normalize_avenue,
 )
-from trading_ai.nte.databank.trade_intelligence_databank import (
-    TradeIntelligenceDatabank,
-    process_closed_trade,
-)
+from trading_ai.nte.databank.local_trade_store import DatabankRootUnsetError, resolve_databank_root
 
 __all__ = [
     "AVENUE_REGISTRY",
     "DATABANK_SCHEMA_VERSION",
-    "TradeIntelligenceDatabank",
+    "DatabankRootUnsetError",
     "normalize_avenue",
-    "process_closed_trade",
+    "resolve_databank_root",
 ]

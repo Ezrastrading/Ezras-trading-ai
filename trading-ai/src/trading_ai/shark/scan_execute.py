@@ -121,6 +121,31 @@ def _post_scan_balance_sync() -> None:
         sync_all_platforms()
     except Exception as exc:
         logger.warning("balance sync after scan failed (non-blocking): %s", exc)
+    try:
+        from trading_ai.core.portfolio_engine import PortfolioEngine, maybe_rebalance_if_due
+        from trading_ai.shark.state_store import load_capital
+
+        rec = load_capital()
+        eng = PortfolioEngine()
+        eng.set_total_capital(float(rec.current_capital))
+        maybe_rebalance_if_due(engine=eng)
+    except Exception:
+        logger.debug("portfolio rebalance after scan skipped", exc_info=True)
+
+
+def _system_guard_post_cycle(t_cycle: float) -> None:
+    try:
+        from trading_ai.core.system_guard import get_system_guard
+        from trading_ai.nte.databank.supabase_trade_sync import report_supabase_trade_sync_diagnostics
+
+        g = get_system_guard()
+        g.record_scan_latency_ms((time.monotonic() - t_cycle) * 1000.0)
+        g.refresh_from_supabase_diagnostics(report_supabase_trade_sync_diagnostics())
+        halt2, r2 = g.should_shutdown()
+        if halt2:
+            logger.critical("system guard halt after scan cycle: %s", r2)
+    except Exception:
+        logger.debug("system guard post-cycle metrics skipped", exc_info=True)
 
 
 def run_scan_execution_cycle(
@@ -142,10 +167,23 @@ def run_scan_execution_cycle(
         f"scan cycle: execute_live="
         f"{_resolve_execute_live(None)}"
     )
+    t_cycle = time.monotonic()
+    try:
+        from trading_ai.core.system_guard import get_system_guard
+
+        guard = get_system_guard()
+        halt, halt_reason = guard.should_shutdown()
+        if halt:
+            logger.critical("scan cycle blocked — system guard: %s", halt_reason)
+            return 0, 0
+    except Exception:
+        logger.debug("system guard pre-check skipped", exc_info=True)
+
     markets = scan_markets(tuple(fetchers), fallback_demo=False)
     if not markets:
         _post_scan_balance_sync()
         _ceo_bump_scan_stats(0, 0)
+        _system_guard_post_cycle(t_cycle)
         return 0, 0
 
     attach_poly_reference_prices(markets)
@@ -397,6 +435,7 @@ def run_scan_execution_cycle(
     _touch_last_scan_unix(time.time())
     _post_scan_balance_sync()
     _ceo_bump_scan_stats(len(markets), attempts)
+    _system_guard_post_cycle(t_cycle)
     return len(markets), attempts
 
 

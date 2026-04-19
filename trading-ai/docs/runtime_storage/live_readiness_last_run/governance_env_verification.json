@@ -1,0 +1,57 @@
+{
+  "schema": "governance_env_verification_v1",
+  "strict_profile_vars_applied_this_run": [
+    "GOVERNANCE_ORDER_ENFORCEMENT",
+    "GOVERNANCE_CAUTION_BLOCK_ENTRIES",
+    "GOVERNANCE_MISSING_JOINT_BLOCKS",
+    "GOVERNANCE_STALE_JOINT_BLOCKS",
+    "GOVERNANCE_UNKNOWN_MODE_BLOCKS",
+    "GOVERNANCE_DEGRADED_INTEGRITY_BLOCKS",
+    "GOVERNANCE_JOINT_STALE_HOURS"
+  ],
+  "variables": {
+    "GOVERNANCE_ORDER_ENFORCEMENT": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_CAUTION_BLOCK_ENTRIES": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_MISSING_JOINT_BLOCKS": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_STALE_JOINT_BLOCKS": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_UNKNOWN_MODE_BLOCKS": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_DEGRADED_INTEGRITY_BLOCKS": {
+      "expected": "true",
+      "before": "",
+      "after": "true",
+      "matches": true
+    },
+    "GOVERNANCE_JOINT_STALE_HOURS": {
+      "expected": "48",
+      "before": "",
+      "after": "48",
+      "matches": true
+    }
+  },
+  "reference": "docs/runtime_storage/governance_live_profile.json"
+}

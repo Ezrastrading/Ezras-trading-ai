@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from trading_ai.global_layer.global_memory_store import GlobalMemoryStore
+from trading_ai.global_layer.trade_truth import avenue_fairness_rollups, load_federated_trades
 from trading_ai.nte.capital_ledger import load_ledger, net_equity_estimate
 from trading_ai.nte.memory.store import MemoryStore
 
@@ -26,7 +27,10 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def read_normalized_internal(*, nte_store: Optional[MemoryStore] = None) -> Dict[str, Any]:
     """
-    Priority order: capital ledger → global/nte goals → trade memory → rewards → avenues.
+    Priority order: capital ledger → global/nte goals → **federated trades** (NTE memory + databank) → rewards → avenues.
+
+    **Trade list:** :func:`trading_ai.global_layer.trade_truth.load_federated_trades` — NTE ``trade_memory.json``
+    is primary; databank JSONL enriches matching ``trade_id`` rows and appends databank-only rows (e.g. Kalshi).
 
     Deposits are reported separately from earned PnL so speed math stays honest.
     """
@@ -47,8 +51,8 @@ def read_normalized_internal(*, nte_store: Optional[MemoryStore] = None) -> Dict
     nte.ensure_defaults()
     goals = nte.load_json("goals_state.json")
     reward = nte.load_json("reward_state.json")
-    tm = nte.load_json("trade_memory.json")
-    trades: List[Dict[str, Any]] = [t for t in (tm.get("trades") or []) if isinstance(t, dict)]
+    trades, trade_truth_meta = load_federated_trades(nte_store=nte)
+    avenue_fairness = avenue_fairness_rollups(trades)
 
     avenues: Dict[str, Any] = {}
     try:
@@ -76,6 +80,8 @@ def read_normalized_internal(*, nte_store: Optional[MemoryStore] = None) -> Dict
         "reward_state": reward,
         "trades": trades,
         "trade_count": len(trades),
+        "trade_truth_meta": trade_truth_meta,
+        "avenue_fairness": avenue_fairness,
         "avenues": avenues,
         "speed_progression_cache": speed,
         "read_at_ts": time.time(),

@@ -87,6 +87,7 @@ def build_shark_scheduler(
     kalshi_hv_gate: Optional[Callable[[], None]] = None,
     kalshi_scalable_gate: Optional[Callable[[], None]] = None,
     kalshi_scalable_resolution: Optional[Callable[[], None]] = None,
+    ai_review_tick: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     if not _HAS_APS or BackgroundScheduler is None:
         logger.warning("apscheduler not installed; pip install apscheduler")
@@ -537,6 +538,22 @@ def build_shark_scheduler(
             nte_eod_session,
             CronTrigger(hour=17, minute=0, timezone="America/New_York"),
             id="nte_ceo_eod",
+            replace_existing=True,
+        )
+
+    # ── AI review scheduler (morning/midday/EOD gates via tick_scheduler) ─────
+    if ai_review_tick is not None and IntervalTrigger is not None:
+        raw_min = (os.environ.get("AI_REVIEW_TICK_MINUTES") or "20").strip()
+        try:
+            interval_min = max(5, min(180, int(raw_min)))
+        except ValueError:
+            interval_min = 20
+        sched.add_job(
+            ai_review_tick,
+            IntervalTrigger(minutes=interval_min),
+            id="ai_review_tick",
+            max_instances=1,
+            coalesce=True,
             replace_existing=True,
         )
 

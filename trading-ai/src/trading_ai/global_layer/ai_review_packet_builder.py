@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.global_layer.internal_data_reader import read_normalized_internal
 from trading_ai.global_layer.pnl_aggregator import aggregate_from_trades
@@ -17,14 +18,45 @@ from trading_ai.global_layer.review_storage import ReviewStorage
 
 FIRST_MILLION_USD = 1_000_000.0
 
+# Trades without an explicit operator routing label are grouped here — never from strategy/setup inference.
+_UNGROUPED_BUCKET = "_ungrouped"
 
-def _strategy_route_label(setup: Optional[str]) -> str:
-    s = (setup or "").lower()
-    if "mean_reversion" in s or s == "a":
-        return "route_a"
-    if "continuation" in s or "pullback" in s or s == "b":
-        return "route_b"
-    return "other"
+_BUCKET_SLUG_RE = re.compile(r"[^a-z0-9_.-]+")
+
+
+def _slug_bucket(s: str) -> str:
+    s = (s or "").strip().lower()
+    if not s:
+        return "unknown"
+    s = _BUCKET_SLUG_RE.sub("_", s).strip("_")[:64]
+    return s or "unknown"
+
+
+def route_bucket_for_trade(t: Dict[str, Any]) -> str:
+    """
+    Opaque bucket id for packet rollups — **explicit routing metadata only**.
+
+    ``strategy_class``, ``strategy_family``, ``setup_type``, etc. are passed through on trade
+    rows as optional metadata; they MUST NOT affect grouping or any downstream organism decision.
+    Priority: ``route_bucket`` / ``router_bucket`` → ``route_label`` (neutral pathway tag) →
+    :data:`_UNGROUPED_BUCKET` when nothing explicit is set.
+    """
+    for key in ("route_bucket", "router_bucket"):
+        v = t.get(key)
+        if v is not None and str(v).strip():
+            return _slug_bucket(str(v))
+    v = t.get("route_label")
+    if v is not None and str(v).strip():
+        return _slug_bucket(str(v))
+    return _UNGROUPED_BUCKET
+
+
+def _bucket_choice_source(t: Dict[str, Any]) -> str:
+    if t.get("route_bucket") or t.get("router_bucket"):
+        return "explicit_route_bucket"
+    if t.get("route_label"):
+        return "route_label_only"
+    return "ungrouped_no_explicit_route_metadata"
 
 
 def _iso_compact() -> str:
@@ -53,8 +85,103 @@ def _nte_consecutive_losses() -> int:
         return 0
 
 
-def _route_stats(trades: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
-    subs = [t for t in trades if _strategy_route_label(str(t.get("setup_type") or "")) == label]
+def _nte_open_pending_counts() -> Tuple[int, int, bool]:
+    """Coinbase NTE engine state: open positions + pending entry orders (if state file readable)."""
+    try:
+        from trading_ai.nte.execution.state import load_state
+
+        st = load_state()
+        pos = st.get("positions") or []
+        pend = st.get("pending_entry_orders") or []
+        if not isinstance(pos, list):
+            pos = []
+        if not isinstance(pend, list):
+            pend = []
+        return len(pos), len(pend), True
+    except Exception:
+        return 0, 0, False
+
+
+def _coarse_max_anomaly_severity(risk_summary: Dict[str, Any], live_summary: Dict[str, Any]) -> float:
+    """Bounded 0–100 severity hint for merger/confidence — conservative, not venue truth."""
+    rs = risk_summary or {}
+    lt = live_summary or {}
+    sev = 0.0
+    if int(rs.get("write_verification_failures") or 0) > 0:
+        sev = max(sev, 70.0)
+    if int(rs.get("loss_cluster_count") or 0) > 0:
+        sev = max(sev, 55.0)
+    if int(lt.get("hard_stop_events") or 0) > 0:
+        sev = max(sev, 60.0)
+    if int(rs.get("ws_market_stale_events") or 0) > 0 or int(rs.get("ws_user_stale_events") or 0) > 0:
+        sev = max(sev, 40.0)
+    return min(100.0, sev)
+
+
+def _net_for_trade(t: Dict[str, Any]) -> Optional[float]:
+    v = t.get("net_pnl_usd")
+    if v is None:
+        v = t.get("net_pnl")
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _win_rate_known_net(trades: List[Dict[str, Any]]) -> float:
+    nets = [_net_for_trade(t) for t in trades]
+    known = [n for n in nets if n is not None]
+    if not known:
+        return 0.0
+    wins = sum(1 for n in known if n > 0)
+    return wins / float(len(known))
+
+
+def _avg_slippage_bps_for_packet(trades: List[Dict[str, Any]]) -> Tuple[Optional[float], str]:
+    vals: List[float] = []
+    for t in trades:
+        for k in ("entry_slippage_bps", "exit_slippage_bps"):
+            x = t.get(k)
+            if x is not None:
+                try:
+                    vals.append(abs(float(x)))
+                except (TypeError, ValueError):
+                    pass
+    if not trades:
+        return None, "no_trades"
+    if not vals:
+        return None, "missing_or_thin"
+    return sum(vals) / len(vals), "estimated_from_trade_rows"
+
+
+def _field_quality_summary(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    n = len(trades)
+    if n == 0:
+        return {
+            "net_pnl_coverage_label": "none",
+            "slippage_coverage_label": "none",
+            "trades_with_known_net": 0,
+            "trades_with_any_slippage_field": 0,
+        }
+    nk = sum(1 for t in trades if _net_for_trade(t) is not None)
+    ns = sum(
+        1
+        for t in trades
+        if any(t.get(k) is not None for k in ("entry_slippage_bps", "exit_slippage_bps", "realized_move_bps"))
+    )
+    net_label = "full" if nk == n else ("partial_unknown_net" if nk > 0 else "none")
+    slip_label = "good" if ns >= max(1, n // 2) else ("partial" if ns else "missing_or_thin")
+    return {
+        "net_pnl_coverage_label": net_label,
+        "slippage_coverage_label": slip_label,
+        "trades_with_known_net": nk,
+        "trades_with_any_slippage_field": ns,
+    }
+
+
+def _route_stats_for_group(subs: List[Dict[str, Any]]) -> Dict[str, Any]:
     c = len(subs)
     if c == 0:
         return {
@@ -62,25 +189,102 @@ def _route_stats(trades: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
             "net_pnl_usd": 0.0,
             "win_rate": 0.0,
             "trade_quality_avg": 0.0,
-            "expected_edge_bps_avg": 0.0,
-            "realized_move_bps_avg": 0.0,
+            "expected_edge_bps_avg": None,
+            "expected_edge_bps_avg_note": "no_trades",
+            "realized_move_bps_avg": None,
+            "realized_move_bps_avg_note": "no_trades",
             "avg_hold_sec": 0.0,
-            "avg_slippage_bps": 0.0,
+            "avg_slippage_bps": None,
+            "avg_slippage_bps_note": "no_trades",
         }
-    wins = sum(1 for t in subs if float(t.get("net_pnl_usd") or 0) > 0)
-    exp_sum = sum(float(t.get("expected_edge_bps") or 0) for t in subs)
+    wins = sum(1 for t in subs if (_net_for_trade(t) or 0) > 0)
+    exp_vals: List[float] = []
+    for t in subs:
+        x = t.get("expected_edge_bps")
+        if x is None:
+            x = t.get("expected_net_edge_bps")
+        if x is not None:
+            try:
+                exp_vals.append(float(x))
+            except (TypeError, ValueError):
+                pass
     rm_sum = sum(float(t.get("realized_move_bps") or 0) for t in subs if t.get("realized_move_bps") is not None)
     rm_n = sum(1 for t in subs if t.get("realized_move_bps") is not None)
-    hold_sum = sum(float(t.get("duration_sec") or 0) for t in subs)
+    hold_vals = []
+    for t in subs:
+        d = t.get("duration_sec")
+        if d is not None:
+            try:
+                hold_vals.append(float(d))
+            except (TypeError, ValueError):
+                pass
+    slip_vals: List[float] = []
+    for t in subs:
+        for k in ("entry_slippage_bps", "exit_slippage_bps"):
+            x = t.get(k)
+            if x is not None:
+                try:
+                    slip_vals.append(abs(float(x)))
+                except (TypeError, ValueError):
+                    pass
     return {
         "count": c,
-        "net_pnl_usd": sum(float(t.get("net_pnl_usd") or 0) for t in subs),
+        "net_pnl_usd": sum(_net_for_trade(t) or 0.0 for t in subs),
         "win_rate": wins / float(c),
         "trade_quality_avg": 0.0,
-        "expected_edge_bps_avg": exp_sum / c,
-        "realized_move_bps_avg": (rm_sum / rm_n) if rm_n else 0.0,
-        "avg_hold_sec": hold_sum / c,
-        "avg_slippage_bps": 0.0,
+        "expected_edge_bps_avg": (sum(exp_vals) / len(exp_vals)) if exp_vals else None,
+        "expected_edge_bps_avg_note": "known_rows_only" if exp_vals else "missing_or_unknown",
+        "realized_move_bps_avg": (rm_sum / rm_n) if rm_n else None,
+        "realized_move_bps_avg_note": "known_rows_only" if rm_n else "missing_or_unknown",
+        "avg_hold_sec": (sum(hold_vals) / len(hold_vals)) if hold_vals else None,
+        "avg_slippage_bps": (sum(slip_vals) / len(slip_vals)) if slip_vals else None,
+        "avg_slippage_bps_note": "known_rows_only" if slip_vals else "missing_or_unknown",
+    }
+
+
+def build_route_summary_from_trades(
+    trades: List[Dict[str, Any]],
+    *,
+    max_buckets: int = 12,
+) -> Dict[str, Any]:
+    """
+    Neutral per-bucket stats for the review packet. Bucket ids are opaque labels, not organism routing truth.
+    If there are more than ``max_buckets`` distinct buckets, the smallest groups are merged into ``_other_merged``.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    source_counts: Dict[str, int] = {
+        "explicit_route_bucket": 0,
+        "route_label_only": 0,
+        "ungrouped_no_explicit_route_metadata": 0,
+    }
+    for t in trades:
+        b = route_bucket_for_trade(t)
+        groups.setdefault(b, []).append(t)
+        src = _bucket_choice_source(t)
+        source_counts[src] = source_counts.get(src, 0) + 1
+
+    order = sorted(groups.keys(), key=lambda k: -len(groups[k]))
+    merge_note: Optional[str] = None
+    if len(order) > max_buckets - 1:
+        keep_keys = order[: max_buckets - 1]
+        tail: List[Dict[str, Any]] = []
+        for k in order[max_buckets - 1 :]:
+            tail.extend(groups[k])
+        out_groups: Dict[str, List[Dict[str, Any]]] = {k: groups[k] for k in keep_keys}
+        if tail:
+            out_groups["_other_merged"] = tail
+            merge_note = f"merged_tail_{len(order) - max_buckets + 1}_buckets"
+        groups = out_groups
+    else:
+        groups = {k: groups[k] for k in order}
+
+    buckets_payload = {bid: _route_stats_for_group(glist) for bid, glist in groups.items()}
+    return {
+        "schema_version": "2.0",
+        "buckets": buckets_payload,
+        "bucket_order": list(buckets_payload.keys()),
+        "bucket_choice_source_counts": source_counts,
+        "merge_note": merge_note,
     }
 
 
@@ -101,6 +305,8 @@ def build_review_packet(
 
     internal = read_normalized_internal()
     trades: List[Dict[str, Any]] = [t for t in (internal.get("trades") or []) if isinstance(t, dict)]
+    truth_meta = internal.get("trade_truth_meta") if isinstance(internal.get("trade_truth_meta"), dict) else {}
+    avenue_fair = internal.get("avenue_fairness") if isinstance(internal.get("avenue_fairness"), dict) else {}
     agg = aggregate_from_trades(trades)
 
     led = internal.get("capital_ledger") or {}
@@ -119,7 +325,7 @@ def build_review_packet(
     labels = ["A", "B", "C"]
     for i, (aid, net) in enumerate(sorted(by_av.items(), key=lambda x: -abs(x[1]))[:5]):
         sub = [t for t in trades if str(t.get("avenue") or t.get("avenue_id") or "") == aid]
-        wins = sum(1 for t in sub if float(t.get("net_pnl_usd") or 0) > 0)
+        wins = sum(1 for t in sub if (_net_for_trade(t) or 0) > 0)
         avenue_summary.append(
             {
                 "avenue_id": labels[i] if i < 3 else aid,
@@ -135,10 +341,34 @@ def build_review_packet(
     best_av = max(by_av, key=by_av.get) if by_av else ""
     worst_av = min(by_av, key=by_av.get) if by_av else ""
 
-    ra = _route_stats(trades, "route_a")
-    rb = _route_stats(trades, "route_b")
+    route_summary = build_route_summary_from_trades(trades)
+
+    hard_stop_n = sum(
+        1
+        for t in trades
+        if str(t.get("exit_reason") or "") == "stop_loss"
+        or bool(t.get("hard_stop_exit"))
+        or any("hard_stop" in str(x).lower() for x in (t.get("anomaly_flags") or []))
+    )
 
     ec = _nte_execution_counters()
+    open_pos_n, pend_ord_n, nte_positions_ok = _nte_open_pending_counts()
+    slip_avg, slip_label = _avg_slippage_bps_for_packet(trades)
+    field_q = _field_quality_summary(trades)
+    readiness_caveats: List[str] = []
+    if truth_meta.get("federation_conflict_count"):
+        readiness_caveats.append(
+            f"federation_conflicts={truth_meta.get('federation_conflict_count')} (see packet_truth)"
+        )
+    if field_q.get("net_pnl_coverage_label") == "partial_unknown_net":
+        readiness_caveats.append("Some trades lack net PnL in federated ingest — win_rate uses known-net subset only.")
+    if field_q.get("slippage_coverage_label") in ("missing_or_thin", "partial"):
+        readiness_caveats.append("Slippage coverage thin — avg_slippage_bps may be null or partial.")
+    if not nte_positions_ok:
+        readiness_caveats.append("NTE Coinbase positions file unreadable — open/pending counts not sourced.")
+    for w in truth_meta.get("warnings") or []:
+        if "Kalshi" in w:
+            readiness_caveats.append(str(w))
 
     # Risk / monitoring — optional NTE dashboard
     risk_summary: Dict[str, Any] = {
@@ -166,6 +396,9 @@ def build_review_packet(
             risk_summary["loss_cluster_count"] = 1
     except Exception:
         pass
+    if hard_stop_n:
+        risk_summary["main_risk_label"] = "execution"
+        risk_summary["hard_stop_exit_count"] = hard_stop_n
 
     shadow = st.load_json("candidate_queue.json")
     items = shadow.get("items") or []
@@ -208,18 +441,24 @@ def build_review_packet(
         },
         "live_trading_summary": {
             "closed_trades_count": len(trades),
-            "open_positions_count": 0,
-            "pending_orders_count": 0,
-            "win_rate": sum(1 for t in trades if float(t.get("net_pnl_usd") or 0) > 0) / max(1, len(trades)),
-            "avg_net_pnl_usd": sum(float(t.get("net_pnl_usd") or 0) for t in trades) / max(1, len(trades)),
-            "avg_fees_usd": sum(float(t.get("fees") or t.get("fees_usd") or 0) for t in trades) / max(1, len(trades)),
-            "avg_slippage_bps": 0.0,
+            "open_positions_count": open_pos_n,
+            "pending_orders_count": pend_ord_n,
+            "win_rate": _win_rate_known_net(trades),
+            "win_rate_note": "computed_on_trades_with_known_net_only"
+            if field_q.get("net_pnl_coverage_label") == "partial_unknown_net"
+            else "all_trades_have_net",
+            "avg_net_pnl_usd": sum(_net_for_trade(t) or 0.0 for t in trades) / max(1, len(trades)),
+            "avg_fees_usd": sum(float(t.get("fees") or t.get("fees_usd") or t.get("fees_paid") or 0) for t in trades)
+            / max(1, len(trades)),
+            "avg_slippage_bps": slip_avg,
+            "avg_slippage_bps_note": slip_label,
             "consecutive_losses": _nte_consecutive_losses(),
             "stale_cancel_count": int(ec.get("stale_pending_canceled") or 0),
-            "hard_stop_events": 1 if risk_summary.get("loss_cluster_count") else 0,
+            "hard_stop_events": hard_stop_n,
             "partial_failure_events": 0,
+            "first_twenty_trades_sample_size": min(20, len(trades)),
         },
-        "route_summary": {"route_a": ra, "route_b": rb},
+        "route_summary": route_summary,
         "risk_summary": risk_summary,
         "shadow_exploration_summary": shadow_summary,
         "goal_state": {
@@ -237,7 +476,46 @@ def build_review_packet(
             "top_immediate_actions": list((sp.get("best_path") or {}).get("top_3_actions") or [])[:5],
         },
         "review_context_rank": {},
+        "packet_truth": {
+            "model": truth_meta.get("model", "federated_nte_memory_plus_databank"),
+            "precedence": truth_meta.get(
+                "precedence",
+                "nte_trade_memory_primary_databank_enrichment_and_orphan_rows",
+            ),
+            "nte_memory_trade_count": truth_meta.get("nte_memory_trade_count"),
+            "databank_event_count": truth_meta.get("databank_event_count"),
+            "databank_root": truth_meta.get("databank_root"),
+            "databank_root_source": truth_meta.get("databank_root_source"),
+            "merged_trade_count": truth_meta.get("merged_trade_count"),
+            "databank_only_trade_count": truth_meta.get("databank_only_trade_count"),
+            "databank_duplicate_trade_id_count": truth_meta.get("databank_duplicate_trade_id_count"),
+            "federation_conflict_count": truth_meta.get("federation_conflict_count"),
+            "fairness_warnings": truth_meta.get("fairness_warnings")
+            or truth_meta.get("warnings")
+            or [],
+            "avenue_fairness": avenue_fair.get("by_avenue") or {},
+            "avenue_representation": truth_meta.get("avenue_representation") or {},
+            "expected_avenues": truth_meta.get("expected_avenues") or [],
+            "field_quality_summary": field_q,
+            "readiness_caveats": readiness_caveats,
+            "play_money_labeled": bool(truth_meta.get("play_money_labeled")),
+            "open_positions_reported": bool(nte_positions_ok),
+            "aggregate_slippage_in_packet": slip_avg is not None,
+            "limitations": [
+                "Federation: see trade_truth module — memory wins numeric conflicts; enrichment fills nulls only.",
+                "Open/pending counts are sourced from NTE Coinbase engine state when the state file is readable; "
+                "otherwise counts are zero with open_positions_reported=false (not fake certainty).",
+                "avg_slippage_bps is null when no per-trade slippage fields are present — not treated as zero edge.",
+                "route_summary.buckets use explicit route_bucket/router_bucket/route_label only; "
+                "strategy_class/setup_type are not interpreted for grouping (schema v2).",
+            ],
+        },
     }
+
+    # Single place for downstream ranker/merger: mirror hard-stop into risk_summary when live summary flags it.
+    lt0 = raw["live_trading_summary"]
+    raw["risk_summary"]["hard_stop_events"] = int(lt0.get("hard_stop_events") or 0)
+    raw["risk_summary"]["max_anomaly_severity"] = _coarse_max_anomaly_severity(raw["risk_summary"], raw["live_trading_summary"])
 
     raw["review_context_rank"] = rank_packet_sections(raw)
     out, _trunc = trim_packet_for_budget(raw, max_chars=policy.max_packet_chars)
@@ -248,3 +526,39 @@ def persist_packet(packet: Dict[str, Any], *, storage: Optional[ReviewStorage] =
     st = storage or ReviewStorage()
     st.save_json("review_packet_latest.json", packet)
     st.append_jsonl("review_packet_history.jsonl", {"ts": time.time(), "packet_id": packet.get("packet_id"), "review_type": packet.get("review_type")})
+
+
+def scheduler_gates_snapshot(
+    *,
+    storage: Optional[ReviewStorage] = None,
+    policy: Optional[ReviewPolicy] = None,
+) -> Dict[str, Any]:
+    """
+    Fresh counts for ``tick_scheduler`` — does not use stale ``review_packet_latest.json``.
+
+    Returns keys: ``closed_trades_count``, ``shadow_candidates_count``, ``anomaly_loss_cluster_flag`` (0|1).
+    """
+    policy = policy or load_policy_from_environ()
+    st = storage or ReviewStorage()
+    st.ensure_review_files()
+    internal = read_normalized_internal()
+    trades: List[Dict[str, Any]] = [t for t in (internal.get("trades") or []) if isinstance(t, dict)]
+    closed = len(trades)
+    sh = st.load_json("candidate_queue.json")
+    shadow_n = len(sh.get("items") or [])
+    anom = 0
+    try:
+        from trading_ai.nte.monitoring.live_dashboard import build_live_monitoring_dashboard
+
+        dash = build_live_monitoring_dashboard(engine=None, user_ws_stale=None)
+        j = dash.get("J_risk_state") or {}
+        if int(j.get("consecutive_losses") or 0) >= 3:
+            anom = 1
+    except Exception:
+        pass
+    return {
+        "closed_trades_count": closed,
+        "shadow_candidates_count": shadow_n,
+        "anomaly_loss_cluster_flag": anom,
+        "policy_class": policy.review_token_budget_class,
+    }

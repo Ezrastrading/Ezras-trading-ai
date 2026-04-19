@@ -20,6 +20,7 @@ from trading_ai.automation.telegram_trade_events import (
     format_trade_closed_message,
     format_trade_placed_message,
 )
+from trading_ai.runtime_paths import ezras_runtime_root
 
 if TYPE_CHECKING:
     from trading_ai.config import Settings
@@ -29,13 +30,8 @@ _lock = threading.Lock()
 
 
 def runtime_root() -> Path:
-    """
-    Default: parent of the ``trading-ai`` repo (e.g. ``~/ezras-runtime`` when code is at ``~/ezras-runtime/trading-ai``).
-    """
-    raw = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
+    """Canonical runtime root — see :mod:`trading_ai.runtime_paths`."""
+    return ezras_runtime_root()
 
 
 def post_trade_log_path() -> Path:

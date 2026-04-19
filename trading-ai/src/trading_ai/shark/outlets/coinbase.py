@@ -306,10 +306,9 @@ class CoinbaseClient:
                   (``nonce`` is required by CDP; 16 random bytes as hex.)
         Payload: ``{"sub":"<key_name>","iss":"cdp","nbf":<now>,"exp":<now+120>,
                     "uri":"<METHOD> api.coinbase.com<full-path>"}``
-        ``request_path`` must be the **full path on the host**, including
-        ``/api/v3/brokerage``, and for GET requests **including the query string**
-        (e.g. ``/api/v3/brokerage/accounts`` or
-        ``/api/v3/brokerage/best_bid_ask?product_ids=BTC-USD``).
+        ``request_path`` must be the **path only** (no ``?query``), including
+        ``/api/v3/brokerage/...``, matching ``coinbase-advanced-py`` REST JWTs. Query
+        parameters belong on the HTTP URL only, not in the signed ``uri`` claim.
 
         Signature: ECDSA-P256-SHA256 over r‖s (32 B each), base64url (no padding).
         """
@@ -426,7 +425,10 @@ class CoinbaseClient:
         if not self._credentials_ready():
             raise CoinbaseAuthError("Coinbase credentials not configured")
 
-        # Build path + query once — JWT ``uri`` claim and the HTTP URL must match exactly.
+        # Query string: only on the real HTTP URL. CDP REST JWT ``uri`` claim must match
+        # ``coinbase.rest`` / ``coinbase.jwt_generator.format_jwt_uri`` — host + path **without**
+        # ``?query`` (see ``RESTBase.set_headers``: ``f"{method} {base_url}{url_path}"`` where
+        # ``url_path`` excludes params). Including ``?limit=…`` in the signed uri breaks verification (401).
         qs = _query_string(params)
         rel_path = path if path.startswith("/") else f"/{path}"
         if (
@@ -440,8 +442,8 @@ class CoinbaseClient:
             )
         base = urlparse(self.base_url)
         broker_prefix = base.path.rstrip("/")
-        uri_path_for_jwt = f"{broker_prefix}{rel_path}{qs}"
-        jwt_token = self._build_jwt(method, uri_path_for_jwt)
+        jwt_path_only = f"{broker_prefix}{rel_path}"
+        jwt_token = self._build_jwt(method, jwt_path_only)
         headers = {
             "Authorization": f"Bearer {jwt_token}",
             "Content-Type": "application/json",
@@ -498,10 +500,31 @@ class CoinbaseClient:
 
     # ── account ───────────────────────────────────────────────────────────────
 
+    def list_all_accounts(self) -> List[Dict[str, Any]]:
+        """GET /accounts with cursor pagination until ``has_next`` is false — full balance picture."""
+        aggregated: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _ in range(500):
+            params: Dict[str, Any] = {"limit": 250}
+            if cursor:
+                params["cursor"] = cursor
+            j = self._request("GET", "/accounts", params=params)
+            batch = j.get("accounts") or []
+            if isinstance(batch, list):
+                aggregated.extend([a for a in batch if isinstance(a, dict)])
+            has_next = bool(j.get("has_next"))
+            cursor = (j.get("cursor") or j.get("next_cursor") or "").strip() or None
+            if not has_next:
+                break
+            if not cursor:
+                break
+            if not batch:
+                break
+        return aggregated
+
     def get_accounts(self) -> List[Dict[str, Any]]:
-        """GET /accounts — list all portfolio accounts with balances."""
-        j = self._request("GET", "/accounts")
-        return j.get("accounts") or []
+        """GET /accounts — all pages (see :meth:`list_all_accounts`)."""
+        return self.list_all_accounts()
 
     @staticmethod
     def _safe_float(x: Any) -> float:
@@ -664,8 +687,7 @@ class CoinbaseClient:
             except Exception as e:
                 logger.warning("get_portfolio_balance %s: %s", path, e)
         try:
-            j = self._request("GET", "/accounts")
-            return self._sum_usd_usdc_from_accounts_json(j)
+            return self._sum_usd_usdc_from_accounts_json({"accounts": self.list_all_accounts()})
         except Exception as e:
             logger.warning("get_portfolio_balance accounts fallback: %s", e)
             return 0.0
@@ -754,8 +776,7 @@ class CoinbaseClient:
                 pass
 
         try:
-            j = self._request("GET", "/accounts")
-            accounts = j.get("accounts", []) or []
+            accounts = self.list_all_accounts()
             total = 0.0
             detected_portfolio_id: Optional[str] = None
             for a in accounts:

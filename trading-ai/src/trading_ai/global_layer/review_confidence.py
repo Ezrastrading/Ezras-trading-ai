@@ -39,7 +39,7 @@ def compute_agreement_score(
     claude: Dict[str, Any],
     gpt: Dict[str, Any],
 ) -> float:
-    """§12 model agreement (0–100)."""
+    """Model agreement score (0–100)."""
     cl_rm = str(claude.get("risk_mode_recommendation") or "")
     gp_ls = str(gpt.get("live_status_recommendation") or "")
     c1 = component_agreement(cl_rm, gp_ls)
@@ -76,6 +76,26 @@ def _section_weight(packet: Dict[str, Any], path: List[str], stale_ok: bool = Tr
     return 1.0
 
 
+def adjust_completeness_for_packet_truth(packet: Dict[str, Any], score: float) -> float:
+    """Lower completeness when ``packet_truth`` documents known gaps, conflicts, or thin coverage."""
+    pt = packet.get("packet_truth") if isinstance(packet.get("packet_truth"), dict) else {}
+    lim = pt.get("limitations") if isinstance(pt.get("limitations"), list) else []
+    penalty = min(12.0, float(len(lim)) * 2.5)
+    fc = int(pt.get("federation_conflict_count") or 0)
+    if fc:
+        penalty += min(18.0, float(fc) * 2.0)
+    fq = pt.get("field_quality_summary") if isinstance(pt.get("field_quality_summary"), dict) else {}
+    if str(fq.get("slippage_coverage_label") or "") == "missing_or_thin":
+        penalty += 8.0
+    if str(fq.get("net_pnl_coverage_label") or "") == "partial_unknown_net":
+        penalty += 10.0
+    rep = pt.get("avenue_representation") if isinstance(pt.get("avenue_representation"), dict) else {}
+    for _av, row in rep.items():
+        if isinstance(row, dict) and (row.get("missing") is True or row.get("representation") == "missing"):
+            penalty += 4.0
+    return clamp100(max(0.0, score - min(45.0, penalty)))
+
+
 def compute_packet_completeness_score(packet: Dict[str, Any]) -> float:
     """Packet completeness (0–100) — aligned to ``ai_review_packet_builder`` keys."""
     rs = packet.get("risk_summary") if isinstance(packet.get("risk_summary"), dict) else {}
@@ -104,7 +124,7 @@ def compute_anomaly_aggregate_score(
     capital_impact: float = 0.0,
     unresolved: float = 0.0,
 ) -> float:
-    """§10 anomaly aggregate (0–100)."""
+    """Anomaly aggregate score (0–100)."""
     rs = packet.get("risk_summary") or {}
     if max_severity is None:
         max_severity = float(rs.get("max_anomaly_severity") or rs.get("anomaly_severity") or 0)

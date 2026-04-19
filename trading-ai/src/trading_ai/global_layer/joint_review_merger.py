@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from trading_ai.global_layer.review_confidence import (
+    adjust_completeness_for_packet_truth,
     compute_agreement_score,
     compute_anomaly_aggregate_score,
     compute_joint_confidence,
@@ -227,7 +228,7 @@ def merge_reviews(
         and str(claude.get("risk_mode_recommendation") or "") != str(gpt.get("live_status_recommendation") or "")
     )
 
-    pkt_comp = compute_packet_completeness_score(packet)
+    pkt_comp = adjust_completeness_for_packet_truth(packet, compute_packet_completeness_score(packet))
     rs = packet.get("risk_summary") or {}
     max_sev = float(rs.get("max_anomaly_severity") or (70 if int(rs.get("write_verification_failures") or 0) > 0 else 0))
     anom_agg = compute_anomaly_aggregate_score(packet, max_severity=max_sev if max_sev else None)
@@ -299,6 +300,21 @@ def merge_reviews(
         ev.append({"ts": time.time(), "kind": "review_disagreement", **gov_note})
         gov["events"] = ev[-500:]
         st.save_json("governance_events.json", gov)
+
+    # Advisory snapshot only — does not promote strategies to live.
+    pq = st.load_json("promotion_queue.json")
+    pqi = list(pq.get("items") or [])
+    pqi.append(
+        {
+            "kind": "joint_review_watchlist_snapshot",
+            "advisory_only": True,
+            "joint_review_id": jid,
+            "packet_id": pid,
+            "candidates": watch[:10],
+        }
+    )
+    pq["items"] = pqi[-200:]
+    st.save_json("promotion_queue.json", pq)
 
     st.save_json("joint_review_latest.json", {k: v for k, v in out.items() if not k.startswith("_")})
     st.append_jsonl("joint_review_history.jsonl", {"ts": time.time(), "joint_review_id": jid, "packet_id": pid})

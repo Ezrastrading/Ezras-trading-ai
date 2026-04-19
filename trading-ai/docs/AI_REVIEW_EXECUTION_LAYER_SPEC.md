@@ -1,6 +1,8 @@
 # AI Review Execution Layer
 
-Runtime behavior contract for the automated review board. **Implementation:** `trading_ai/global_layer/` — `review_prompts.py`, `review_schema.py`, `claude_review_runner.py`, `gpt_review_runner.py`, `joint_review_merger.py`, `review_confidence.py`, `review_action_router.py`, `ceo_review_writer.py`, `review_retry_policy.py`, `review_integrity.py`.
+Runtime behavior contract for the automated review board. **Implementation:** `trading_ai/global_layer/` — `review_prompts.py`, `review_schema.py` (validation + `whitelist_model_output` for contract-only keys), `claude_review_runner.py`, `gpt_review_runner.py`, `joint_review_merger.py`, `review_confidence.py`, `review_action_router.py` (rejects `FORBIDDEN_ACTION_TYPES` in `_log_action`), `ceo_review_writer.py`, `review_retry_policy.py`, `review_integrity.py`, `queue_priority_refresh.py`, `governance_order_gate.py`. Packet builder adds `packet_truth` (federated trade ingest) and mirrors `hard_stop_events` / `max_anomaly_severity` into `risk_summary` for ranker/merger. **`review_packet_expander` removed** (was dead code).
+
+**Downstream order gating (bounded):** `governance_order_gate.check_new_order_allowed` is used by Shark `run_execution_chain` (gate 1b) and NTE Coinbase `_maybe_enter`. Default is **advisory-only** (no blocking). With enforcement on: **paused** → fail-closed; **caution** → fail-closed only if `GOVERNANCE_CAUTION_BLOCK_ENTRIES=true`; **missing/empty joint**, **stale** (vs `GOVERNANCE_JOINT_STALE_HOURS`), **unknown mode**, **degraded integrity** → fail-open unless the matching `GOVERNANCE_*_BLOCKS` env is set (see `governance_order_gate` module docstring). All paths are INFO/WARN logged — no silent blocks.
 
 ## Core principle
 

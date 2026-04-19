@@ -37,6 +37,22 @@ def _log_action(
     blocked: bool = False,
     block_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if action_type in FORBIDDEN_ACTION_TYPES:
+        row = {
+            "action_id": f"ra_blocked_{uuid.uuid4().hex[:12]}",
+            "joint_review_id": joint_review_id,
+            "packet_id": packet_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "action_type": action_type,
+            "target": target,
+            "reason": reason,
+            "evidence_refs": evidence_refs,
+            "applied": False,
+            "blocked": True,
+            "block_reason": "forbidden_action_type",
+        }
+        st.append_jsonl("review_action_log.jsonl", row)
+        return row
     row = {
         "action_id": f"ra_{uuid.uuid4().hex[:12]}",
         "joint_review_id": joint_review_id,

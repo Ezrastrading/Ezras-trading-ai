@@ -1,0 +1,10 @@
+{
+  "schema": "supabase_sync_fix_report_v1",
+  "change": "supabase_trade_sync._client uses resolve_supabase_jwt_key: SUPABASE_KEY first, else SUPABASE_SERVICE_ROLE_KEY",
+  "also_updated": [
+    "global_layer/supabase_runtime_reader.py",
+    "shark/remote_state.py",
+    "shark/supabase_logger.py"
+  ],
+  "logging": "supabase_client_initialized true/false with key_source and url_host (no secrets)"
+}

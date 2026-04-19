@@ -6,23 +6,49 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from trading_ai.governance.storage_architecture import avenue_memory_dir, global_memory_dir
+from trading_ai.governance.storage_architecture import avenue_memory_dir
 from trading_ai.nte.utils.atomic_json import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
 _ENV_ROOT = "TRADE_DATABANK_MEMORY_ROOT"
+_ENV_EZRAS = "EZRAS_RUNTIME_ROOT"
 
 
-def databank_memory_root() -> Path:
+class DatabankRootUnsetError(RuntimeError):
+    """Neither ``TRADE_DATABANK_MEMORY_ROOT`` nor ``EZRAS_RUNTIME_ROOT`` is set."""
+
+
+def resolve_databank_root() -> Tuple[Path, str]:
+    """
+    Resolve Trade Intelligence databank root — **no silent global fallback**.
+
+    Precedence:
+    1. ``TRADE_DATABANK_MEMORY_ROOT`` — explicit databank directory.
+    2. ``EZRAS_RUNTIME_ROOT`` / ``databank`` — session-scoped default (tests, runtime proof, operators).
+
+    Raises :class:`DatabankRootUnsetError` if neither is set (prevents bleed into shared home/runtime paths).
+    """
     override = (os.environ.get(_ENV_ROOT) or "").strip()
     if override:
         p = Path(override).expanduser().resolve()
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-    return global_memory_dir()
+        return p, "TRADE_DATABANK_MEMORY_ROOT"
+    ez = (os.environ.get(_ENV_EZRAS) or "").strip()
+    if ez:
+        p = (Path(ez).expanduser().resolve() / "databank")
+        return p, "EZRAS_RUNTIME_ROOT/databank"
+    raise DatabankRootUnsetError(
+        f"Set {_ENV_ROOT} or {_ENV_EZRAS} so the Trade Intelligence databank path is explicit "
+        f"(recommended: {_ENV_EZRAS}/databank when using a session runtime root)."
+    )
+
+
+def databank_memory_root() -> Path:
+    p, _src = resolve_databank_root()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def global_trade_events_path() -> Path:

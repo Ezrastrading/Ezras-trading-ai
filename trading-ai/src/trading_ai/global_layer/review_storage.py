@@ -112,6 +112,7 @@ class ReviewStorage:
         "joint_review_history.jsonl",
         "review_action_log.jsonl",
         "review_anomaly_packets.jsonl",
+        "review_scheduler_ticks.jsonl",
     )
 
     def __init__(self, store: Optional[GlobalMemoryStore] = None) -> None:

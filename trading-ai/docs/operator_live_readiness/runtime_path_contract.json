@@ -1,0 +1,29 @@
+{
+  "schema": "runtime_path_contract_v1",
+  "EZRAS_RUNTIME_ROOT": "<operator-set — required for shark/nte/global paths>",
+  "layout": {
+    "live_first_20_session_manifest.json": "<EZRAS_RUNTIME_ROOT>/live_first_20_sessions/<session_id>/live_first_20_session_manifest.json",
+    "live_first_20_session_report.json": "same archive dir as manifest (preflight writes via script to archive + root copy)",
+    "live_first_20_session_report_note": "scripts/live_coinbase_first_twenty.py writes manifest under archive and also EZRAS_RUNTIME_ROOT/live_first_20_session_manifest.json",
+    "trade_memory.json": "<EZRAS_RUNTIME_ROOT>/shark/nte/memory/trade_memory.json",
+    "trade_events.jsonl": "resolved by databank: TRADE_DATABANK_MEMORY_ROOT if set, else <EZRAS_RUNTIME_ROOT>/databank/trade_events.jsonl",
+    "review_packet_latest.json": "<EZRAS_RUNTIME_ROOT>/shark/memory/global/review_packet_latest.json",
+    "joint_review_latest.json": "<EZRAS_RUNTIME_ROOT>/shark/memory/global/joint_review_latest.json",
+    "review_scheduler_ticks.jsonl": "<EZRAS_RUNTIME_ROOT>/shark/memory/global/review_scheduler_ticks.jsonl",
+    "governance_gate_decisions.log": "<EZRAS_RUNTIME_ROOT>/governance_gate_decisions.log"
+  },
+  "databank_resolution": {
+    "precedence": [
+      "TRADE_DATABANK_MEMORY_ROOT → explicit directory",
+      "EZRAS_RUNTIME_ROOT/databank → if EZRAS_RUNTIME_ROOT set",
+      "else DatabankRootUnsetError — no silent fallback"
+    ],
+    "live_run_recommendation": "export TRADE_DATABANK_MEMORY_ROOT=$EZRAS_RUNTIME_ROOT/databank OR rely on EZRAS_RUNTIME_ROOT/databank default"
+  },
+  "writability": {
+    "EZRAS_RUNTIME_ROOT": "must be writable (preflight check 2)",
+    "governance_log": "parent of governance_gate_decisions.log must be writable (check 8)",
+    "archive": "live_first_20_sessions/<session_id> created under runtime root (check 10)"
+  },
+  "global_memory_note": "ReviewStorage uses GlobalMemoryStore under shark/memory/global — same tree as joint_review_latest.json per trading_ai.global_layer.review_storage + global_memory_store."
+}

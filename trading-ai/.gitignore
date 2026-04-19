@@ -25,3 +25,6 @@ data/
 
 # Stray duplicate of runtime layout (use EZRAS_RUNTIME_ROOT/shark instead)
 shark/nte/
+
+# Local runtime proof harness output (regenerate with scripts under runtime_proof/)
+runtime_proof_runs/

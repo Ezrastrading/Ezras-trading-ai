@@ -203,6 +203,75 @@ def run_execution_chain(
         return ChainResult(False, "doctrine", audit, intent)
     log.info("Gate 1 doctrine: PASS")
 
+    # Step 1b — Joint AI governance (optional; default advisory-only unless GOVERNANCE_ORDER_ENFORCEMENT=true).
+    # Log line is suppressed here when a live submit will follow — ``execution_live.submit_order`` logs at API boundary.
+    from trading_ai.global_layer.governance_order_gate import check_new_order_allowed_full
+
+    o_for_gov = (outlet or intent.outlet or "").strip().lower() or "unknown"
+    intent_tid = str((intent.meta or {}).get("trade_id") or "").strip() or None
+    log_gov_here = o_for_gov not in ("kalshi", "coinbase", "robinhood") or not run_live
+    try:
+        gov_ok, gov_reason, gov_audit = check_new_order_allowed_full(
+            venue=o_for_gov,
+            operation="shark_new_entry",
+            route=str(strategy_key or "n/a"),
+            intent_id=intent_tid,
+            log_decision=log_gov_here,
+        )
+    except Exception as exc:
+        _append(audit, "1b_joint_governance", ok=False, error=str(exc))
+        log.exception("Gate 1b joint governance: exception")
+        return ChainResult(False, "joint_governance_error", audit, intent)
+    _append(
+        audit,
+        "1b_joint_governance",
+        ok=gov_ok,
+        reason=gov_reason,
+        live_mode=gov_audit.get("live_mode"),
+        joint_stale=gov_audit.get("joint_stale"),
+        review_integrity_state=gov_audit.get("review_integrity_state"),
+    )
+    if not gov_ok:
+        log.info("Gate 1b joint governance: FAIL reason=%s", gov_reason)
+        return ChainResult(False, "joint_governance", audit, intent)
+    log.info("Gate 1b joint governance: PASS (%s)", gov_reason)
+
+    try:
+        from trading_ai.strategy.strategy_validation_engine import get_strategy_validation_engine
+
+        sve = get_strategy_validation_engine()
+        if sve.is_strategy_disabled(str(strategy_key or "shark_default")):
+            _append(audit, "1c_strategy_validation", ok=False, strategy_key=strategy_key)
+            log.info("Gate 1c strategy validation: FAIL (strategy disabled)")
+            return ChainResult(False, "strategy_validation", audit, intent)
+        _append(audit, "1c_strategy_validation", ok=True, strategy_key=strategy_key)
+    except Exception as exc:
+        _append(audit, "1c_strategy_validation", ok=True, skipped=str(exc))
+
+    try:
+        from trading_ai.core.capital_engine import capital_preflight_block
+
+        prop = float(getattr(intent, "notional_usd", 0.0) or 0.0)
+        if prop > 0:
+            exposure = sum(
+                float(p.get("notional_usd") or 0)
+                for p in (load_positions().get("open_positions") or [])
+            )
+            blocked, creason = capital_preflight_block(
+                proposed_trade_usd=prop,
+                account_balance_usd=float(capital),
+                open_exposure_usd=exposure,
+                daily_pnl_usd=0.0,
+                day_start_balance_usd=float(capital),
+            )
+            if blocked:
+                _append(audit, "1d_capital_engine", ok=False, reason=creason)
+                log.info("Gate 1d capital engine: FAIL reason=%s", creason)
+                return ChainResult(False, "capital_engine", audit, intent)
+        _append(audit, "1d_capital_engine", ok=True)
+    except Exception as exc:
+        _append(audit, "1d_capital_engine", ok=True, skipped=str(exc))
+
     # Step 2 — Phase limit (use same blend as intent build so scan-qualified edges are not double-blocked)
     _append(audit, "2_phase_limit", phase=phase.value, min_edge_effective=blend_exec_min_edge)
     if edge < blend_exec_min_edge:

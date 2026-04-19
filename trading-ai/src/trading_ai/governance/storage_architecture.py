@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict
 
+from trading_ai.runtime_paths import ezras_runtime_root
+
 
 def runtime_root() -> Path:
-    raw = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (Path.home() / "ezras-runtime").resolve()
+    """Canonical organism runtime root (same as automation/risk_bucket)."""
+    return ezras_runtime_root()
 
 
 def shark_data_dir() -> Path:

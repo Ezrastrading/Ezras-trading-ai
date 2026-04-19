@@ -1,0 +1,17 @@
+{
+  "schema": "env_handling_report_v1",
+  "problem": "POSIX shell `source .env` fails when values contain unquoted PEM lines or raw newlines — multiline secrets are not bash-safe unless quoted or escaped.",
+  "python_path": {
+    "recommended": "Use python-dotenv `load_dotenv(path)` in Python entrypoints (see trading_ai.shark.dotenv_load.load_shark_dotenv).",
+    "note": "Repository `.env` may use \\n escapes for PEM — dotenv parses these; bash source does not."
+  },
+  "shell_operators": {
+    "avoid": "sourcing raw .env with embedded multiline PEM",
+    "prefer": [
+      "Export from a file: export COINBASE_API_PRIVATE_KEY=\"$(cat secrets/coinbase_ec.pem)\"",
+      "Or single-line PEM in .env with \\n only, loaded by Python dotenv — not by bash source"
+    ]
+  },
+  "scripts_policy": "Do not add `source .env` to shell scripts that must support arbitrary PEM; use Python driver or explicit exports from files.",
+  "artifacts": [".env.example.live", ".env.example.remote_sync", "docs/operator_env_setup.md"]
+}

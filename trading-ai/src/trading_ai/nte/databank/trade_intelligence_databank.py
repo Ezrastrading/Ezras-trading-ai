@@ -18,6 +18,9 @@ from trading_ai.nte.databank.local_trade_store import (
 )
 from trading_ai.nte.databank.supabase_trade_sync import upsert_trade_event
 from trading_ai.nte.databank.trade_event_writer import validate_and_build_record
+from trading_ai.organism.execution_quality import attach_execution_quality
+from trading_ai.organism.pipeline import OrganismClosedTradeHook
+from trading_ai.organism.regime import classify_regime_bucket
 from trading_ai.nte.databank.trade_summary_engine import (
     append_learning_hook,
     refresh_all_summaries,
@@ -62,6 +65,20 @@ class TradeIntelligenceDatabank:
             )
             return {"ok": False, "trade_id": raw.get("trade_id"), "validation_errors": verrs, "stages": stages}
 
+        merged = attach_execution_quality(merged)
+        merged["regime_bucket"] = classify_regime_bucket(str(merged.get("regime") or ""))
+        truth_ok, truth_errs = OrganismClosedTradeHook.pre_validate(merged)
+        if not truth_ok:
+            errors.extend(truth_errs)
+            stages["validated"] = False
+            self._finalize_verification(
+                str(raw.get("trade_id") or "unknown"),
+                stages,
+                errors,
+                partial_failure=True,
+            )
+            return {"ok": False, "trade_id": raw.get("trade_id"), "validation_errors": truth_errs, "stages": stages}
+
         stages["validated"] = True
         trade_id = str(merged["trade_id"])
 
@@ -77,11 +94,24 @@ class TradeIntelligenceDatabank:
         upsert_score_record(trade_id, merged, scores, extra_meta=None)
         stages["local_score_record"] = True
 
-        supabase_ok = upsert_trade_event(row_for_supabase_trade_events(merged, scores))
+        sup_res = upsert_trade_event(row_for_supabase_trade_events(merged, scores))
+        supabase_ok = bool(sup_res.get("success"))
         stages["supabase_trade_events"] = supabase_ok
+        stages["supabase_write_status"] = sup_res.get("write_status")
         if not supabase_ok:
             errors.append("supabase_upsert_failed")
         upsert_score_record(trade_id, merged, scores, extra_meta={"supabase_sync": bool(supabase_ok)})
+
+        try:
+            organism_hook = OrganismClosedTradeHook.after_closed_trade(
+                merged,
+                stages=stages,
+                pipeline_partial=not supabase_ok,
+            )
+            stages["organism_hook"] = organism_hook
+        except Exception as exc:
+            logger.warning("organism after_closed_trade: %s", exc)
+            stages["organism_hook"] = {"error": str(exc)}
 
         events = load_all_trade_events()
         refresh_all_summaries(events)

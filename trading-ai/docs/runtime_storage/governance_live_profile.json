@@ -1,0 +1,24 @@
+{
+  "schema": "governance_live_profile_v1",
+  "name": "controlled_first_20_strict",
+  "description": "Recommended profile for supervised first-20 live: enforcement on; fail-closed on missing joint, stale joint, unknown mode, degraded integrity; caution blocks entries; tighter stale window than default.",
+  "recommended_env": {
+    "GOVERNANCE_ORDER_ENFORCEMENT": "true",
+    "GOVERNANCE_CAUTION_BLOCK_ENTRIES": "true",
+    "GOVERNANCE_MISSING_JOINT_BLOCKS": "true",
+    "GOVERNANCE_STALE_JOINT_BLOCKS": "true",
+    "GOVERNANCE_UNKNOWN_MODE_BLOCKS": "true",
+    "GOVERNANCE_DEGRADED_INTEGRITY_BLOCKS": "true",
+    "GOVERNANCE_JOINT_STALE_HOURS": "48"
+  },
+  "rationale": {
+    "GOVERNANCE_ORDER_ENFORCEMENT": "Without true, gate is advisory-only and will not block orders on joint state.",
+    "GOVERNANCE_CAUTION_BLOCK_ENTRIES": "Maps joint live_mode caution to block when enforcement is on.",
+    "GOVERNANCE_MISSING_JOINT_BLOCKS": "Fail closed if joint artifact empty/missing when enforcement on.",
+    "GOVERNANCE_STALE_JOINT_BLOCKS": "Fail closed if joint older than GOVERNANCE_JOINT_STALE_HOURS when enforcement on.",
+    "GOVERNANCE_UNKNOWN_MODE_BLOCKS": "Fail closed if live_mode is unknown when enforcement on.",
+    "GOVERNANCE_DEGRADED_INTEGRITY_BLOCKS": "Fail closed if review_integrity_state is not full when enforcement on.",
+    "GOVERNANCE_JOINT_STALE_HOURS": "Default in code is 168; 48h is stricter for controlled live — adjust per operational cadence."
+  },
+  "warning": "If joint_review_latest is not maintained by the review pipeline, strict missing/stale blocks will halt entries — ensure organism pipeline is healthy before enabling."
+}

@@ -8,16 +8,21 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from trading_ai.global_layer.supabase_env_keys import resolve_supabase_jwt_key
+
 logger = logging.getLogger(__name__)
+
 
 def supabase_configured() -> bool:
     u = (os.environ.get("SUPABASE_URL") or "").strip().rstrip("/")
-    k = (os.environ.get("SUPABASE_KEY") or "").strip()
+    k, _src = resolve_supabase_jwt_key()
     return bool(u and k)
 
 
 def _auth_headers() -> Dict[str, str]:
-    key = (os.environ.get("SUPABASE_KEY") or "").strip()
+    key, _src = resolve_supabase_jwt_key()
+    if not key:
+        return {"apikey": "", "Authorization": "Bearer ", "Accept": "application/json"}
     return {
         "apikey": key,
         "Authorization": f"Bearer {key}",

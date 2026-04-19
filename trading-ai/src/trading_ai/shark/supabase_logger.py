@@ -9,6 +9,9 @@ import logging
 import os
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+from trading_ai.global_layer.supabase_env_keys import resolve_supabase_jwt_key
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +22,16 @@ def _get_client():
     global _client
     if _client is not None:
         return _client
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    url = (os.environ.get("SUPABASE_URL") or "").strip()
+    key, key_src = resolve_supabase_jwt_key()
     if not url or not key:
         return None
     try:
         from supabase import create_client
 
         _client = create_client(url, key)
-        logger.info("Supabase connected: %s", url)
+        host = urlparse(url).netloc or "unknown"
+        logger.info("Supabase connected host=%s key_source=%s", host, key_src)
         return _client
     except Exception as e:
         logger.warning("Supabase connect failed: %s", e)
