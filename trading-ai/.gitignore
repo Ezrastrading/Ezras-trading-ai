@@ -16,3 +16,12 @@ data/
 .ruff_cache/
 
 .post_trade_runtime/
+
+# Local runtime roots (do not commit)
+.ezras-runtime/
+
+# Optional local memory snapshots under repo root (use EZRAS_RUNTIME_ROOT in prod)
+/memory/
+
+# Stray duplicate of runtime layout (use EZRAS_RUNTIME_ROOT/shark instead)
+shark/nte/

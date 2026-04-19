@@ -2,8 +2,8 @@
 Coinbase outlet — two layers:
 
   CoinbaseFetcher  Legacy outlet fetcher (public prices, treasury, optional SDK orders).
-  CoinbaseClient   Advanced Trade API v3 client — ES256 JWT auth, used by the
-                   24/7 accumulator (coinbase_accumulator.py).
+  CoinbaseClient   Advanced Trade API v3 client — ES256 JWT auth, used by
+                   NexTrading Engine (``trading_ai.nte`` / ``coinbase_accumulator``).
 
 Advanced Trade auth env vars (either name pair works):
   COINBASE_API_KEY_NAME or COINBASE_API_KEY
@@ -25,6 +25,7 @@ JWT is used only for ``/accounts`` and ``/orders``. Exchange REST remains a fall
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 from trading_ai.shark.models import MarketSnapshot, OrderResult
 from trading_ai.shark.outlets.base import BaseOutletFetcher
+from trading_ai.nte.hardening.live_order_guard import assert_live_order_permitted
 
 try:
     import certifi
@@ -49,6 +51,11 @@ except ImportError:
 
 load_shark_dotenv()
 logger = logging.getLogger(__name__)
+
+# Set True only while executing a public order/cancel method so raw ``_request(POST,/orders)`` cannot bypass guards.
+_COINBASE_ORDER_GUARD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "coinbase_order_guard", default=False
+)
 
 # ── Advanced Trade constants ──────────────────────────────────────────────────
 
@@ -271,6 +278,24 @@ class CoinbaseClient:
     def _credentials_ready(self) -> bool:
         return bool(self._key_name) and bool(self._pem) and self._private_key is not None
 
+    def _order_guarded_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+        _retry_5xx: int = 0,
+    ) -> Dict[str, Any]:
+        """POST /orders only after :func:`assert_live_order_permitted` in public entrypoints."""
+        tok = _COINBASE_ORDER_GUARD.set(True)
+        try:
+            return self._request(
+                method, path, params=params, body=body, _retry_5xx=_retry_5xx
+            )
+        finally:
+            _COINBASE_ORDER_GUARD.reset(tok)
+
     # ── JWT ───────────────────────────────────────────────────────────────────
 
     def _build_jwt(self, method: str, request_path: str) -> str:
@@ -288,33 +313,8 @@ class CoinbaseClient:
 
         Signature: ECDSA-P256-SHA256 over r‖s (32 B each), base64url (no padding).
         """
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
-
-        now = int(time.time())
-        header: Dict[str, Any] = {
-            "alg": "ES256",
-            "kid": self._key_name,
-            "nonce": secrets.token_hex(16),
-        }
-        payload: Dict[str, Any] = {
-            "sub": self._key_name,
-            "iss": "cdp",
-            "nbf": now,
-            "exp": now + 120,
-            "uri": f"{method.upper()} {_JWT_HOST}{request_path}",
-        }
-        h64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
-        p64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
-        signing_input = f"{h64}.{p64}".encode()
-
-        raw_sig = self._private_key.sign(  # type: ignore[union-attr]
-            signing_input, ec.ECDSA(hashes.SHA256())
-        )
-        r, s = decode_dss_signature(raw_sig)
-        sig64 = _b64url_encode(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
-        jwt_token = f"{h64}.{p64}.{sig64}"
+        uri_claim = f"{method.upper()} {_JWT_HOST}{request_path}"
+        jwt_token = self._build_jwt_with_uri_claim(uri_claim)
 
         # Debug (no signature): payload only. Enable with COINBASE_DEBUG_JWT=1.
         if (os.environ.get("COINBASE_DEBUG_JWT") or "").strip().lower() in (
@@ -332,6 +332,82 @@ class CoinbaseClient:
                 logger.warning("Coinbase JWT payload decode failed: %s", exc)
 
         return jwt_token
+
+    def _build_jwt_with_uri_claim(self, uri_claim: str) -> str:
+        """Build ES256 JWT with an exact ``uri`` claim (REST path or WebSocket host line)."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+        now = int(time.time())
+        header: Dict[str, Any] = {
+            "alg": "ES256",
+            "kid": self._key_name,
+            "nonce": secrets.token_hex(16),
+        }
+        payload: Dict[str, Any] = {
+            "sub": self._key_name,
+            "iss": "cdp",
+            "nbf": now,
+            "exp": now + 120,
+            "uri": uri_claim,
+        }
+        h64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+        p64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+        signing_input = f"{h64}.{p64}".encode()
+        raw_sig = self._private_key.sign(  # type: ignore[union-attr]
+            signing_input, ec.ECDSA(hashes.SHA256())
+        )
+        r, s = decode_dss_signature(raw_sig)
+        sig64 = _b64url_encode(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+        return f"{h64}.{p64}.{sig64}"
+
+    def _build_jwt_minimal_cdp(self) -> str:
+        """
+        WebSocket JWT per CDP: ``sub``, ``iss``, ``nbf``, ``exp`` only (no ``uri``).
+
+        Advanced Trade user WebSocket auth differs from REST JWT (which uses ``uri``).
+        """
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+        now = int(time.time())
+        payload: Dict[str, Any] = {
+            "sub": self._key_name,
+            "iss": "cdp",
+            "nbf": now,
+            "exp": now + 120,
+        }
+        header: Dict[str, Any] = {
+            "alg": "ES256",
+            "kid": self._key_name,
+            "nonce": secrets.token_hex(16),
+        }
+        h64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+        p64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+        signing_input = f"{h64}.{p64}".encode()
+        raw_sig = self._private_key.sign(  # type: ignore[union-attr]
+            signing_input, ec.ECDSA(hashes.SHA256())
+        )
+        r, s = decode_dss_signature(raw_sig)
+        sig64 = _b64url_encode(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+        return f"{h64}.{p64}.{sig64}"
+
+    def build_user_stream_jwt(self) -> str:
+        """
+        JWT for ``wss://advanced-trade-ws-user.coinbase.com`` — user channel (orders/fills).
+
+        Default: **CDP minimal** payload (no ``uri``), per Advanced Trade WebSocket docs.
+        Override: ``NTE_COINBASE_USER_WS_JWT_MODE=legacy_uri`` for older ``GET host`` claim.
+        """
+        self._sync_credentials_from_env()
+        if not self._credentials_ready():
+            raise CoinbaseAuthError("Coinbase credentials not configured")
+        mode = (os.environ.get("NTE_COINBASE_USER_WS_JWT_MODE") or "cdp_minimal").strip().lower()
+        if mode in ("legacy_uri", "rest_uri", "uri"):
+            return self._build_jwt_with_uri_claim("GET advanced-trade-ws-user.coinbase.com")
+        return self._build_jwt_minimal_cdp()
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
@@ -353,6 +429,15 @@ class CoinbaseClient:
         # Build path + query once — JWT ``uri`` claim and the HTTP URL must match exactly.
         qs = _query_string(params)
         rel_path = path if path.startswith("/") else f"/{path}"
+        if (
+            method.upper() == "POST"
+            and "/orders" in rel_path
+            and not _COINBASE_ORDER_GUARD.get()
+        ):
+            raise RuntimeError(
+                "Coinbase order POST blocked: use place_market_buy, place_market_sell, "
+                "place_limit_gtc, or cancel_order so live-order guard runs"
+            )
         base = urlparse(self.base_url)
         broker_prefix = base.path.rstrip("/")
         uri_path_for_jwt = f"{broker_prefix}{rel_path}{qs}"
@@ -954,6 +1039,29 @@ class CoinbaseClient:
         Market buy ``usd_amount`` USD worth of ``product_id``.
         Uses ``market_market_ioc`` with ``quote_size`` (USD spend).
         """
+        self._sync_credentials_from_env()
+        try:
+            assert_live_order_permitted(
+                "place_market_entry",
+                "coinbase",
+                product_id,
+                strategy_id=None,
+                source="coinbase_client",
+                order_side="BUY",
+                quote_notional=float(usd_amount),
+            )
+        except RuntimeError as exc:
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="error",
+                outlet="coinbase",
+                success=False,
+                reason=str(exc),
+                raw={},
+            )
         client_order_id = uuid.uuid4().hex
         body = {
             "client_order_id": client_order_id,
@@ -964,7 +1072,7 @@ class CoinbaseClient:
             },
         }
         try:
-            j = self._request("POST", "/orders", body=body)
+            j = self._order_guarded_request("POST", "/orders", body=body)
             success = bool(j.get("success"))
             sr = j.get("success_response") or {}
             order_id = str(sr.get("order_id") or j.get("order_id") or client_order_id)
@@ -1018,6 +1126,29 @@ class CoinbaseClient:
         Market sell ``base_size`` units of ``product_id`` (e.g. '0.00135' BTC).
         Uses ``market_market_ioc`` with ``base_size`` (asset quantity).
         """
+        self._sync_credentials_from_env()
+        try:
+            assert_live_order_permitted(
+                "place_market_exit",
+                "coinbase",
+                product_id,
+                strategy_id=None,
+                source="coinbase_client",
+                order_side="SELL",
+                base_size=str(base_size),
+            )
+        except RuntimeError as exc:
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="error",
+                outlet="coinbase",
+                success=False,
+                reason=str(exc),
+                raw={},
+            )
         client_order_id = uuid.uuid4().hex
         body = {
             "client_order_id": client_order_id,
@@ -1030,7 +1161,7 @@ class CoinbaseClient:
         logger.warning("PLACE SELL: %s size=%s", product_id, base_size)
         logger.warning("SELL ORDER BODY: %s", json.dumps(body))
         try:
-            j = self._request("POST", "/orders", body=body)
+            j = self._order_guarded_request("POST", "/orders", body=body)
             try:
                 resp_s = json.dumps(j) if isinstance(j, dict) else str(j)
             except (TypeError, ValueError):
@@ -1092,8 +1223,19 @@ class CoinbaseClient:
 
     def cancel_order(self, order_id: str) -> bool:
         """POST /orders/batch_cancel — cancel a single open order."""
+        self._sync_credentials_from_env()
         try:
-            j = self._request(
+            assert_live_order_permitted(
+                "cancel_order",
+                "coinbase",
+                "*",
+                strategy_id=None,
+                source="coinbase_client",
+            )
+        except RuntimeError:
+            return False
+        try:
+            j = self._order_guarded_request(
                 "POST", "/orders/batch_cancel", body={"order_ids": [order_id]}
             )
             results = j.get("results") or []
@@ -1110,6 +1252,117 @@ class CoinbaseClient:
             "GET", "/orders/historical/fills", params={"order_id": order_id}
         )
         return j.get("fills") or []
+
+    def place_limit_gtc(
+        self,
+        product_id: str,
+        side: str,
+        base_size: str,
+        limit_price: str,
+        *,
+        post_only: bool = True,
+    ) -> OrderResult:
+        """
+        GTC limit order (maker when ``post_only`` and price does not cross the book).
+
+        ``order_configuration.limit_limit_gtc`` per Advanced Trade API.
+        """
+        client_order_id = uuid.uuid4().hex
+        cfg: Dict[str, Any] = {
+            "base_size": str(base_size),
+            "limit_price": str(limit_price),
+        }
+        if post_only:
+            cfg["post_only"] = True
+        body = {
+            "client_order_id": client_order_id,
+            "product_id": product_id,
+            "side": side.strip().upper(),
+            "order_configuration": {"limit_limit_gtc": cfg},
+        }
+        self._sync_credentials_from_env()
+        side_u = side.strip().upper()
+        try:
+            lim_action = (
+                "place_limit_entry" if side_u == "BUY" else "place_market_exit"
+            )
+            assert_live_order_permitted(
+                lim_action,
+                "coinbase",
+                product_id,
+                strategy_id=None,
+                source="coinbase_client",
+                order_side=side_u,
+                base_size=str(base_size),
+            )
+        except RuntimeError as exc:
+            return OrderResult(
+                order_id=client_order_id,
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="error",
+                outlet="coinbase",
+                success=False,
+                reason=str(exc),
+                raw={},
+            )
+        try:
+            j = self._order_guarded_request("POST", "/orders", body=body)
+            success = bool(j.get("success"))
+            sr = j.get("success_response") or {}
+            order_id = str(sr.get("order_id") or j.get("order_id") or client_order_id)
+            if not success:
+                err = j.get("error_response") or {}
+                reason = str(err.get("message") or err.get("error") or "limit order failed")
+                logger.warning(
+                    "Coinbase LIMIT %s failed (%s): %s",
+                    side.upper(),
+                    product_id,
+                    reason,
+                )
+                return OrderResult(
+                    order_id=client_order_id,
+                    filled_price=0.0,
+                    filled_size=0.0,
+                    timestamp=time.time(),
+                    status="error",
+                    outlet="coinbase",
+                    success=False,
+                    reason=reason,
+                    raw=j,
+                )
+            logger.info(
+                "Coinbase LIMIT %s placed: %s size=%s @ %s → order_id=%s",
+                side.upper(),
+                product_id,
+                base_size,
+                limit_price,
+                order_id,
+            )
+            return OrderResult(
+                order_id=order_id,
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="placed",
+                outlet="coinbase",
+                success=True,
+                raw=j,
+            )
+        except Exception as exc:
+            logger.error("Coinbase LIMIT exception (%s): %s", product_id, exc)
+            return OrderResult(
+                order_id=client_order_id,
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="error",
+                outlet="coinbase",
+                success=False,
+                reason=str(exc),
+                raw={},
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1166,6 +1419,23 @@ class CoinbaseFetcher(BaseOutletFetcher):
 
     @classmethod
     def place_market_order(cls, product_id: str, side: str, size: str) -> Dict[str, Any]:
+        try:
+            act = (
+                "place_market_entry"
+                if str(side).strip().lower() == "buy"
+                else "place_market_exit"
+            )
+            assert_live_order_permitted(
+                act,
+                "coinbase",
+                product_id,
+                strategy_id=None,
+                source="coinbase_fetcher",
+                order_side=str(side).strip().upper(),
+                base_size=str(size),
+            )
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
         client = cls._rest_client()
         if client is None:
             return {"ok": False, "error": "coinbase_client_unavailable"}
@@ -1191,6 +1461,20 @@ class CoinbaseFetcher(BaseOutletFetcher):
     def place_limit_order(
         cls, product_id: str, side: str, size: str, price: str
     ) -> Dict[str, Any]:
+        try:
+            su = str(side).strip().upper()
+            lim_action = "place_limit_entry" if su == "BUY" else "place_market_exit"
+            assert_live_order_permitted(
+                lim_action,
+                "coinbase",
+                product_id,
+                strategy_id=None,
+                source="coinbase_fetcher",
+                order_side=su,
+                base_size=str(size),
+            )
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
         client = cls._rest_client()
         if client is None:
             return {"ok": False, "error": "coinbase_client_unavailable"}

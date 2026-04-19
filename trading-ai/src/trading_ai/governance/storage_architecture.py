@@ -42,6 +42,27 @@ def shark_sqlite_path() -> Path:
     return shark_state_path("shark.sqlite")
 
 
+def global_memory_dir() -> Path:
+    """Global organism memory (goals, speed, knowledge) — under ``shark/memory/global``."""
+    p = shark_data_dir() / "memory" / "global"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def global_avenue_knowledge_dir() -> Path:
+    p = global_memory_dir() / "avenue_knowledge"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def avenue_memory_dir(avenue_name: str) -> Path:
+    """Per-avenue mirror under ``shark/memory/avenues/<name>`` (e.g. coinbase, kalshi)."""
+    safe = avenue_name.strip().lower().replace("..", "").replace("/", "")
+    p = shark_data_dir() / "memory" / "avenues" / safe
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def append_shark_audit_record(record: Dict[str, Any]) -> None:
     p = shark_audit_log_path()
     p.parent.mkdir(parents=True, exist_ok=True)

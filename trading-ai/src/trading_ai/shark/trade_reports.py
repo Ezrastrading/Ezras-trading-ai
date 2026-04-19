@@ -141,6 +141,14 @@ def _filter_by_period(trades: list, period: str) -> list:
     return [t for t in trades if t.get("unix_ts", 0) >= cutoff]
 
 
+def list_trades(platform: str, period: str = "day") -> list:
+    """Return trades for ``platform`` in the given period (for briefings / analytics)."""
+    reports = _load_reports()
+    data = reports.get(platform, {})
+    all_trades = data.get("all_trades", [])
+    return _filter_by_period(all_trades, period)
+
+
 def get_platform_report(platform: str, period: str = "day") -> dict:
     reports = _load_reports()
     data = reports.get(platform, {})

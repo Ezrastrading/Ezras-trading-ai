@@ -136,19 +136,12 @@ def main() -> None:
         from trading_ai.shark.coinbase_accumulator import (
             CoinbaseAccumulator,
             coinbase_enabled,
-            sell_expired_positions_on_startup,
         )
 
         if coinbase_enabled():
             _coinbase_accumulator = CoinbaseAccumulator()
-            n_fs = _coinbase_accumulator.force_sell_all_positions()
-            if n_fs:
-                log.info("Coinbase startup force-sell: sold %s position(s)", n_fs)
-            n_ex = sell_expired_positions_on_startup()
-            if n_ex:
-                log.info("Coinbase startup: sold %s expired position(s)", n_ex)
             _coinbase_accumulator.load_and_check_positions_on_startup()
-            log.info("Coinbase accumulator initialised")
+            log.info("Coinbase NTE (Avenue A) initialised")
         else:
             log.info("Coinbase disabled (set COINBASE_ENABLED=true to activate)")
     except Exception as exc:
@@ -856,23 +849,6 @@ def main() -> None:
                         f"{k}: {v}" for k, v in sorted(by_pid.items())
                     ) or "none"
                     gate_lines = ""
-                    try:
-                        from trading_ai.shark.trade_reports import get_platform_report
-
-                        cb_day = get_platform_report("coinbase", "day")
-                        bg = cb_day.get("by_gate") or {}
-                        for g in ("A", "B", "C"):
-                            info = bg.get(g) or {}
-                            tr = int(info.get("trades") or 0)
-                            wi = int(info.get("wins") or 0)
-                            lo = max(0, tr - wi)
-                            gp = float(info.get("pnl") or 0.0)
-                            gate_lines += (
-                                f"\n  Gate {g}: trades={tr} | wins={wi} | losses={lo} | "
-                                f"P&L ${gp:+.2f}"
-                            )
-                    except Exception:
-                        pass
                     mission_lines = ""
                     try:
                         from trading_ai.shark.mission import get_mission_status
@@ -1064,6 +1040,55 @@ def main() -> None:
         "yes",
     )
 
+    def nte_ceo_mid_job() -> None:
+        try:
+            if not _coinbase_env_on:
+                return
+            from trading_ai.nte.ceo.twice_daily_ceo_session import run_twice_daily_session
+            from trading_ai.nte.memory.store import MemoryStore
+
+            st = MemoryStore()
+            st.ensure_defaults()
+            run_twice_daily_session(
+                store=st,
+                label="MID",
+                context={
+                    "what_worked": "(review trade_memory + open positions)",
+                    "what_failed": "(review losses in iteration_log)",
+                    "edge_after_fees": "(compute from last 20 trades)",
+                    "leak": "(spread/fees vs gross)",
+                    "actions": "Adhere to NTE risk; size from reward_state.",
+                },
+            )
+        except Exception as exc:
+            log.warning("nte_ceo_mid_job: %s", exc)
+
+    def nte_ceo_eod_job() -> None:
+        try:
+            if not _coinbase_env_on:
+                return
+            from trading_ai.nte.ceo.twice_daily_ceo_session import run_twice_daily_session
+            from trading_ai.nte.memory.store import MemoryStore
+
+            st = MemoryStore()
+            st.ensure_defaults()
+            run_twice_daily_session(
+                store=st,
+                label="EOD",
+                context={
+                    "what_worked": "(session summary)",
+                    "what_failed": "(rule breaks / chaos entries)",
+                    "edge_after_fees": "(net vs gross)",
+                    "leak": "(worst strategy / time bucket)",
+                    "actions": "Update goals_state; trim weak strategies in research sandbox.",
+                },
+            )
+            from trading_ai.nte.ceo.iteration_engine import IterationEngine
+
+            IterationEngine(st).after_day({"kind": "nte_eod", "source": "scheduler"})
+        except Exception as exc:
+            log.warning("nte_ceo_eod_job: %s", exc)
+
     sched = build_shark_scheduler(
         standard_scan=standard_scan,
         hot_scan=hot_scan,
@@ -1108,6 +1133,12 @@ def main() -> None:
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
         coinbase_dawn_sweep=coinbase_dawn_sweep_job
+        if (_coinbase_accumulator is not None or _coinbase_env_on)
+        else None,
+        nte_mid_session=nte_ceo_mid_job
+        if (_coinbase_accumulator is not None or _coinbase_env_on)
+        else None,
+        nte_eod_session=nte_ceo_eod_job
         if (_coinbase_accumulator is not None or _coinbase_env_on)
         else None,
         crypto_market_open_blitz=crypto_market_open_blitz,

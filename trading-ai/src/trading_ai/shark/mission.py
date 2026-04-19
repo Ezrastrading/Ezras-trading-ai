@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,10 @@ DIRECTIVES = [
         "name": "HIGH PROBABILITY ONLY",
         "rule": "High probability only. Kalshi: min 85% "
         "AND entry price 35-65 cents AND 60-120s "
-        "before expiry. Coinbase: RSI/MACD/EMA "
-        "signals only. Profit target 0.15%. "
-        "Stop loss 0.12%. Time stop 3 minutes.",
+        "before expiry. Coinbase: Gates A/B/C swing only — "
+        "night gainers, day momentum, BTC/ETH breakout; "
+        "unified exits (trail, target, stop, max hold); "
+        "mission sizing and reserve discipline.",
         "hard_limit": True,
     },
     # DIRECTIVE 4: LEARN FROM EVERY LOSS
@@ -89,12 +91,10 @@ DIRECTIVES = [
         "id": "D5",
         "priority": 5,
         "name": "MAXIMIZE FREQUENCY",
-        "rule": "More trades = more compounding. "
-        "20 positions always open. "
-        "3 minute time stop. Rapid cycles. "
-        "Never leave capital idle. "
-        "Every second capital sits unused "
-        "is a missed compounding opportunity.",
+        "rule": "More trades = more compounding when edge is positive. "
+        "Deploy within gates and risk limits; "
+        "do not churn without signal quality. "
+        "Compound realized gains; keep reserve discipline.",
         "hard_limit": False,
     },
     # DIRECTIVE 6: ADAPT INSTANTLY
@@ -184,11 +184,15 @@ def evaluate_trade_against_mission(
     size_usd: float,
     probability: float,
     total_balance: float,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Every trade is evaluated against the mission.
     Returns: approved, reason, directive_violated
+
+    ``metadata`` is optional (e.g. gate, strategy, instrument_type for Coinbase spot).
     """
+    _ = metadata  # reserved for future rules (sizing by gate, spot vs contract)
     violations = []
 
     # D1: Never risk > 20% of balance
@@ -352,9 +356,74 @@ def generate_full_ceo_briefing(
     top3 = sorted(best_coins.items(), key=lambda x: -x[1])[:3]
     bot3 = sorted(best_coins.items(), key=lambda x: x[1])[:3]
 
+    # Coinbase per-gate stats (today) + mission line
+    cb_gate_lines: list = []
+    mission_progress_block = ""
+    try:
+        from trading_ai.shark.trade_reports import get_platform_report, list_trades
+
+        cb_rep = get_platform_report("coinbase", "day")
+        cb_day_trades = list_trades("coinbase", "day")
+        by_g = cb_rep.get("by_gate") or {}
+        ms = get_mission_status(total_balance)
+        reserve_pct = float(
+            __import__("os").environ.get("COINBASE_RESERVE_PCT") or "0.20"
+        )
+        try:
+            reserve_pct = float(str(reserve_pct).strip() or "0.20")
+        except (TypeError, ValueError):
+            reserve_pct = 0.20
+        reserve_active = reserve_pct > 0
+
+        def _gate_lines(label: str, gkey: str) -> str:
+            g = by_g.get(gkey) or {}
+            n = int(g.get("trades") or 0)
+            w = int(g.get("wins") or 0)
+            losses_g = n - w
+            pnl_g = float(g.get("pnl") or 0.0)
+            best_pct = 0.0
+            for t in cb_day_trades:
+                if str(t.get("gate") or "") != gkey:
+                    continue
+                best_pct = max(best_pct, float(t.get("pnl_pct") or 0.0))
+            dep = sum(
+                float(t.get("size_usd") or 0)
+                for t in cb_day_trades
+                if str(t.get("gate") or "") == gkey
+            )
+            return (
+                f"{label}\n"
+                f"  Trades today: {n}\n"
+                f"  Wins: {w} | Losses: {losses_g}\n"
+                f"  Best: {best_pct:+.2f}%\n"
+                f"  Deployed: ${dep:,.2f}\n"
+                f"  P&L (period): ${pnl_g:+.2f}"
+            )
+
+        cb_gate_lines = [
+            "COINBASE GATE SUMMARY",
+            _gate_lines("Gate A — Night Gainer", "A"),
+            _gate_lines("Gate B — Day Momentum", "B"),
+            _gate_lines("Gate C — BTC/ETH Breakout", "C"),
+            "",
+            "MISSION PROGRESS",
+            f"  Balance: ${total_balance:,.2f}",
+            f"  Progress to $1M: {ms['pct_complete']:.4f}%",
+            f"  Required daily: {ms['required_daily_pct']:.2f}%",
+            f"  Reserve active: {'Yes' if reserve_active else 'No'}",
+        ]
+        mission_progress_block = "\n".join(cb_gate_lines)
+    except Exception:
+        mission_progress_block = (
+            "COINBASE GATE SUMMARY\n  (stats unavailable)\n\n"
+            "MISSION PROGRESS\n  (unavailable)"
+        )
+
     msg2 = f"""
 📊 PERFORMANCE ANALYSIS
 {'═'*40}
+{mission_progress_block}
+
 ✅ WHAT WORKED TODAY:
   Trades: {todays_trades}
   Win Rate: {win_rate*100:.1f}%
@@ -385,11 +454,11 @@ def generate_full_ceo_briefing(
         f'  ❌ {str(l.get("lesson", ""))[:70]}' for l in wrongs[-3:]
     )
     rights_block = rights_lines or (
-        "  • 3min time stop cycling ✅"
+        "  • Coinbase unified exits (trail / TP / SL / max hold) ✅"
         + chr(10)
-        + "  • Profit scan every 3s ✅"
+        + "  • Gates A/B/C with mission checks ✅"
         + chr(10)
-        + "  • Gate A/B both firing ✅"
+        + "  • Reserve + deploy discipline ✅"
     )
     wrongs_block = wrongs_lines or (
         "  • Kalshi bought wrong price ranges ❌"
@@ -411,15 +480,14 @@ def generate_full_ceo_briefing(
 🚫 AVOID NEXT TIME:
   • Kalshi: ONLY buy ranges BTC trades IN
   • Coinbase: NO coins under $0.01 price
-  • NEVER hold past 3 minutes (time stop)
-  • NEVER ignore stop loss signal
+  • NEVER ignore hard stop-loss or max-hold risk
   • NEVER buy illiquid coins
 
 🔑 NON-NEGOTIABLE RULES:
   • 85%+ prob on Kalshi always
-  • Gate A = BTC/ETH/SOL/XRP/DOGE only
-  • 20% reserve at all times
-  • Exit ALL positions at 3min hard stop"""
+  • Coinbase: Gates A/B/C swing system only
+  • 20% reserve at all times (unless mission overrides)
+  • Exits: unified engine — trail, targets, stops, timeouts, dawn sweep"""
     messages.append(msg3)
 
     # ─── MESSAGE 4: HIDDEN OPPORTUNITIES ───
@@ -428,12 +496,9 @@ def generate_full_ceo_briefing(
 {'═'*40}
 🚀 HIGHEST VALUE OPPORTUNITIES RIGHT NOW:
 
-1. COINBASE COMPOUNDING:
-   ${total_balance:.2f} × 0.15% × 20 positions
-   = ${total_balance*0.0015*20:.3f} per 3min cycle
-   = ${total_balance*0.0015*20*20:.3f}/hour
-   = ${total_balance*0.0015*20*20*24:.3f}/day
-   → Scale positions as balance grows
+1. COINBASE (GATES A / B / C):
+   Swing/breakout system with unified exits — scale ticket sizes
+   as balance grows; mission checks on every buy; no legacy scalp churn.
 
 2. KALSHI MORNING BLITZ (9am-5pm ET):
    80 trades × $0.50 profit = $40/blitz
@@ -446,9 +511,9 @@ def generate_full_ceo_briefing(
    1-2 of these/day = +$5-20 extra
 
 4. COMBINED DAILY TARGET:
-   Coinbase: ${total_balance*0.0015*20*20*8:.2f}/day (crypto only)
-   Kalshi:   $40-80/day (market hours)
-   Total:    ${total_balance*0.0015*20*20*8+60:.2f}/day target
+   Coinbase: deploy within gate caps + reserve; compound realized wins
+   Kalshi:   $40-80/day (market hours, when blitzes fire)
+   Total:    path-dependent — prioritize edge quality over frequency
 
 5. ACCELERATION TRIGGER:
    When balance hits $1,000 → double positions

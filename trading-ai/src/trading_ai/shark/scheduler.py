@@ -77,6 +77,8 @@ def build_shark_scheduler(
     coinbase_scan: Optional[Callable[[], None]] = None,
     coinbase_exit_check: Optional[Callable[[], None]] = None,
     coinbase_dawn_sweep: Optional[Callable[[], None]] = None,
+    nte_mid_session: Optional[Callable[[], None]] = None,
+    nte_eod_session: Optional[Callable[[], None]] = None,
     crypto_market_open_blitz: Optional[Callable[[], None]] = None,
     kalshi_simple_scan: Optional[Callable[[], None]] = None,
     kalshi_gate_c: Optional[Callable[[], None]] = None,
@@ -466,7 +468,7 @@ def build_shark_scheduler(
             replace_existing=True,
         )
 
-    # ── Coinbase: 5m scan (exits + buys); 10s exit-only; optional 8am Gate A dawn ─
+    # ── Coinbase NTE: 5m entries; fast tick (exits + pending limits); optional dawn noop ─
     if coinbase_scan is not None:
         def _coinbase_scan_wrapper() -> None:
             if (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() not in (
@@ -490,9 +492,15 @@ def build_shark_scheduler(
                 return
             coinbase_exit_check()  # type: ignore[misc]
 
+        _fast_raw = (os.environ.get("NTE_FAST_TICK_SECONDS") or "10").strip()
+        try:
+            _fast_sec = int(_fast_raw)
+        except ValueError:
+            _fast_sec = 10
+        _fast_sec = max(1, min(_fast_sec, 120))
         sched.add_job(
             _coinbase_exit_wrapper,
-            IntervalTrigger(seconds=10),
+            IntervalTrigger(seconds=_fast_sec),
             id="coinbase_exit_check",
             max_instances=1,
             replace_existing=True,
@@ -513,6 +521,22 @@ def build_shark_scheduler(
             CronTrigger(hour=8, minute=0, timezone="America/New_York"),
             id="coinbase_dawn_sweep",
             max_instances=1,
+            replace_existing=True,
+        )
+
+    # ── NTE: twice-daily CEO (mid-session + end-of-day ET) ─────────────────────
+    if nte_mid_session is not None and CronTrigger is not None:
+        sched.add_job(
+            nte_mid_session,
+            CronTrigger(hour=12, minute=0, timezone="America/New_York"),
+            id="nte_ceo_mid",
+            replace_existing=True,
+        )
+    if nte_eod_session is not None and CronTrigger is not None:
+        sched.add_job(
+            nte_eod_session,
+            CronTrigger(hour=17, minute=0, timezone="America/New_York"),
+            id="nte_ceo_eod",
             replace_existing=True,
         )
 

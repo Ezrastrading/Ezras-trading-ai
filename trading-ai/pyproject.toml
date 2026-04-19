@@ -9,6 +9,7 @@ description = "AI trading partner for prediction markets (Phase 1 foundation)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+  "cryptography>=42",
   "httpx>=0.27",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
