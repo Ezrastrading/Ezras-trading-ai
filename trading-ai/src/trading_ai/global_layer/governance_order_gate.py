@@ -165,7 +165,6 @@ def _decide(
 
     mode = str(snap.get("live_mode") or "unknown").strip().lower()
     caution_block = _caution_block_entries()
-    print("governance_mode:", mode, "caution_block:", caution_block)
 
     if mode == "paused":
         return False, "joint_review_paused"
@@ -199,7 +198,27 @@ def check_new_order_allowed_full(
     ``strategy_class`` / ``route_bucket`` are **metadata only** for logs — they do not change the gate math.
     """
     snap = load_joint_review_snapshot()
+    mode = str(snap.get("live_mode") or "unknown").strip().lower()
+    caution_block = _caution_block_entries()
     ok, reason = _decide(snap)
+
+    logger.info(
+        "governance_decision_trace %s",
+        json.dumps(
+            {"mode": mode, "caution_block": caution_block, "decision": bool(ok), "reason_code": reason},
+            default=str,
+        ),
+    )
+
+    if _enforcement_enabled() and mode == "caution":
+        if caution_block and ok:
+            raise AssertionError(
+                "GOVERNANCE_DETERMINISM: caution + GOVERNANCE_CAUTION_BLOCK_ENTRIES=true must not allow"
+            )
+        if (not caution_block) and (not ok) and reason == "joint_review_caution_blocked":
+            raise AssertionError(
+                "GOVERNANCE_DETERMINISM: caution + GOVERNANCE_CAUTION_BLOCK_ENTRIES=false must allow entries"
+            )
 
     # Fail-closed invariant: enforcement on + invalid joint must never yield allowed=True.
     if _enforcement_enabled() and _joint_invalid_under_strict_enforcement(snap) and ok:
