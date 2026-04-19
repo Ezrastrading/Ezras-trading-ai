@@ -3,6 +3,7 @@
 from trading_ai.global_layer.briefing_engine import BriefingEngine
 from trading_ai.global_layer.data_knowledge_engine import DataKnowledgeEngine
 from trading_ai.global_layer.global_memory_store import GlobalMemoryStore
+from trading_ai.global_layer.review_scheduler import run_full_review_cycle, tick_scheduler
 from trading_ai.global_layer.speed_progression_engine import SpeedProgressionEngine
 
 __all__ = [
@@ -10,4 +11,6 @@ __all__ = [
     "SpeedProgressionEngine",
     "DataKnowledgeEngine",
     "BriefingEngine",
+    "run_full_review_cycle",
+    "tick_scheduler",
 ]
