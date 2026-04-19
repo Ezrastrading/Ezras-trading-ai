@@ -145,6 +145,16 @@ class PortfolioEngine:
 
         ``min_fraction`` prevents any venue from going to zero (operational diversification floor).
         """
+        try:
+            from trading_ai.core.system_guard import get_system_guard
+
+            halt, why = get_system_guard().should_shutdown()
+            if halt:
+                logger.critical("rebalance blocked by system guard: %s", why)
+                return {"ok": False, "reason": "system_guard", "detail": why}
+        except Exception:
+            logger.debug("system guard pre-rebalance skipped", exc_info=True)
+
         st = self._state
         if len(self._avenues) < 2:
             self._save()

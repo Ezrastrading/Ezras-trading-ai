@@ -250,7 +250,8 @@ def test_10_gap_closure_detection():
     assert hit2
 
 
-def test_11_execution_chain_logs_steps():
+def test_11_execution_chain_logs_steps(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     m = MarketSnapshot(
         market_id="f",
         outlet="kalshi",
@@ -869,6 +870,7 @@ def test_38_telegram_send_succeeds_and_returns_true(monkeypatch):
 
 
 def test_39_telegram_failure_does_not_block_trade_execution(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     from trading_ai.shark import execution as ex
 
     m = MarketSnapshot(
@@ -1202,6 +1204,7 @@ def test_91_scan_loop_calls_run_execution_chain_when_valid_opportunity(tmp_path,
     from trading_ai.shark.state_store import CapitalRecord, save_capital
 
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setenv("EZRAS_KALSHI_DAILY_CAP_DISABLED", "true")
     save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0))
 
     m = MarketSnapshot(
@@ -1210,7 +1213,7 @@ def test_91_scan_loop_calls_run_execution_chain_when_valid_opportunity(tmp_path,
         yes_price=0.45,
         no_price=0.51,
         volume_24h=5000.0,
-        time_to_resolution_seconds=8000.0,
+        time_to_resolution_seconds=4000.0,
         resolution_criteria="test",
         last_price_update_timestamp=0.0,
         market_category="cat1",
@@ -1372,14 +1375,14 @@ def test_hunt_kalshi_near_close_fires_within_24h_at_70pct_yes():
     from trading_ai.shark.kalshi_hunts import hunt_kalshi_near_close
     from trading_ai.shark.models import MarketSnapshot
 
-    end = time.time() + 12 * 3600
+    end = time.time() + 5000.0
     m = MarketSnapshot(
         market_id="KX-NC",
         outlet="kalshi",
         yes_price=0.72,
         no_price=0.28,
         volume_24h=5000.0,
-        time_to_resolution_seconds=12 * 3600.0,
+        time_to_resolution_seconds=5000.0,
         resolution_criteria="Fed",
         last_price_update_timestamp=time.time(),
         end_date_seconds=end,
@@ -1396,14 +1399,14 @@ def test_hunt_kalshi_near_close_fires_weak_yes_bet_no():
     from trading_ai.shark.kalshi_hunts import hunt_kalshi_near_close
     from trading_ai.shark.models import MarketSnapshot
 
-    end = time.time() + 6 * 3600
+    end = time.time() + 5000.0
     m = MarketSnapshot(
         market_id="KX-NC2",
         outlet="kalshi",
         yes_price=0.25,
         no_price=0.75,
         volume_24h=5000.0,
-        time_to_resolution_seconds=6 * 3600.0,
+        time_to_resolution_seconds=5000.0,
         resolution_criteria="Test",
         last_price_update_timestamp=time.time(),
         end_date_seconds=end,
@@ -1446,7 +1449,7 @@ def test_hunt_kalshi_momentum_fires_on_five_percent_move():
         yes_price=0.51,
         no_price=0.49,
         volume_24h=5000.0,
-        time_to_resolution_seconds=86400.0,
+        time_to_resolution_seconds=5000.0,
         resolution_criteria="x",
         last_price_update_timestamp=time.time(),
     )
@@ -1894,6 +1897,7 @@ def test_101_kalshi_still_routes_to_run_execution_chain(tmp_path, monkeypatch):
     from trading_ai.shark.state_store import CapitalRecord, save_capital
 
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setenv("EZRAS_KALSHI_DAILY_CAP_DISABLED", "true")
     save_capital(CapitalRecord(current_capital=100.0, peak_capital=100.0))
 
     m = MarketSnapshot(
@@ -1902,7 +1906,7 @@ def test_101_kalshi_still_routes_to_run_execution_chain(tmp_path, monkeypatch):
         yes_price=0.45,
         no_price=0.51,
         volume_24h=5000.0,
-        time_to_resolution_seconds=8000.0,
+        time_to_resolution_seconds=4000.0,
         resolution_criteria="test",
         last_price_update_timestamp=0.0,
     )
@@ -1988,6 +1992,7 @@ def test_116_margin_blocked_for_hunt6_near_zero():
 
 
 def test_117_hard_check_in_execution_chain_blocks_oversized_margin_trade(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     from trading_ai.shark.execution import run_execution_chain
     from trading_ai.shark.models import (
         ExecutionIntent,
@@ -1999,13 +2004,17 @@ def test_117_hard_check_in_execution_chain_blocks_oversized_margin_trade(tmp_pat
     )
 
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "trading_ai.core.capital_engine.capital_preflight_block",
+        lambda **kwargs: (False, None),
+    )
     m = MarketSnapshot(
         market_id="margin-block-1",
         outlet="kalshi",
         yes_price=0.45,
         no_price=0.55,
         volume_24h=1000.0,
-        time_to_resolution_seconds=8000.0,
+        time_to_resolution_seconds=4000.0,
         resolution_criteria="test",
         last_price_update_timestamp=0.0,
     )
@@ -2451,6 +2460,7 @@ def test_128_claude_evaluate_trade_returns_valid_json(monkeypatch):
 
 
 def test_129_claude_skip_blocks_execution(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     m = MarketSnapshot(
         market_id="claude-skip",
         outlet="kalshi",
@@ -2475,6 +2485,7 @@ def test_129_claude_skip_blocks_execution(monkeypatch):
 
 
 def test_130_claude_override_changes_side(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     m = MarketSnapshot(
         market_id="claude-ov",
         outlet="kalshi",

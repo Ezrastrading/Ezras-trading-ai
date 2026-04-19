@@ -37,6 +37,36 @@ def _enforce_validated_for_scale() -> bool:
     )
 
 
+def _validated_for_capital(status: str) -> bool:
+    return status in (EdgeStatus.VALIDATED.value, EdgeStatus.SCALED.value)
+
+
+def edge_allowed_in_regime(regime_tags: Any, current_regime: str) -> bool:
+    """If ``regime_tags`` is empty, allow any regime; else ``current_regime`` must match (or tag ``any``)."""
+    if regime_tags is None:
+        return True
+    if isinstance(regime_tags, dict):
+        regime_tags = regime_tags.get("tags") or regime_tags.get("regime_tags")
+    if not regime_tags:
+        return True
+    cr = (current_regime or "").strip().lower()
+    if isinstance(regime_tags, (list, tuple, set)):
+        tags = {str(x).strip().lower() for x in regime_tags if str(x).strip()}
+    else:
+        one = str(regime_tags).strip().lower()
+        tags = {one} if one else set()
+    if not tags:
+        return True
+    return cr in tags or "any" in tags
+
+
+def _size_scale_for_edge_status(status: str) -> float:
+    """Validated/scaled → full allocation weight (1.0); anything else → testing multiplier."""
+    if _validated_for_capital(status):
+        return 1.0
+    return _testing_size_mult()
+
+
 @dataclass
 class EdgeAssignment:
     edge_id: Optional[str]
@@ -44,6 +74,7 @@ class EdgeAssignment:
     size_scale: float
     allow_full_size: bool
     detail: str = ""
+    edge_status: Optional[str] = None
 
 
 def _hash_slot(strategy: str, product_id: str) -> float:
@@ -64,7 +95,7 @@ def resolve_edge_for_avenue(
     a = (avenue or "").strip().lower()
     if a in ("coinbase", "a"):
         return resolve_coinbase_edge(strategy_name, product_id, registry=registry)
-    return EdgeAssignment(None, "none", 1.0, True, f"avenue_not_wired:{a}")
+    return EdgeAssignment(None, "none", 1.0, True, f"avenue_not_wired:{a}", edge_status=None)
 
 
 def resolve_coinbase_edge(
@@ -85,7 +116,7 @@ def resolve_coinbase_edge(
     avenue = "coinbase"
     by_avenue = [e for e in all_e if e.avenue == avenue and e.status != EdgeStatus.REJECTED.value]
     if not by_avenue:
-        return EdgeAssignment(None, "none", 1.0, True, "no_edges_registered")
+        return EdgeAssignment(None, "none", 1.0, True, "no_edges_registered", edge_status=None)
 
     validated = [
         e
@@ -105,30 +136,35 @@ def resolve_coinbase_edge(
     test_frac = _testing_routing_fraction()
     if testing and slot < test_frac:
         e = testing[0]
+        sm = _size_scale_for_edge_status(e.status)
         return EdgeAssignment(
             e.edge_id,
             "testing",
-            _testing_size_mult(),
+            sm,
             False,
             "testing_bucket",
+            edge_status=e.status,
         )
 
     if validated:
         # Prefer strategy-linked match
         linked = [e for e in validated if e.linked_strategy_id == strategy_name]
         pick = linked[0] if linked else validated[0]
-        return EdgeAssignment(pick.edge_id, "validated", 1.0, True, "validated_pool")
+        sm = _size_scale_for_edge_status(pick.status)
+        return EdgeAssignment(pick.edge_id, "validated", sm, True, "validated_pool", edge_status=pick.status)
 
     # Only candidate/testing-without-slot — still tag testing if promoted manually
     if testing:
         e = testing[0]
-        return EdgeAssignment(e.edge_id, "testing", _testing_size_mult(), False, "testing_only_pool")
+        sm = _size_scale_for_edge_status(e.status)
+        return EdgeAssignment(e.edge_id, "testing", sm, False, "testing_only_pool", edge_status=e.status)
 
     if candidates and not _enforce_validated_for_scale():
         e = candidates[0]
-        return EdgeAssignment(e.edge_id, "testing", _testing_size_mult(), False, "candidate_observation")
+        sm = _size_scale_for_edge_status(e.status)
+        return EdgeAssignment(e.edge_id, "testing", sm, False, "candidate_observation", edge_status=e.status)
 
     if _enforce_validated_for_scale():
-        return EdgeAssignment(None, "none", 0.0, False, "enforce_no_unvalidated_scale")
+        return EdgeAssignment(None, "none", 0.0, False, "enforce_no_unvalidated_scale", edge_status=None)
 
-    return EdgeAssignment(None, "none", 1.0, True, "legacy_untagged")
+    return EdgeAssignment(None, "none", 1.0, True, "legacy_untagged", edge_status=None)

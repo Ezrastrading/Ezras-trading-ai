@@ -64,6 +64,10 @@ def test_governance_full_audit_has_required_keys(monkeypatch: pytest.MonkeyPatch
 
 def test_submit_order_kalshi_invokes_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "trading_ai.shark.execution_live._core_execution_preflight",
+        lambda intent: None,
+    )
     gdir = tmp_path / "shark" / "memory" / "global"
     gdir.mkdir(parents=True)
     _write_joint(gdir, mode="normal")
@@ -116,6 +120,10 @@ def test_submit_order_kalshi_invokes_gate(monkeypatch: pytest.MonkeyPatch, tmp_p
 def test_submit_order_coinbase_blocked_when_gate_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
     monkeypatch.setenv("COINBASE_EXECUTION_ENABLED", "true")
+    monkeypatch.setattr(
+        "trading_ai.shark.execution_live._core_execution_preflight",
+        lambda intent: None,
+    )
     gdir = tmp_path / "shark" / "memory" / "global"
     gdir.mkdir(parents=True)
     _write_joint(gdir, mode="paused")

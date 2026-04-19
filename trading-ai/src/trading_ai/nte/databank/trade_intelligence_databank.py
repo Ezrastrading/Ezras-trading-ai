@@ -16,7 +16,8 @@ from trading_ai.nte.databank.local_trade_store import (
     load_all_trade_events,
     upsert_score_record,
 )
-from trading_ai.nte.databank.supabase_trade_sync import upsert_trade_event
+from trading_ai.nte.databank.supabase_trade_sync import upsert_trade_event, verify_trade_exists
+from trading_ai.organism.deployment_guard import deployment_enforcement_enabled
 from trading_ai.nte.databank.trade_event_writer import validate_and_build_record
 from trading_ai.organism.execution_quality import attach_execution_quality
 from trading_ai.organism.pipeline import OrganismClosedTradeHook
@@ -100,6 +101,11 @@ class TradeIntelligenceDatabank:
         stages["supabase_write_status"] = sup_res.get("write_status")
         if not supabase_ok:
             errors.append("supabase_upsert_failed")
+            if deployment_enforcement_enabled():
+                raise RuntimeError("SUPABASE WRITE FAILED — HALTING")
+        if supabase_ok and deployment_enforcement_enabled():
+            if not verify_trade_exists(trade_id):
+                raise RuntimeError("SUPABASE VERIFY FAILED — HALTING")
         upsert_score_record(trade_id, merged, scores, extra_meta={"supabase_sync": bool(supabase_ok)})
 
         try:

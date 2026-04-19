@@ -36,6 +36,7 @@ def test_upsert_failure_queues_row_and_flush_replays(
     import supabase as supabase_mod
 
     monkeypatch.setattr(supabase_mod, "create_client", fake_create_client)
+    monkeypatch.setattr(sts, "verify_trade_exists", lambda tid: True)
 
     row = {"trade_id": "fb_1", "avenue_name": "coinbase", "schema_version": "1.0.0"}
     out = sts.upsert_trade_event(row)
@@ -83,6 +84,7 @@ def test_flush_keeps_row_when_upsert_still_fails(
     import supabase as supabase_mod
 
     monkeypatch.setattr(supabase_mod, "create_client", fake_create_client)
+    monkeypatch.setattr(sts, "verify_trade_exists", lambda tid: True)
 
     flushed = sts.flush_unsynced_trades()
     assert flushed["flushed"] == 0

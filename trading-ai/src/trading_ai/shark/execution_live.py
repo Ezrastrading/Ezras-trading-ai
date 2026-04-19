@@ -174,6 +174,25 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
     blocked_core = _core_execution_preflight(intent)
     if blocked_core is not None:
         return blocked_core
+    try:
+        from trading_ai.core.system_guard import get_system_guard
+
+        halt_x, why_x = get_system_guard().should_shutdown()
+        if halt_x:
+            logger.critical("submit_order blocked by system guard: %s", why_x)
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="halted",
+                outlet=o or "unknown",
+                raw={},
+                success=False,
+                reason=f"system_guard:{why_x}",
+            )
+    except Exception:
+        logger.debug("system guard submit_order skipped", exc_info=True)
     if o == "kalshi":
         blocked = _governance_preflight_live_submit(
             intent,
@@ -256,6 +275,23 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
         pid = str(intent.meta.get("product_id") or intent.market_id or "BTC-USD")
         side = str(intent.side or "buy")
         size = str(intent.meta.get("base_size") or intent.shares or "0")
+        if side.lower() == "sell":
+            from trading_ai.organism.trade_truth import assert_no_oversell
+
+            try:
+                req_base = float(size)
+            except (TypeError, ValueError):
+                req_base = float(intent.shares or 0)
+            pos_base = float(
+                intent.meta.get("position_base_size")
+                or intent.meta.get("available_base")
+                or intent.meta.get("base_size")
+                or 0
+            )
+            if pos_base > 0:
+                sell_base = min(pos_base, req_base)
+                assert_no_oversell(pos_base, sell_base)
+                size = str(sell_base)
         r = CoinbaseFetcher.place_market_order(pid, side, size)
         return OrderResult(
             order_id=str((r.get("raw") or {}).get("order_id", "") or ""),

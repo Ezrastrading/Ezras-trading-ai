@@ -38,7 +38,14 @@ from trading_ai.nte.databank.coinbase_close_adapter import coinbase_nt_close_to_
 from trading_ai.nte.databank.trade_intelligence_databank import process_closed_trade
 from trading_ai.core.capital_engine import CapitalEngine, capital_preflight_block
 from trading_ai.core.position_engine import net_exit_from_fills, position_state_from_open_dict
-from trading_ai.edge.execution_policy import resolve_coinbase_edge
+from trading_ai.edge.execution_policy import edge_allowed_in_regime, resolve_coinbase_edge
+from trading_ai.edge.registry import EdgeRegistry
+from trading_ai.nte.execution.product_rules import round_base_to_increment
+from trading_ai.organism.trade_truth import (
+    assert_no_oversell,
+    assert_valid_base_quote,
+    log_execution_truth_record,
+)
 from trading_ai.nte.research.research_firewall import live_routing_permitted
 from trading_ai.nte.strategies.ab_router import RouterDecision, pick_live_route
 from trading_ai.strategy.strategy_validation_engine import StrategyValidationEngine, strategy_preflight_ok
@@ -440,11 +447,21 @@ class CoinbaseNTEngine:
 
     def _finalize_exit(self, pos: Dict[str, Any], reason: str) -> None:
         pid = str(pos.get("product_id") or "")
-        base = float(pos.get("base_size") or 0)
-        if base <= 0:
+        base_pos = float(pos.get("base_size") or 0)
+        if base_pos <= 0:
             self._remove_position(pos)
             return
-        res = self._client.place_market_sell(pid, _fmt_base(base, pid))
+        rounded_str = round_base_to_increment(pid, base_pos)
+        try:
+            rounded_float = float(rounded_str)
+        except (TypeError, ValueError):
+            rounded_float = base_pos
+        sell_base = min(base_pos, rounded_float)
+        if sell_base <= 1e-12:
+            self._remove_position(pos)
+            return
+        assert_no_oversell(base_pos, sell_base)
+        res = self._client.place_market_sell(pid, _fmt_base(sell_base, pid))
         if not getattr(res, "success", False):
             logger.warning("NTE exit sell failed %s: %s", pid, getattr(res, "reason", res))
             return
@@ -465,12 +482,28 @@ class CoinbaseNTEngine:
             pstate,
             sell_quote_notional=sell_usd,
             sell_fee=sell_fee,
-            sold_base=base,
+            sold_base=sell_base,
         )
         entry_px = float(pos.get("entry_price") or 0)
-        entry_notional = entry_px * base
+        entry_notional = entry_px * sell_base
         gross_pnl = sell_usd - entry_notional
-        sell_avg = sell_usd / base if base > 1e-12 else 0.0
+        sell_avg = sell_usd / sell_base if sell_base > 1e-12 else 0.0
+        try:
+            assert_valid_base_quote(sell_base, sell_usd, sell_avg)
+        except ValueError as exc:
+            logger.critical("post-sell base/quote invariant failed: %s", exc)
+            try:
+                from trading_ai.core.system_guard import get_system_guard
+
+                get_system_guard().record_execution_anomaly("base_quote_invariant_exit")
+            except Exception:
+                logger.debug("system_guard anomaly hook skipped", exc_info=True)
+        log_execution_truth_record(
+            base_size=sell_base,
+            quote_size=sell_usd,
+            price=sell_avg,
+            source="fill_parser",
+        )
 
         equity_before = self._equity()
         risk_mod.register_closed_trade_pnl(self.state, net, equity_before, self.settings)
@@ -529,7 +562,7 @@ class CoinbaseNTEngine:
             "net_pnl_usd": net,
             "entry_price": entry_px,
             "exit_price": sell_avg,
-            "base_size": base,
+            "base_size": sell_base,
             "expected_edge_bps": exp_edge,
             "entry_maker_intent": entry_exec == "limit_gtc",
             "entry_execution": entry_exec,
@@ -777,6 +810,23 @@ class CoinbaseNTEngine:
         if edge_asg.size_scale <= 0:
             logger.info("NTE skip entry: edge policy blocks scale (%s)", edge_asg.detail)
             return
+
+        reg0 = str(getattr(feat, "regime", None) or "")
+        if edge_asg.edge_id:
+            er = EdgeRegistry().get(edge_asg.edge_id)
+            if er is not None and isinstance(er.required_conditions, dict):
+                tags = er.required_conditions.get("regime_tags")
+                allowed_r = edge_allowed_in_regime(tags, reg0)
+                logger.info(
+                    "edge_regime_gate %s",
+                    json.dumps(
+                        {"edge_id": edge_asg.edge_id, "regime": reg0, "allowed": allowed_r},
+                        default=str,
+                    ),
+                )
+                if not allowed_r:
+                    logger.info("NTE skip entry: regime_mismatch edge=%s", edge_asg.edge_id)
+                    return
 
         market_snap = {
             "product_id": product_id,

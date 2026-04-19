@@ -43,6 +43,8 @@ class SystemGuardState:
     latency_samples_ms: Deque[float] = field(default_factory=lambda: deque(maxlen=DEFAULT_LATENCY_WINDOW))
     last_shutdown_reason: str = ""
     halted_at_unix: float = 0.0
+    recent_trade_pnls: List[float] = field(default_factory=list)
+    execution_anomaly_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -53,6 +55,8 @@ class SystemGuardState:
             "latency_samples_ms": list(self.latency_samples_ms),
             "last_shutdown_reason": self.last_shutdown_reason,
             "halted_at_unix": self.halted_at_unix,
+            "recent_trade_pnls": list(self.recent_trade_pnls)[-100:],
+            "execution_anomaly_count": self.execution_anomaly_count,
         }
 
     @classmethod
@@ -63,6 +67,8 @@ class SystemGuardState:
             supabase_success_streak=int(d.get("supabase_success_streak") or 0),
             last_shutdown_reason=str(d.get("last_shutdown_reason") or ""),
             halted_at_unix=float(d.get("halted_at_unix") or 0.0),
+            recent_trade_pnls=[float(x) for x in (d.get("recent_trade_pnls") or []) if x is not None][-100:],
+            execution_anomaly_count=int(d.get("execution_anomaly_count") or 0),
         )
         st.api_errors_recent = deque(maxlen=DEFAULT_API_WINDOW)
         for t in d.get("api_errors_recent_ts") or []:
@@ -129,11 +135,24 @@ class SystemGuard:
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return "halt_file_unreadable"
 
+    def halt_now(self, reason: str) -> None:
+        """Operator-style immediate halt (e.g. deployment failure-rate breach)."""
+        self._trigger_halt(reason)
+
+    def record_execution_anomaly(self, reason: str = "unknown") -> None:
+        self._state.execution_anomaly_count += 1
+        self._persist()
+        halt_after = int((os.environ.get("SYSTEM_GUARD_EXECUTION_ANOMALY_COUNT_HALT") or "3").strip() or "3")
+        if self._state.execution_anomaly_count >= halt_after:
+            self._trigger_halt(f"execution_anomaly:{reason}")
+
     def record_closed_trade_pnl(self, pnl_usd: float) -> None:
         if pnl_usd < -1e-9:
             self._state.consecutive_losses += 1
         elif pnl_usd > 1e-9:
             self._state.consecutive_losses = 0
+        self._state.recent_trade_pnls.append(float(pnl_usd))
+        self._state.recent_trade_pnls = self._state.recent_trade_pnls[-100:]
         self._persist()
 
     def record_supabase_ok(self) -> None:
@@ -189,11 +208,36 @@ class SystemGuard:
             self._trigger_halt(msg)
             return True, msg
 
+        early_unstable = int((os.environ.get("SYSTEM_GUARD_SUPABASE_UNSTABLE_STREAK") or "4").strip() or "4")
+        if self._state.supabase_failure_streak >= early_unstable:
+            msg = "supabase_unstable"
+            self._trigger_halt(msg)
+            return True, msg
+
         sb_n = int((os.environ.get("SYSTEM_GUARD_SUPABASE_FAIL_STREAK") or "8").strip() or "8")
         if self._state.supabase_failure_streak >= sb_n:
             msg = f"supabase_failure_streak>={sb_n}"
             self._trigger_halt(msg)
             return True, msg
+
+        try:
+            from trading_ai.nte.databank.supabase_trade_sync import supabase_sync_rate_unhealthy
+
+            if supabase_sync_rate_unhealthy():
+                msg = "supabase_sync_rate_below_threshold"
+                self._trigger_halt(msg)
+                return True, msg
+        except Exception:
+            logger.debug("supabase sync rate check skipped", exc_info=True)
+
+        pnls = self._state.recent_trade_pnls
+        min_n = int((os.environ.get("EDGE_EXPECTANCY_HALT_MIN_TRADES") or "12").strip() or "12")
+        if len(pnls) >= min_n:
+            ewma = sum(pnls[-min_n:]) / float(min_n)
+            if ewma < 0:
+                msg = "negative_expectancy"
+                self._trigger_halt(msg)
+                return True, msg
 
         if self._latency_spike():
             msg = "latency_spike"
@@ -243,6 +287,7 @@ def clear_trading_halt() -> bool:
     g = get_system_guard()
     g._state.consecutive_losses = 0
     g._state.supabase_failure_streak = 0
+    g._state.execution_anomaly_count = 0
     g._state.last_shutdown_reason = ""
     g._state.halted_at_unix = 0.0
     g._persist()

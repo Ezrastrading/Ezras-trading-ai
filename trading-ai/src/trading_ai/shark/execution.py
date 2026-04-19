@@ -73,6 +73,16 @@ def run_execution_chain(
     audit: List[Dict[str, Any]] = []
     if run_live:
         log.info("execute_live=True (dry_run=false)")
+        try:
+            from trading_ai.core.system_guard import get_system_guard
+
+            halt_g, why_g = get_system_guard().should_shutdown()
+            if halt_g:
+                log.critical("Execution chain blocked by system guard: %s", why_g)
+                _append(audit, "0_system_guard", ok=False, reason=why_g)
+                return ChainResult(False, "system_guard", audit, None)
+        except Exception:
+            log.debug("system guard pre-chain skipped", exc_info=True)
     now = now_unix or time.time()
     pk = peak_capital if peak_capital is not None else capital
     phase = detect_phase(capital)

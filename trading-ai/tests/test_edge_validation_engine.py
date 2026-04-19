@@ -163,7 +163,9 @@ def test_trade_tagging_in_databank_payload(monkeypatch: pytest.MonkeyPatch, tmp_
 
 def test_resolve_coinbase_edge_no_registry_allows_legacy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
-    a = resolve_coinbase_edge("mean_reversion", "BTC-USD")
+    reg = EdgeRegistry(path=tmp_path / "edge_registry_isolated.json")
+    reg.save_raw({"schema_version": "1.0.0", "edges": []})
+    a = resolve_coinbase_edge("mean_reversion", "BTC-USD", registry=reg)
     assert a.edge_lane == "none"
     assert a.size_scale == 1.0
 

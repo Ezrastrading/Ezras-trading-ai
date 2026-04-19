@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Fixed id for upsert/delete diagnostic (idempotent overwrite; best-effort delete after probe).
 _DIAG_PROBE_TRADE_ID = "__ezras_sync_diag_probe_v1__"
 
-_RETRY_ATTEMPTS = 4  # initial try + 3 retries
+_RETRY_ATTEMPTS = 5  # initial try + 4 retries (deployment hard guarantee)
 
 
 def local_unsynced_trades_path() -> Path:

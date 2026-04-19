@@ -146,6 +146,10 @@ def _system_guard_post_cycle(t_cycle: float) -> None:
             logger.critical("system guard halt after scan cycle: %s", r2)
     except Exception:
         logger.debug("system guard post-cycle metrics skipped", exc_info=True)
+    if (os.environ.get("POSITION_RECONCILE_EACH_CYCLE") or "").strip().lower() in ("1", "true", "yes"):
+        logger.debug(
+            "POSITION_RECONCILE_EACH_CYCLE enabled — wire venue balances in organism.reconciliation.maybe_reconcile_*"
+        )
 
 
 def run_scan_execution_cycle(
