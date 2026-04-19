@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-DATABANK_SCHEMA_VERSION = "1.0.0"
+DATABANK_SCHEMA_VERSION = "1.2.0"
 
 # Locked globally — do not alias elsewhere (Section 8).
 AVENUE_REGISTRY: Dict[str, str] = {
@@ -96,6 +96,26 @@ def merge_defaults(raw: Dict[str, Any]) -> Dict[str, Any]:
         "anomaly_flags": [],
         "reward_delta": 0.0,
         "penalty_delta": 0.0,
+        "edge_id": None,
+        "edge_lane": None,
+        "edge_status_at_trade": None,
+        "market_snapshot_json": None,
+        "instrument_kind": None,
+        "base_qty": None,
+        "quote_qty_buy": None,
+        "quote_qty_sell": None,
+        "avg_entry_price": None,
+        "avg_exit_price": None,
+        "contracts": None,
+        "entry_price_per_contract": None,
+        "payout_per_contract": None,
+        "entry_premium": None,
+        "exit_premium": None,
+        "option_multiplier": None,
+        "latency_ms": None,
+        "regime_bucket": None,
+        "execution_quality_score": None,
+        "research_source": None,
         "schema_version": DATABANK_SCHEMA_VERSION,
     }
     for k, v in defaults.items():
@@ -161,6 +181,26 @@ def row_for_supabase_trade_events(merged: Dict[str, Any], scores: Mapping[str, A
         "timestamp_open",
         "timestamp_close",
         "created_at",
+        "edge_id",
+        "edge_lane",
+        "edge_status_at_trade",
+        "market_snapshot_json",
+        "instrument_kind",
+        "base_qty",
+        "quote_qty_buy",
+        "quote_qty_sell",
+        "avg_entry_price",
+        "avg_exit_price",
+        "contracts",
+        "entry_price_per_contract",
+        "payout_per_contract",
+        "entry_premium",
+        "exit_premium",
+        "option_multiplier",
+        "latency_ms",
+        "regime_bucket",
+        "execution_quality_score",
+        "research_source",
         "schema_version",
     ]
     out: Dict[str, Any] = {}

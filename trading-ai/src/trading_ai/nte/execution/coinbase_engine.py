@@ -33,10 +33,57 @@ from trading_ai.nte.memory.store import MemoryStore
 from trading_ai.nte.rewards.engine import RewardEngine
 from trading_ai.nte.monitoring.execution_counters import bump as bump_exec_counter
 from trading_ai.nte.paths import nte_system_health_path
+from trading_ai.global_layer.governance_order_gate import check_new_order_allowed_full
+from trading_ai.nte.databank.coinbase_close_adapter import coinbase_nt_close_to_databank_raw
+from trading_ai.nte.databank.trade_intelligence_databank import process_closed_trade
+from trading_ai.core.capital_engine import CapitalEngine, capital_preflight_block
+from trading_ai.core.position_engine import net_exit_from_fills, position_state_from_open_dict
+from trading_ai.edge.execution_policy import resolve_coinbase_edge
 from trading_ai.nte.research.research_firewall import live_routing_permitted
-from trading_ai.nte.strategies.ab_router import pick_live_route
+from trading_ai.nte.strategies.ab_router import RouterDecision, pick_live_route
+from trading_ai.strategy.strategy_validation_engine import StrategyValidationEngine, strategy_preflight_ok
 
 logger = logging.getLogger(__name__)
+
+
+def _nte_entry_gates_coinbase(
+    *,
+    product_id: str,
+    strategy_route_label: str,
+    route_bucket: str,
+) -> Tuple[bool, Optional[str], str]:
+    """
+    NTE Coinbase entry policy order (non-negotiable):
+
+    1. Governance (joint review / enforcement) — first decisive gate.
+    2. Strategy live-routing approval (research firewall) — downstream policy.
+
+    Returns ``(proceed, failure_kind, detail)`` where ``failure_kind`` is
+    ``\"governance\"``, ``\"strategy\"``, or ``None`` when ``proceed`` is True.
+    """
+    allowed, gov_reason, _audit = check_new_order_allowed_full(
+        venue="coinbase",
+        operation="nte_new_entry",
+        route=str(strategy_route_label or "n/a"),
+        intent_id=str(product_id or "n/a"),
+        strategy_class=str(strategy_route_label or "n/a"),
+        route_bucket=str(route_bucket or "n/a"),
+        log_decision=True,
+    )
+    if not allowed:
+        return False, "governance", gov_reason
+    if not live_routing_permitted(strategy_route_label):
+        return False, "strategy", str(strategy_route_label or "n/a")
+    return True, None, "ok"
+
+
+def _route_bucket_for_nte(dec: RouterDecision) -> str:
+    """Stable router bucket label for governance metadata (not a safety input)."""
+    rr = (dec.router_reason or "").strip() or "nte_router"
+    vr = (dec.vol_regime or "").strip() or "unknown_vol"
+    if len(rr) > 96:
+        rr = rr[:96] + "…"
+    return f"{vr}|{rr}"
 
 
 def _hash_band(key: str, lo: float, hi: float) -> float:
@@ -105,6 +152,7 @@ class CoinbaseNTEngine:
         self.goals = GoalEvaluator(self.store)
         self._realized_total = float(load_state().get("lifetime_realized_usd") or 0.0)
         self.launch = load_coinbase_avenue1_launch()
+        self._strategy_validation = StrategyValidationEngine()
         self._ws_feed: Optional[AdvancedTradeWSFeed] = None
         if _ws_enabled():
             self._ws_feed = AdvancedTradeWSFeed(list(self.settings.products))
@@ -411,9 +459,14 @@ class CoinbaseNTEngine:
                 sell_fee += abs(float(f.get("commission") or 0))
             except (TypeError, ValueError):
                 continue
-        buy_cost = float(pos.get("buy_cost_usd") or 0)
         buy_fee = float(pos.get("buy_fee_usd") or 0)
-        net = sell_usd - sell_fee - buy_cost - buy_fee
+        pstate = position_state_from_open_dict(pos)
+        net = net_exit_from_fills(
+            pstate,
+            sell_quote_notional=sell_usd,
+            sell_fee=sell_fee,
+            sold_base=base,
+        )
         entry_px = float(pos.get("entry_price") or 0)
         entry_notional = entry_px * base
         gross_pnl = sell_usd - entry_notional
@@ -437,6 +490,17 @@ class CoinbaseNTEngine:
             strategy=str(pos.get("strategy") or "unknown"),
         )
 
+        try:
+            self._strategy_validation.record_trade(
+                str(pos.get("strategy") or "unknown"),
+                pnl=net,
+                slippage=0.0,
+                latency_ms=0.0,
+                success=net > 0.0,
+            )
+        except Exception as exc:
+            logger.debug("strategy validation record_trade: %s", exc)
+
         esp = float(pos.get("entry_spread_pct") or 0.0)
         exp_edge = float(pos.get("expected_edge_bps") or 0.0)
         entry_exec = str(pos.get("entry_execution") or "limit_gtc")
@@ -445,6 +509,7 @@ class CoinbaseNTEngine:
             realized_move_bps = (sell_avg - entry_px) / entry_px * 10000.0
 
         record = {
+            "trade_id": str(pos.get("id") or ""),
             "avenue_id": "coinbase",
             "avenue": "coinbase",
             "product_id": pid,
@@ -474,9 +539,21 @@ class CoinbaseNTEngine:
             "execution_quality": "ok" if getattr(res, "success", False) else "error",
             "mistake_classification": mistake or "none",
             "exit_reason": reason,
+            "hard_stop_exit": reason == "stop_loss",
         }
         self.learning.on_trade_closed(record)
         self.iteration.after_trade(record)
+
+        try:
+            raw_db = coinbase_nt_close_to_databank_raw(pos, record, exit_reason=reason)
+            db_out = process_closed_trade(raw_db)
+            logger.info(
+                "NTE databank: trade_id=%s ok=%s",
+                raw_db.get("trade_id"),
+                db_out.get("ok"),
+            )
+        except Exception as exc:
+            logger.warning("NTE databank pipeline (non-blocking): %s", exc)
 
         fees_total = buy_fee + sell_fee
         gross_trade = net + fees_total
@@ -622,6 +699,9 @@ class CoinbaseNTEngine:
             "router_score_b": pend.get("router_score_b"),
             "rejected_routes": pend.get("rejected_routes"),
             "router_reason": pend.get("router_reason"),
+            "edge_id": pend.get("edge_id"),
+            "edge_lane": pend.get("edge_lane"),
+            "market_snapshot": pend.get("market_snapshot"),
         }
         self.state.setdefault("positions", []).append(pos)
         self._remove_pending(str(pend.get("client_key")))
@@ -673,9 +753,38 @@ class CoinbaseNTEngine:
         if dec is None or dec.chosen is None:
             return
         sig = dec.chosen
-        if not live_routing_permitted(sig.name):
-            logger.info("NTE skip entry: strategy not approved for live routing (%s)", sig.name)
+        rb = _route_bucket_for_nte(dec)
+        ok_gate, fail_kind, gate_detail = _nte_entry_gates_coinbase(
+            product_id=product_id,
+            strategy_route_label=str(sig.name or "n/a"),
+            route_bucket=rb,
+        )
+        if not ok_gate:
+            if fail_kind == "governance":
+                logger.info("NTE skip entry: governance gate (%s)", gate_detail)
+            else:
+                logger.info(
+                    "NTE skip entry: strategy not approved for live routing (%s)",
+                    gate_detail,
+                )
             return
+
+        if not strategy_preflight_ok(self._strategy_validation, str(sig.name or "unknown")):
+            logger.info("NTE skip entry: strategy validation disabled (%s)", sig.name)
+            return
+
+        edge_asg = resolve_coinbase_edge(str(sig.name or "n/a"), product_id)
+        if edge_asg.size_scale <= 0:
+            logger.info("NTE skip entry: edge policy blocks scale (%s)", edge_asg.detail)
+            return
+
+        market_snap = {
+            "product_id": product_id,
+            "regime": getattr(feat, "regime", None),
+            "spread_pct": getattr(feat, "spread_pct", None),
+            "mid": getattr(feat, "mid", None),
+            "z_score": getattr(feat, "z_score", None),
+        }
 
         if self.launch.global_risk.shadow_compare_enabled:
             self._shadow_log(product_id, dec, feat)
@@ -683,9 +792,28 @@ class CoinbaseNTEngine:
         usd = max(10.0, equity * float(dec.position_base_pct))
         usd = min(usd, equity * float(dec.position_max_pct), float(self._client.get_usd_balance()) * 0.98)
         usd = min(usd, equity * size_fraction * 1.25)
+        usd *= float(edge_asg.size_scale)
         gr = self.launch.global_risk
         if gr.launch_session_clamp:
             usd = min(usd, equity * float(gr.clamp_equity_per_trade_pct_max))
+        cap_sz = CapitalEngine.get_trade_size(equity)
+        usd = min(usd, cap_sz)
+        usd *= float(self._strategy_validation.priority_multiplier(str(sig.name or "unknown")))
+        open_exp = sum(float(p.get("buy_cost_usd") or 0.0) for p in open_positions_list(self.state))
+        day_pnl = float(self.state.get("day_realized_pnl_usd") or 0.0)
+        day_start = float(self.state.get("day_start_equity") or equity)
+        if day_start <= 0:
+            day_start = equity
+        blocked_ce, cr = capital_preflight_block(
+            proposed_trade_usd=usd,
+            account_balance_usd=equity,
+            open_exposure_usd=open_exp,
+            daily_pnl_usd=day_pnl,
+            day_start_balance_usd=day_start,
+        )
+        if blocked_ce:
+            logger.info("NTE skip entry: capital preflight (%s)", cr)
+            return
         if usd < 10.0:
             return
 
@@ -738,6 +866,9 @@ class CoinbaseNTEngine:
                     "expected_move_bps": dec.expected_move_bps,
                     "rejected_routes": list(dec.rejected),
                     "router_reason": dec.router_reason,
+                    "edge_id": edge_asg.edge_id,
+                    "edge_lane": edge_asg.edge_lane,
+                    "market_snapshot": market_snap,
                 }
             )
             try:
@@ -766,6 +897,9 @@ class CoinbaseNTEngine:
             feat,
             execution="market_ioc",
             router_decision=dec,
+            edge_id=edge_asg.edge_id,
+            edge_lane=edge_asg.edge_lane,
+            market_snapshot=market_snap,
         )
 
     def _place_limit_buy(self, product_id: str, base_str: str, lim_str: str) -> Any:
@@ -789,6 +923,9 @@ class CoinbaseNTEngine:
         *,
         execution: str,
         router_decision: Optional[Any] = None,
+        edge_id: Optional[str] = None,
+        edge_lane: Optional[str] = None,
+        market_snapshot: Optional[Dict[str, Any]] = None,
     ) -> None:
         buy_cost = base_sz * avg_px + buy_fee
         pos_id = new_position_id()
@@ -838,6 +975,16 @@ class CoinbaseNTEngine:
             "expected_edge_bps": ne_bps,
             "router_score_a": ra,
             "router_score_b": rb,
+            "edge_id": edge_id,
+            "edge_lane": edge_lane,
+            "market_snapshot": market_snapshot
+            or {
+                "product_id": product_id,
+                "regime": getattr(feat, "regime", None),
+                "spread_pct": getattr(feat, "spread_pct", None),
+                "mid": getattr(feat, "mid", None),
+                "z_score": getattr(feat, "z_score", None),
+            },
         }
         self.state.setdefault("positions", []).append(pos)
         if execution == "market_ioc":
