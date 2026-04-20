@@ -15,7 +15,7 @@ from trading_ai.global_layer.claude_review_runner import run_claude_review
 from trading_ai.global_layer.gpt_review_runner import run_gpt_review
 from trading_ai.global_layer.ceo_review_writer import attach_ceo_summary_to_joint
 from trading_ai.global_layer.joint_review_merger import merge_reviews
-from trading_ai.global_layer.review_action_router import route_safe_actions
+from trading_ai.global_layer.review_action_router import route_execution_intelligence_advisory, route_safe_actions
 from trading_ai.global_layer.queue_priority_refresh import refresh_queue_priorities
 from trading_ai.global_layer.review_policy import ReviewPolicy, load_policy_from_environ
 from trading_ai.global_layer.review_storage import ReviewStorage
@@ -121,6 +121,16 @@ def run_full_review_cycle(
         {k: v for k, v in joint.items() if not str(k).startswith("_")},
     )
     route_safe_actions(joint, storage=st, policy=policy, packet=packet)
+    try:
+        route_execution_intelligence_advisory(
+            cl,
+            gp,
+            packet_id=str(packet.get("packet_id") or "unknown"),
+            joint_review_id=str(joint.get("joint_review_id") or ""),
+            storage=st,
+        )
+    except Exception:
+        pass
     refresh_queue_priorities(st)
 
     snap = st.load_json("review_policy_snapshot.json")

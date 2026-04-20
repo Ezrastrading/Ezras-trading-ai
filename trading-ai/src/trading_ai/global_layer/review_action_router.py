@@ -70,6 +70,44 @@ def _log_action(
     return row
 
 
+def route_execution_intelligence_advisory(
+    claude: Dict[str, Any],
+    gpt: Dict[str, Any],
+    *,
+    packet_id: str,
+    joint_review_id: str,
+    storage: Optional[ReviewStorage] = None,
+) -> None:
+    """
+    Log advisory model outputs about execution intelligence — does not change live permissions or sizing.
+    """
+    st = storage or ReviewStorage()
+    gov = st.load_json("governance_events.json")
+    ev = list(gov.get("events") or [])
+    ev.append(
+        {
+            "ts": time.time(),
+            "kind": "execution_intelligence_advisory",
+            "packet_id": packet_id,
+            "joint_review_id": joint_review_id,
+            "advisory_only": True,
+            "enforceable": False,
+            "claude": {
+                "avenue_actions": list((claude.get("avenue_actions") or [])[:12]),
+                "scaling_actions": list((claude.get("scaling_actions") or [])[:12]),
+                "goal_progress_actions": list((claude.get("goal_progress_actions") or [])[:12]),
+            },
+            "gpt": {
+                "avenue_actions": list((gpt.get("avenue_actions") or [])[:12]),
+                "scaling_actions": list((gpt.get("scaling_actions") or [])[:12]),
+                "goal_progress_actions": list((gpt.get("goal_progress_actions") or [])[:12]),
+            },
+        }
+    )
+    gov["events"] = ev[-500:]
+    st.save_json("governance_events.json", gov)
+
+
 def route_safe_actions(
     joint: Dict[str, Any],
     *,

@@ -305,6 +305,36 @@ def build_review_packet(
 
     internal = read_normalized_internal()
     trades: List[Dict[str, Any]] = [t for t in (internal.get("trades") or []) if isinstance(t, dict)]
+    ei_snapshot: Dict[str, Any] = {}
+    try:
+        from trading_ai.intelligence.global_execution_intelligence import (
+            build_global_execution_intelligence_snapshot,
+            persist_execution_intelligence_artifacts,
+        )
+
+        ei_snapshot = build_global_execution_intelligence_snapshot(trades, now_ts=time.time())
+        rr: Optional[str] = None
+        try:
+            from trading_ai.runtime_paths import ezras_runtime_root
+
+            rr = str(ezras_runtime_root())
+        except Exception:
+            rr = None
+        persist_execution_intelligence_artifacts(ei_snapshot, review_storage=st, runtime_root=rr)
+    except Exception as exc:
+        ei_snapshot = {
+            "truth_version": "global_execution_intelligence_v1",
+            "generated_at": _iso_compact(),
+            "honesty": f"snapshot_unavailable:{exc}",
+            "avenue_performance": {"avenues": {}, "data_sufficiency": {"label": "missing", "notes": ["ei_build_failed"]}},
+            "capital_allocation": {"allocation_map": {}, "reasoning": [], "risk_flags": ["ei_unavailable"]},
+            "scaling": {"scale_action": "hold", "scale_factor": 1.0, "confidence": 0.0, "reason": "ei_unavailable"},
+            "strategy_state": {"strategies": []},
+            "goals": {"goal_id": "unknown", "honesty": "missing"},
+            "daily_progression_plan": {},
+            "data_sufficiency": {"label": "missing", "notes": ["ei_build_failed"]},
+            "execution_intelligence_compact": {},
+        }
     truth_meta = internal.get("trade_truth_meta") if isinstance(internal.get("trade_truth_meta"), dict) else {}
     avenue_fair = internal.get("avenue_fairness") if isinstance(internal.get("avenue_fairness"), dict) else {}
     agg = aggregate_from_trades(trades)
@@ -475,6 +505,22 @@ def build_review_packet(
             "top_negative_lessons": [],
             "top_immediate_actions": list((sp.get("best_path") or {}).get("top_3_actions") or [])[:5],
         },
+        "execution_intelligence": {
+            "avenues": (ei_snapshot.get("avenue_performance") or {}).get("avenues"),
+            "capital_allocation": ei_snapshot.get("capital_allocation"),
+            "scaling": ei_snapshot.get("scaling"),
+            "strategy_state": ei_snapshot.get("strategy_state"),
+            "goals": ei_snapshot.get("goals"),
+            "daily_progression_plan": ei_snapshot.get("daily_progression_plan"),
+            "data_sufficiency": ei_snapshot.get("data_sufficiency"),
+            "compact": ei_snapshot.get("execution_intelligence_compact"),
+            "honesty": ei_snapshot.get("honesty"),
+            "best_next_steps_today": list((ei_snapshot.get("goals") or {}).get("recommended_next_steps_today") or [])[:12],
+            "best_next_steps_tomorrow": list((ei_snapshot.get("goals") or {}).get("recommended_next_steps_tomorrow") or [])[:12],
+            "strongest_avenue": (ei_snapshot.get("avenue_performance") or {}).get("strongest_avenue"),
+            "weakest_avenue": (ei_snapshot.get("avenue_performance") or {}).get("weakest_avenue"),
+            "biggest_blocker": list((ei_snapshot.get("goals") or {}).get("blockers") or [])[:1],
+        },
         "review_context_rank": {},
         "packet_truth": {
             "model": truth_meta.get("model", "federated_nte_memory_plus_databank"),
@@ -508,6 +554,8 @@ def build_review_packet(
                 "avg_slippage_bps is null when no per-trade slippage fields are present — not treated as zero edge.",
                 "route_summary.buckets use explicit route_bucket/router_bucket/route_label only; "
                 "strategy_class/setup_type are not interpreted for grouping (schema v2).",
+                "execution_intelligence is derived from this packet's federated trades plus NTE strategy_scores/goals; "
+                "capital allocation and scaling signals are advisory and do not move funds or change live permissions.",
             ],
         },
     }

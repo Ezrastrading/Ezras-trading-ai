@@ -45,6 +45,17 @@ def rank_packet_sections(raw: Dict[str, Any]) -> Dict[str, Any]:
     if gs.get("current_best_live_edge"):
         facts.append(f"best_edge:{gs.get('current_best_live_edge')}")
 
+    ei = raw.get("execution_intelligence") or {}
+    if isinstance(ei, dict):
+        if ei.get("strongest_avenue"):
+            facts.append(f"ei_strongest_avenue:{ei.get('strongest_avenue')}")
+        sc = ei.get("scaling") or {}
+        if sc.get("scale_action") and sc.get("scale_action") != "hold":
+            facts.append(f"ei_scale:{sc.get('scale_action')}")
+        ds = ei.get("data_sufficiency") or {}
+        if str(ds.get("label") or "") in ("insufficient", "thin", "missing"):
+            anomalies.append("execution_intelligence_thin_evidence")
+
     sh = raw.get("shadow_exploration_summary") or {}
     if int(sh.get("promotion_pending_count") or 0) > 0:
         candidates.append("promotion_pending")
@@ -73,6 +84,19 @@ def trim_packet_for_budget(packet: Dict[str, Any], *, max_chars: int) -> Tuple[D
             if k in ls and isinstance(ls[k], list):
                 ls[k] = ls[k][:3]
     p["lesson_state"] = ls
+    ei = p.get("execution_intelligence")
+    if isinstance(ei, dict) and len(json.dumps(ei, default=str)) > 4500:
+        p["execution_intelligence"] = {
+            "compact": ei.get("compact"),
+            "data_sufficiency": ei.get("data_sufficiency"),
+            "scaling": ei.get("scaling"),
+            "honesty": ei.get("honesty"),
+            "strongest_avenue": ei.get("strongest_avenue"),
+            "weakest_avenue": ei.get("weakest_avenue"),
+            "best_next_steps_today": (ei.get("best_next_steps_today") or [])[:5],
+            "best_next_steps_tomorrow": (ei.get("best_next_steps_tomorrow") or [])[:5],
+            "_trimmed": True,
+        }
     s2 = json.dumps(p, default=str)
     if len(s2) > max_chars:
         p["_truncated"] = True

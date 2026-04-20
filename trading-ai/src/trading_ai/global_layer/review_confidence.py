@@ -100,6 +100,14 @@ def compute_packet_completeness_score(packet: Dict[str, Any]) -> float:
     """Packet completeness (0–100) — aligned to ``ai_review_packet_builder`` keys."""
     rs = packet.get("risk_summary") if isinstance(packet.get("risk_summary"), dict) else {}
     ver_ok = 1.0 if isinstance(rs, dict) and "write_verification_failures" in rs else 0.5
+    ei = packet.get("execution_intelligence")
+    ei_ok = 1.0
+    if isinstance(ei, dict):
+        ds = ei.get("data_sufficiency") or {}
+        if str(ds.get("label") or "") in ("insufficient", "missing", "thin"):
+            ei_ok = 0.65
+        if ei.get("honesty") and "unavailable" in str(ei.get("honesty")):
+            ei_ok = 0.5
     checks = [
         _section_weight(packet, ["capital_state"]),
         _section_weight(packet, ["avenue_state"]),
@@ -109,10 +117,11 @@ def compute_packet_completeness_score(packet: Dict[str, Any]) -> float:
         _section_weight(packet, ["shadow_exploration_summary"]),
         _section_weight(packet, ["goal_state"]),
         _section_weight(packet, ["lesson_state"]),
+        _section_weight(packet, ["execution_intelligence"]) * ei_ok,
         _section_weight(packet, ["review_context_rank"]),
         ver_ok,
     ]
-    return (sum(checks) / 10.0) * 100.0
+    return (sum(checks) / 11.0) * 100.0
 
 
 def compute_anomaly_aggregate_score(

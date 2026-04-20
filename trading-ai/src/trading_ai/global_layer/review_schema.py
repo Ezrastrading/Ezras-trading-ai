@@ -39,6 +39,14 @@ CLAUDE_OUTPUT_KEYS = frozenset(
         "path_to_first_million_note",
         "risk_mode_recommendation",
         "confidence_score",
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+        "execution_intelligence_confidence",
     }
 )
 GPT_OUTPUT_KEYS = frozenset(
@@ -57,6 +65,14 @@ GPT_OUTPUT_KEYS = frozenset(
         "main_bottleneck_to_first_million",
         "short_ceo_note",
         "confidence_score",
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+        "execution_intelligence_confidence",
     }
 )
 
@@ -70,8 +86,23 @@ def _is_str_list(x: Any) -> bool:
     return isinstance(x, list) and all(isinstance(i, str) for i in x)
 
 
+def _apply_ei_defaults(d: Dict[str, Any]) -> None:
+    for k in (
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+    ):
+        d.setdefault(k, [])
+    d.setdefault("execution_intelligence_confidence", float(d.get("confidence_score") or 0.4))
+
+
 def validate_claude_output(d: Dict[str, Any], *, packet_id: str, review_type: str) -> Tuple[bool, List[str]]:
     errs: List[str] = []
+    _apply_ei_defaults(d)
     required = (
         "what_is_working",
         "what_is_not_working",
@@ -84,6 +115,14 @@ def validate_claude_output(d: Dict[str, Any], *, packet_id: str, review_type: st
         "path_to_first_million_note",
         "risk_mode_recommendation",
         "confidence_score",
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+        "execution_intelligence_confidence",
     )
     for k in required:
         if k not in d:
@@ -116,11 +155,29 @@ def validate_claude_output(d: Dict[str, Any], *, packet_id: str, review_type: st
     ):
         if sk in d and not isinstance(d.get(sk), str):
             errs.append(f"{sk}_not_string")
+    for lk in (
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+    ):
+        if not _is_str_list(d.get(lk)):
+            errs.append(f"{lk}_not_string_list")
+    try:
+        ec = float(d.get("execution_intelligence_confidence"))
+        if ec < 0 or ec > 1:
+            errs.append("execution_intelligence_confidence_out_of_range")
+    except (TypeError, ValueError):
+        errs.append("execution_intelligence_confidence_not_float")
     return len(errs) == 0, errs
 
 
 def validate_gpt_output(d: Dict[str, Any], *, packet_id: str, review_type: str) -> Tuple[bool, List[str]]:
     errs: List[str] = []
+    _apply_ei_defaults(d)
     required = (
         "top_3_decisions",
         "top_3_warnings",
@@ -132,6 +189,14 @@ def validate_gpt_output(d: Dict[str, Any], *, packet_id: str, review_type: str) 
         "main_bottleneck_to_first_million",
         "short_ceo_note",
         "confidence_score",
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+        "execution_intelligence_confidence",
     )
     for k in required:
         if k not in d:
@@ -152,6 +217,23 @@ def validate_gpt_output(d: Dict[str, Any], *, packet_id: str, review_type: str) 
             errs.append("confidence_out_of_range")
     except (TypeError, ValueError):
         errs.append("confidence_not_float")
+    for lk in (
+        "avenue_actions",
+        "capital_allocation_actions",
+        "scaling_actions",
+        "strategy_actions",
+        "goal_progress_actions",
+        "risk_reduction_actions",
+        "advisory_explanations",
+    ):
+        if not _is_str_list(d.get(lk)):
+            errs.append(f"{lk}_not_string_list")
+    try:
+        ec = float(d.get("execution_intelligence_confidence"))
+        if ec < 0 or ec > 1:
+            errs.append("execution_intelligence_confidence_out_of_range")
+    except (TypeError, ValueError):
+        errs.append("execution_intelligence_confidence_not_float")
     return len(errs) == 0, errs
 
 

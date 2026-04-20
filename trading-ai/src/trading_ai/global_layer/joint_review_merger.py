@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from trading_ai.global_layer.review_confidence import (
     adjust_completeness_for_packet_truth,
@@ -269,6 +269,24 @@ def merge_reviews(
             "resolution": live_mode,
         }
 
+    ei = packet.get("execution_intelligence") if isinstance(packet.get("execution_intelligence"), dict) else {}
+    ca_blk = ei.get("capital_allocation") if isinstance(ei.get("capital_allocation"), dict) else {}
+    amap = ca_blk.get("allocation_map") if isinstance(ca_blk.get("allocation_map"), dict) else {}
+    cap_top: List[Tuple[Any, Any]] = sorted(amap.items(), key=lambda x: -float(x[1] or 0))[:4] if amap else []
+    sc_blk = ei.get("scaling") if isinstance(ei.get("scaling"), dict) else {}
+    g_blk = ei.get("goals") if isinstance(ei.get("goals"), dict) else {}
+    ei_digest = {
+        "strongest_avenue": ei.get("strongest_avenue"),
+        "weakest_avenue": ei.get("weakest_avenue"),
+        "scaling": sc_blk.get("scale_action"),
+        "capital_top": cap_top,
+        "data_sufficiency": (ei.get("data_sufficiency") or {}).get("label")
+        if isinstance(ei.get("data_sufficiency"), dict)
+        else None,
+        "goal_id": g_blk.get("goal_id"),
+        "honesty": ei.get("honesty"),
+    }
+
     out: Dict[str, Any] = {
         "joint_review_id": jid,
         "packet_id": pid,
@@ -291,6 +309,7 @@ def merge_reviews(
         "ceo_summary": ceo_summary[:2000],
         "path_to_first_million_summary": path_sum[:2000],
         "confidence_score": round(conf, 4),
+        "execution_intelligence_digest": ei_digest,
         "_governance_notes": gov_note,
     }
 

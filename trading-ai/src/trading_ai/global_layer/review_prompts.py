@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from trading_ai.global_layer.system_mission import mission_prompt_injection_block
+
 CLAUDE_SYSTEM_PROMPT = """You are the internal Risk and Quality Review model for a live trading organism.
+""" + mission_prompt_injection_block() + """
 Your job is to review a compressed evidence packet and determine:
 1. what is actually working
 2. what is not working
@@ -42,6 +45,10 @@ def claude_user_prompt(packet: Dict[str, Any]) -> str:
         "- give one short note on the current risk-adjusted path to the first $1,000,000\n"
         "- recommend risk mode: normal, caution, or paused\n"
         "- provide a confidence score from 0.0 to 1.0\n"
+        "- use packet.execution_intelligence when present (avenues, allocation, scaling, strategies, goals)\n"
+        "- output advisory string lists: avenue_actions, capital_allocation_actions, scaling_actions, strategy_actions, "
+        "goal_progress_actions, risk_reduction_actions (empty if insufficient evidence)\n"
+        "- advisory_explanations and execution_intelligence_confidence (0.0–1.0) for that block\n"
         "Constraints:\n"
         "- Be brief.\n"
         "- Be concrete.\n"
@@ -55,6 +62,7 @@ def claude_user_prompt(packet: Dict[str, Any]) -> str:
 
 
 GPT_SYSTEM_PROMPT = """You are the internal CEO Advisor model for a live trading organism.
+""" + mission_prompt_injection_block() + """
 Your job is to review a compressed evidence packet and produce a short executive decision layer.
 You must determine:
 1. the top 3 decisions
@@ -92,6 +100,10 @@ def gpt_user_prompt(packet: Dict[str, Any]) -> str:
         "- state the main bottleneck to the first $1,000,000\n"
         "- provide a short CEO note\n"
         "- provide a confidence score from 0.0 to 1.0\n"
+        "- review execution_intelligence in the packet for avenue ranking, capital posture, scaling, strategies, goals\n"
+        "- same advisory string-list fields as Claude schema: avenue_actions, capital_allocation_actions, scaling_actions, "
+        "strategy_actions, goal_progress_actions, risk_reduction_actions, advisory_explanations, "
+        "execution_intelligence_confidence\n"
         "Constraints:\n"
         "- Be brief.\n"
         "- Be ranked.\n"
