@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from trading_ai.intelligence.eie_nte_artifacts import write_execution_intelligence_nte_bundle
+from trading_ai.intelligence.execution_intelligence.ceo_session_store import append_structured_ceo_session, build_session_record_from_eie
 from trading_ai.intelligence.execution_intelligence.daily_plan import generate_daily_plan
 from trading_ai.intelligence.execution_intelligence.evaluation import (
     attach_raw_trades,
@@ -16,8 +20,11 @@ from trading_ai.intelligence.execution_intelligence.system_state import (
     get_system_state,
     global_weekly_totals_by_iso_week,
 )
-from trading_ai.intelligence.execution_intelligence.time_utils import last_n_iso_week_ids
+from trading_ai.intelligence.ts_parse import last_n_iso_week_ids
+from trading_ai.intelligence.resolved_trades import build_discrepancy_report, resolve_for_review, resolve_for_runtime
+from trading_ai.intelligence.truth_contract import policy_for_goal, summarize_policies
 from trading_ai.nte.memory.store import MemoryStore
+from trading_ai.nte.paths import nte_memory_dir
 
 logger = logging.getLogger(__name__)
 
@@ -118,34 +125,78 @@ def refresh_execution_intelligence(
     *,
     now_ts: Optional[float] = None,
     persist: bool = True,
+    closed_trade_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Full EIE snapshot: system state, goal progress, daily plan, persisted history.
 
-    Safe to call post-trade or on a schedule; does not trade.
+    Canonical refresh owner: **post-trade closed** (pass ``closed_trade_id`` for idempotency).
+    Safe to call on a schedule; does not trade.
     """
     st = store or MemoryStore()
     st.ensure_defaults()
-    tm = st.load_json("trade_memory.json")
-    trades: List[Dict[str, Any]] = [t for t in (tm.get("trades") or []) if isinstance(t, dict)]
+    gs = _migrate_gs(load_goals_state(st))
+
+    if (
+        persist
+        and closed_trade_id
+        and str(gs.get("last_eie_refresh_trade_id") or "") == str(closed_trade_id)
+        and gs.get("last_eie_bundle")
+    ):
+        return dict(gs["last_eie_bundle"])
+
+    rv = resolve_for_runtime(st)
+    trades_for_goals = rv["rows_for_windows"]
 
     state = get_system_state(store=st, now_ts=now_ts)
-    state = attach_raw_trades(state, trades)
+    state = attach_raw_trades(state, trades_for_goals)
 
     import time
 
+    from trading_ai.runtime_paths import ezras_runtime_root
+
     ts = now_ts if now_ts is not None else time.time()
-    active = select_active_goal(state, trades, now_ts=ts)
+    active = select_active_goal(state, trades_for_goals, now_ts=ts)
     goal = get_goal(active) or get_goal(GOAL_A) or {}
     progress = evaluate_goal_progress(goal, state)
+    progress["goal_truth_policy"] = policy_for_goal()
+    progress["capital_ledger_vs_trade_sum"] = state.get("goal_truth_discrepancy")
     plan = generate_daily_plan(goal, state)
 
-    gs = _migrate_gs(load_goals_state(st))
+    rr = resolve_for_review(st)
+    disc = build_discrepancy_report(rv, rr)
+    truth_summary = {
+        "truth_version": "truth_source_summary_v1",
+        "runtime_nte_rows_usable": len(rv.get("rows_for_windows") or []),
+        "review_federated_rows_usable": len(rr.get("rows_for_windows") or []),
+        "policies": summarize_policies(),
+        "honesty": "Runtime uses NTE memory; review intelligence may federate databank — compare discrepancy report.",
+    }
+
     last_update = _now_iso()
+    rr_path = None
+    try:
+        rr_path = str(ezras_runtime_root())
+    except Exception:
+        pass
+
+    out: Dict[str, Any] = {
+        "active_goal": active,
+        "goal": goal,
+        "progress": progress,
+        "daily_plan": plan,
+        "system_state": {k: v for k, v in state.items() if k != "_raw_trades"},
+        "goals_state_path": str(st.path("goals_state.json")),
+        "truth_contracts": summarize_policies(),
+        "trade_discrepancy_report": disc,
+        "truth_source_summary": truth_summary,
+    }
 
     if persist:
         gs["active_goal"] = active
         gs["last_update"] = last_update
+        if closed_trade_id:
+            gs["last_eie_refresh_trade_id"] = str(closed_trade_id)
 
         ph = list(gs.get("progress_history") or [])
         ph.append(
@@ -169,18 +220,51 @@ def refresh_execution_intelligence(
             "daily_plan": plan,
         }
         gs["schema_version"] = 2
+        gs["last_eie_bundle"] = out
 
-    if persist:
+        try:
+            ceo_rec = build_session_record_from_eie(
+                active_goal=active,
+                progress=progress,
+                daily_plan=plan,
+                avenue_focus=list((state.get("current_active_avenues") or [])[:8]),
+            )
+            append_structured_ceo_session(ceo_rec)
+        except Exception as exc:
+            logger.debug("structured ceo session append: %s", exc)
+
+        try:
+            write_execution_intelligence_nte_bundle(
+                out,
+                discrepancy_report=disc,
+                truth_source_summary=truth_summary,
+                runtime_root=rr_path,
+            )
+        except Exception as exc:
+            logger.warning("eie nte artifacts: %s", exc)
+        try:
+            write_goal_progress_snapshot_nte(progress, runtime_root=rr_path)
+        except Exception as exc:
+            logger.debug("goal_progress_snapshot_nte: %s", exc)
+
         try:
             st.save_json("goals_state.json", gs)
         except OSError as exc:
             logger.warning("goals_state save failed: %s", exc)
 
-    return {
-        "active_goal": active,
-        "goal": goal,
-        "progress": progress,
-        "daily_plan": plan,
-        "system_state": {k: v for k, v in state.items() if k != "_raw_trades"},
-        "goals_state_path": str(st.path("goals_state.json")),
+    return out
+
+
+def write_goal_progress_snapshot_nte(progress: Dict[str, Any], *, runtime_root: Optional[str] = None) -> Path:
+    """Standalone goal progress JSON for operators."""
+    p = nte_memory_dir() / "goal_progress_snapshot.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "truth_version": "goal_progress_snapshot_v2",
+        "generated_at": _now_iso(),
+        "runtime_root": runtime_root,
+        "goal_progress": progress,
+        "source_policy": policy_for_goal(),
     }
+    p.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return p

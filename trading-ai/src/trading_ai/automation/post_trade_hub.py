@@ -363,7 +363,10 @@ def execute_post_trade_closed(
     try:
         from trading_ai.intelligence.execution_intelligence.persistence import refresh_execution_intelligence
 
-        out["execution_intelligence"] = refresh_execution_intelligence(persist=True)
+        out["execution_intelligence"] = refresh_execution_intelligence(
+            persist=True,
+            closed_trade_id=tid,
+        )
     except Exception as exc:
         logger.debug("execution_intelligence refresh after close: %s", exc)
         out["execution_intelligence"] = {"error": str(exc)}

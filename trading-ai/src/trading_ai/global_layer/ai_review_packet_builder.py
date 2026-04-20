@@ -15,6 +15,7 @@ from trading_ai.global_layer.pnl_aggregator import aggregate_from_trades
 from trading_ai.global_layer.review_context_ranker import rank_packet_sections, trim_packet_for_budget
 from trading_ai.global_layer.review_policy import ReviewPolicy, load_policy_from_environ
 from trading_ai.global_layer.review_storage import ReviewStorage
+from trading_ai.nte.memory.store import MemoryStore
 
 FIRST_MILLION_USD = 1_000_000.0
 
@@ -312,7 +313,7 @@ def build_review_packet(
             persist_execution_intelligence_artifacts,
         )
 
-        ei_snapshot = build_global_execution_intelligence_snapshot(trades, now_ts=time.time())
+        ei_snapshot = build_global_execution_intelligence_snapshot(now_ts=time.time(), nte_store=MemoryStore())
         rr: Optional[str] = None
         try:
             from trading_ai.runtime_paths import ezras_runtime_root

@@ -10,7 +10,7 @@ from trading_ai.intelligence.execution_intelligence.system_state import (
     global_weekly_totals_by_iso_week,
     weekly_net_by_avenue,
 )
-from trading_ai.intelligence.execution_intelligence.time_utils import last_n_iso_week_ids
+from trading_ai.intelligence.ts_parse import last_n_iso_week_ids
 
 
 def _num(s: Any) -> float:
@@ -31,6 +31,7 @@ def infer_operating_mode(system_state: Dict[str, Any]) -> str:
     dd = _num(system_state.get("max_drawdown"))
     wk = _num(system_state.get("weekly_pnl"))
     ess = system_state.get("edge_stability_score")
+    esc = system_state.get("edge_stability_confidence")
     roll7 = _num((system_state.get("ledger_snapshot") or {}).get("rolling_7d_net_profit"))
 
     # Capital protection: sustained poor outcomes with enough sample
@@ -41,6 +42,8 @@ def infer_operating_mode(system_state: Dict[str, Any]) -> str:
 
     # Stabilization: weak or unknown edge quality, negative week, or volatile regime
     vol = (system_state.get("volatility_state") or {}).get("label")
+    if esc is not None and esc < 0.25 and (ess is None or ess < 0.5):
+        return "stabilization"
     if ess is not None and ess < 0.35:
         return "stabilization"
     if wr is not None and n >= 8 and wr < 0.42:

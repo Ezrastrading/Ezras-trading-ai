@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.global_layer.avenue_truth_contract import normalize_avenue_key
-from trading_ai.intelligence.execution_intelligence.time_utils import parse_trade_ts
+from trading_ai.intelligence.ts_parse import parse_trade_ts
 
 
 def net_pnl_for_trade(t: Dict[str, Any]) -> Optional[float]:

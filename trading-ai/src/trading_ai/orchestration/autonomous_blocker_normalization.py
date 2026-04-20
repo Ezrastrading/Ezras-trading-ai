@@ -204,9 +204,12 @@ def normalize_autonomous_blockers(
 
     deduped_chain = "; ".join(filtered_active)
 
+    operator_domain_groups = _operator_domain_groups_v2(filtered_active)
+
     return {
         "atomic_blockers": list(filtered_active),
         "grouped_blockers": grouped,
+        "operator_domain_groups_v2": operator_domain_groups,
         "deduped_blocker_chain_string": deduped_chain,
         "historical_or_stale_blockers": historical,
         "active_blockers": list(filtered_active),
@@ -219,6 +222,65 @@ def normalize_autonomous_blockers(
             "canonical_merge_map_note": "Semantic equivalents map to one atomic token where listed in _CANONICAL_EQUIV.",
         },
     }
+
+
+def _operator_domain_groups_v2(tokens: List[str]) -> Dict[str, List[str]]:
+    """
+    Canonical operator-facing domains (compact; same token may appear in only one bucket).
+
+    a) halt_governance
+    b) runtime_verification
+    c) loop_context_proof
+    d) lock_failure_stop
+    e) consecutive_cycle_requirement
+    f) env_runtime_consistency
+    g) live_arm_dual_gate_enablement
+    """
+    buckets: Dict[str, List[str]] = {
+        "halt_governance": [],
+        "runtime_verification": [],
+        "loop_context_proof": [],
+        "lock_failure_stop": [],
+        "consecutive_cycle_requirement": [],
+        "env_runtime_consistency": [],
+        "live_arm_dual_gate_enablement": [],
+    }
+    assigned: Set[str] = set()
+
+    def take(t: str, bucket: str) -> None:
+        if t in assigned:
+            return
+        buckets[bucket].append(t)
+        assigned.add(t)
+
+    for t in tokens:
+        tl = t.lower()
+        if "stale_global" in tl or ("halt" in tl and "stale" in tl):
+            take(t, "halt_governance")
+            continue
+        if "halt" in tl or "governance" in tl or "autonomous_forbidden" in tl:
+            take(t, "halt_governance")
+            continue
+        if "verification" in tl and "daemon" in tl:
+            take(t, "runtime_verification")
+            continue
+        if "final_execution" in tl or "loop" in tl or "context" in tl:
+            take(t, "loop_context_proof")
+            continue
+        if "lock" in tl or "failure_stop" in tl:
+            take(t, "lock_failure_stop")
+            continue
+        if "consecutive" in tl or "insufficient_consecutive" in tl:
+            take(t, "consecutive_cycle_requirement")
+            continue
+        if "fingerprint" in tl or "mismatch" in tl or "consistency" in tl or "daemon_authority" in tl:
+            take(t, "env_runtime_consistency")
+            continue
+        if "switch_live" in tl or "dual" in tl or "gate" in tl:
+            take(t, "live_arm_dual_gate_enablement")
+            continue
+        take(t, "runtime_verification")
+    return buckets
 
 
 def extract_historical_from_last_failure_json(last_fail: Optional[Mapping[str, Any]]) -> List[str]:

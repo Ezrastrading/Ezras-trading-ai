@@ -16,12 +16,7 @@ class GlobalLearningEngine:
         self.store.append_trade(record)
         tm = self.store.load_json("trade_memory.json")
         n = len(tm.get("trades") or [])
-        try:
-            from trading_ai.intelligence.execution_intelligence.persistence import refresh_execution_intelligence
-
-            refresh_execution_intelligence(self.store, persist=True)
-        except Exception:
-            logger.debug("execution intelligence refresh skipped", exc_info=True)
+        # Execution intelligence refresh is owned by post_trade_closed (single writer + idempotent trade_id).
         if n > 0 and n % 20 == 0:
             self._analyze_batch()
 

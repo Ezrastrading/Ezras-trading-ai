@@ -10,13 +10,13 @@ from trading_ai.intelligence.avenue_performance import compute_avenue_performanc
 from trading_ai.intelligence.capital_allocator import optimize_capital_allocation
 from trading_ai.intelligence.execution_intelligence.evaluation import evaluate_goal_progress
 from trading_ai.intelligence.execution_intelligence.goals import get_goal
-from trading_ai.intelligence.execution_intelligence.system_state import (
-    _max_drawdown_cumulative_pnls,
-    weekly_net_by_avenue,
-)
-from trading_ai.intelligence.execution_intelligence.time_utils import parse_trade_ts
+from trading_ai.intelligence.execution_intelligence.metrics_common import max_drawdown_cumulative_pnls
+from trading_ai.intelligence.execution_intelligence.system_state import weekly_net_by_avenue
+from trading_ai.intelligence.ts_parse import parse_trade_ts
 from trading_ai.intelligence.scaling_engine import generate_scaling_signal
 from trading_ai.intelligence.strategy_manager import build_strategy_state_summary
+from trading_ai.intelligence.resolved_trades import build_discrepancy_report, resolve_for_review, resolve_for_runtime
+from trading_ai.intelligence.truth_contract import policy_for_goal, policy_for_review
 from trading_ai.nte.capital_ledger import load_ledger, net_equity_estimate
 from trading_ai.nte.memory.store import MemoryStore
 
@@ -61,7 +61,7 @@ def derive_system_state_for_ei(trades: List[Dict[str, Any]], *, now_ts: float) -
 
     all_ordered.sort(key=lambda x: x[0])
     seq = [p for _, p in all_ordered]
-    max_dd = _max_drawdown_cumulative_pnls(seq) if seq else 0.0
+    max_dd = max_drawdown_cumulative_pnls(seq) if seq else 0.0
 
     pnls = [net_pnl_for_trade(t) for t in trades if isinstance(t, dict)]
     known = [p for p in pnls if p is not None]
@@ -102,11 +102,15 @@ def _goal_progress_block(
     now_ts: float,
     avenue_keys: List[str],
 ) -> Dict[str, Any]:
+    from trading_ai.intelligence.resolved_trades import compare_ledger_to_trade_sum, resolve_for_runtime
+
     gs = store.load_json("goals_state.json")
     active = str(gs.get("active_goal") or "GOAL_A")
     goal = get_goal(active) or get_goal("GOAL_A") or {}
     st_full = dict(state)
     st_full["_raw_trades"] = trades
+    rt = resolve_for_runtime(store)
+    st_full["goal_truth_discrepancy"] = compare_ledger_to_trade_sum(rt.get("rows_normalized") or [])
     led = load_ledger()
     st_full["ledger_snapshot"] = {
         "realized_pnl_net": float(led.get("realized_pnl_net") or led.get("realized_pnl_usd") or 0.0),
@@ -132,6 +136,7 @@ def _goal_progress_block(
 
     return {
         "goal_id": active,
+        "goal_truth_policy": policy_for_goal(),
         "current_state": ev.get("current_position") or "",
         "target_state": str(goal.get("label") or goal.get("id") or ""),
         "distance_to_goal": None,
@@ -142,26 +147,45 @@ def _goal_progress_block(
         "trajectory_status": ev.get("trajectory_status"),
         "progress_pct": ev.get("progress_pct"),
         "per_avenue_weekly_net": by_av,
+        "capital_discrepancy": st_full.get("goal_truth_discrepancy"),
         "honesty": "Goals are evaluated from ledger + trade history; not a promise of future returns.",
     }
 
 
 def build_global_execution_intelligence_snapshot(
-    trades: List[Dict[str, Any]],
+    trades: Optional[List[Dict[str, Any]]] = None,
     *,
     now_ts: Optional[float] = None,
     nte_store: Optional[MemoryStore] = None,
+    trade_source: str = "review_resolve",
 ) -> Dict[str, Any]:
     """
     Full snapshot dict for packets and JSON persistence.
 
-    Uses federated ``trades`` for avenue/system metrics; NTE store for strategy_scores / goals.
+    Default ``trade_source=review_resolve`` uses :func:`resolve_for_review` (federated truth).
+    Pass explicit ``trades`` only for tests or when caller pre-resolved rows.
     """
     import time
 
     ts = now_ts if now_ts is not None else time.time()
     st = nte_store or MemoryStore()
     st.ensure_defaults()
+
+    resolution_note: Dict[str, Any] = {}
+    if trades is None or trade_source == "review_resolve":
+        rv = resolve_for_review(st)
+        trades = rv["rows_for_windows"]
+        rt = resolve_for_runtime(st)
+        resolution_note = {
+            "source_policy_used": policy_for_review(),
+            "review_resolution": {k: rv[k] for k in ("truth_version", "data_quality", "federation_meta") if k in rv},
+            "discrepancy_runtime_vs_review": build_discrepancy_report(rt, rv),
+        }
+    else:
+        resolution_note = {
+            "source_policy_used": {**policy_for_review(), "caller_override": "explicit_trades_list"},
+            "honesty": "Caller-supplied trades — verify provenance before governance use.",
+        }
 
     ap = compute_avenue_performance(trades, now_ts=ts)
     ss = derive_system_state_for_ei(trades, now_ts=ts)
@@ -232,6 +256,7 @@ def build_global_execution_intelligence_snapshot(
         "truth_version": "global_execution_intelligence_v1",
         "generated_at": _iso(),
         "honesty": "Advisory intelligence from closed-trade history and persisted strategy scores — not live orders.",
+        "trade_resolution": resolution_note,
         "avenue_performance": ap,
         "capital_allocation": ca,
         "scaling": sc_sig,

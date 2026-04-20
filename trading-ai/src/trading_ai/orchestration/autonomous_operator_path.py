@@ -109,6 +109,35 @@ def build_autonomous_operator_path(*, runtime_root: Path) -> Dict[str, Any]:
             f"(need {cp.get('required')}, have {cp.get('current')})"
         )
 
+    already_satisfied: List[str] = []
+    still_missing: List[str] = []
+    if cons_ok:
+        already_satisfied.append("daemon_runtime_consistency_truth.consistent_with_authoritative_artifacts")
+    else:
+        still_missing.append("daemon_runtime_consistency_truth_not_green")
+    if proven_tuple[0]:
+        already_satisfied.append("autonomous_live_runtime_proven_tuple")
+    else:
+        still_missing.append("autonomous_live_runtime_not_proven")
+    if path_ok:
+        already_satisfied.append("avenue_a_autonomous_live_allowed")
+    else:
+        still_missing.append("avenue_a_autonomous_live_not_allowed")
+    if aut_allowed_now:
+        already_satisfied.append("daemon_live_switch_authority.avenue_a_can_run_autonomous_live_now")
+    else:
+        still_missing.append("daemon_live_switch_authority_blocks_autonomous")
+    if live_ok:
+        already_satisfied.append("dual_gate_allows_venue_submission")
+    else:
+        still_missing.append("dual_gate_blocks_venue_submission")
+    if not stale and halt_auth:
+        already_satisfied.append("global_halt_authoritative_and_non_stale_for_policy")
+    elif stale:
+        still_missing.append("stale_global_halt_classification_autonomous_forbidden")
+    elif not halt_auth:
+        still_missing.append("global_halt_not_authoritative_or_unknown")
+
     bundle = ad.read_json("data/control/autonomous_verification_proof_bundle.json") or {}
     ver_sum = {
         "daemon_context_loop_proof": "data/control/daemon_context_loop_proof.json",
@@ -176,6 +205,12 @@ def build_autonomous_operator_path(*, runtime_root: Path) -> Dict[str, Any]:
         "raw_autonomous_blocker_chain_debug": norm.get("raw_autonomous_reason_chain"),
         "autonomous_blocker_debug": norm.get("autonomous_blocker_debug"),
         "deduped_blocker_chain_string": norm.get("deduped_blocker_chain_string"),
+        "operator_blocker_domain_groups_v2": norm.get("operator_domain_groups_v2"),
+        "progression": {
+            "already_satisfied": already_satisfied,
+            "still_missing": still_missing,
+            "what_must_happen_next": next_steps,
+        },
         "honesty": (
             "can_arm_autonomous_now reflects avenue_a_autonomous_live_allowed + consistency green; "
             "venue orders still require autonomous_daemon_live_enable + EZRAS_AUTONOMOUS_DAEMON_LIVE_ENABLED."

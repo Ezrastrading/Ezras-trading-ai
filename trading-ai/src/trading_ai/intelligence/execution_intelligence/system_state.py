@@ -8,11 +8,15 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from trading_ai.intelligence.execution_intelligence.edge_stability import compute_edge_stability_bundle
+from trading_ai.intelligence.execution_intelligence.metrics_common import max_drawdown_cumulative_pnls
+from trading_ai.intelligence.ts_parse import iso_week_id, parse_trade_ts
+from trading_ai.intelligence.truth_contract import policy_for_runtime
 from trading_ai.nte.capital_ledger import load_ledger, net_equity_estimate
 from trading_ai.nte.memory.store import MemoryStore
 from trading_ai.nte.paths import nte_memory_dir
 
-from trading_ai.intelligence.execution_intelligence.time_utils import iso_week_id, parse_trade_ts
+from trading_ai.intelligence.execution_intelligence.ceo_session_store import load_latest_structured_session
 
 logger = logging.getLogger(__name__)
 
@@ -47,29 +51,33 @@ def _net_pnl(t: Dict[str, Any]) -> float:
 
 
 def _read_ceo_session_digest() -> Dict[str, Any]:
-    """Tail of ceo_sessions.md — metadata only, no LLM."""
+    """Structured CEO session first, then markdown mirror (metadata only)."""
+    structured = load_latest_structured_session()
     p = nte_memory_dir() / "ceo_sessions.md"
-    out: Dict[str, Any] = {
+    md_meta: Dict[str, Any] = {
         "path": str(p),
         "sections_found": 0,
         "last_section_title": None,
         "tail_excerpt": None,
     }
-    if not p.is_file():
-        return out
-    try:
-        text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        logger.debug("ceo_sessions read: %s", exc)
-        return out
-    lines = text.splitlines()
-    headers = [ln for ln in lines if ln.strip().startswith("## ")]
-    out["sections_found"] = len(headers)
-    if headers:
-        out["last_section_title"] = headers[-1].strip("# ").strip()[:200]
-    tail = "\n".join(lines[-40:])
-    out["tail_excerpt"] = tail[-1200:] if tail else None
-    return out
+    if p.is_file():
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            headers = [ln for ln in lines if ln.strip().startswith("## ")]
+            md_meta["sections_found"] = len(headers)
+            if headers:
+                md_meta["last_section_title"] = headers[-1].strip("# ").strip()[:200]
+            tail = "\n".join(lines[-40:])
+            md_meta["tail_excerpt"] = tail[-1200:] if tail else None
+        except OSError as exc:
+            logger.debug("ceo_sessions read: %s", exc)
+    return {
+        "truth_version": "ceo_digest_v2",
+        "primary_machine_source": "ceo_session_structured_latest.json",
+        "structured_latest": structured,
+        "markdown_mirror": md_meta,
+    }
 
 
 def _volatility_from_market_memory(mm: Dict[str, Any]) -> Dict[str, Any]:
@@ -109,53 +117,22 @@ def _volatility_from_market_memory(mm: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _collect_strategy_scores(ss: Dict[str, Any]) -> List[float]:
-    out: List[float] = []
-    av = ss.get("avenues") or {}
-    if not isinstance(av, dict):
-        return out
-    for _aid, block in av.items():
-        if not isinstance(block, dict):
-            continue
-        for _sk, row in block.items():
-            if not isinstance(row, dict):
-                continue
-            v = row.get("score")
-            if v is None:
-                continue
-            try:
-                out.append(float(v))
-            except (TypeError, ValueError):
-                continue
-    return out
-
-
-def _max_drawdown_cumulative_pnls(pnls: List[float]) -> float:
-    if not pnls:
-        return 0.0
-    peak = 0.0
-    cum = 0.0
-    worst = 0.0
-    for x in pnls:
-        cum += x
-        peak = max(peak, cum)
-        worst = max(worst, peak - cum)
-    return float(worst)
-
-
 def get_system_state(
     *,
     store: Optional[MemoryStore] = None,
     now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Returns operational metrics derived from ``trade_memory.json``, ``market_memory.json``,
-    ``strategy_scores.json``, capital ledger, and ``ceo_sessions.md``.
+    Operational metrics from **NTE** ``trade_memory.json`` (runtime truth), plus ledger,
+    ``market_memory.json``, ``strategy_scores.json``, and CEO digest.
 
-    Missing inputs surface as ``None`` or empty collections — never invented trade rows.
+    ``source_policy_used`` is always :data:`policy_for_runtime` — federated review truth is separate.
     """
+    from trading_ai.intelligence.resolved_trades import compare_ledger_to_trade_sum, resolve_for_runtime
+
     st = store or MemoryStore()
     st.ensure_defaults()
+    rt_resolve = resolve_for_runtime(st)
     tm = st.load_json("trade_memory.json")
     mm = st.load_json("market_memory.json")
     ss = st.load_json("strategy_scores.json")
@@ -170,13 +147,14 @@ def get_system_state(
     t_week = week_start.timestamp()
 
     raw_trades: List[Dict[str, Any]] = [t for t in (tm.get("trades") or []) if isinstance(t, dict)]
+    usable = rt_resolve.get("rows_for_windows") or []
 
     daily_pnls: List[float] = []
     weekly_pnls: List[float] = []
     trade_count_today = 0
     all_pnls_ordered: List[Tuple[float, float]] = []  # (ts, pnl)
 
-    for t in raw_trades:
+    for t in usable:
         ts = parse_trade_ts(t)
         pnl = _net_pnl(t)
         if ts is not None:
@@ -186,15 +164,12 @@ def get_system_state(
                 trade_count_today += 1
             if ts >= t_week:
                 weekly_pnls.append(pnl)
-        else:
-            # Untimestamped rows: include in totals but not in time windows (honest)
-            pass
 
     daily_pnl = sum(daily_pnls)
     weekly_pnl = sum(weekly_pnls)
 
     trade_count_week = 0
-    for t in raw_trades:
+    for t in usable:
         ts = parse_trade_ts(t)
         if ts is not None and ts >= t_week:
             trade_count_week += 1
@@ -208,14 +183,10 @@ def get_system_state(
     loss_rate = (len(losses) / n) if n else None
     avg_profit_per_trade = (sum(pnls_for_stats) / n) if n else None
 
-    all_pnls_ordered.sort(key=lambda x: x[0])
-    ordered_pnls = [p for _, p in all_pnls_ordered]
-    max_drawdown = _max_drawdown_cumulative_pnls(ordered_pnls)
-
     # Active avenues: appeared in last 30d with at least one trade
     cutoff = now - 30 * 86400
     active_avenues: Set[str] = set()
-    for t in raw_trades:
+    for t in usable:
         ts = parse_trade_ts(t)
         if ts is None or ts < cutoff:
             continue
@@ -224,22 +195,23 @@ def get_system_state(
             active_avenues.add(ak)
 
     active_gates: Set[str] = set()
-    for t in raw_trades:
+    for t in usable:
         g = _gate_label(str(t.get("setup_type") or ""))
         if g:
             active_gates.add(g)
 
-    sc_vals = _collect_strategy_scores(ss)
-    if len(sc_vals) >= 2:
-        try:
-            sd = statistics.pstdev(sc_vals)
-            edge_stability_score = max(0.0, min(1.0, 1.0 - min(1.0, sd * 2.0)))
-        except statistics.StatisticsError:
-            edge_stability_score = None
-    elif len(sc_vals) == 1:
-        edge_stability_score = None
-    else:
-        edge_stability_score = None
+    all_pnls_ordered.sort(key=lambda x: x[0])
+    ordered_pnls_seq = [p for _, p in all_pnls_ordered]
+    max_drawdown = max_drawdown_cumulative_pnls(ordered_pnls_seq)
+    edge_bundle = compute_edge_stability_bundle(
+        raw_trades=raw_trades,
+        strategy_scores_doc=ss,
+        ordered_pnls_chronological=ordered_pnls_seq,
+    )
+    edge_stability_score = edge_bundle.get("edge_stability_score")
+    edge_stability_confidence = edge_bundle.get("edge_stability_confidence")
+    edge_stability_components = edge_bundle.get("edge_stability_components")
+    edge_stability_honesty = edge_bundle.get("honesty_note")
 
     recent_trade_outcomes: List[Dict[str, Any]] = []
     tail = list(raw_trades)[-15:]
@@ -255,13 +227,24 @@ def get_system_state(
 
     vol = _volatility_from_market_memory(mm)
 
+    dq_resolve = rt_resolve.get("data_quality") or {}
     data_quality = {
         "trade_rows": len(raw_trades),
         "trades_with_parseable_ts": sum(1 for t in raw_trades if parse_trade_ts(t) is not None),
         "unattributed_avenue_rows": sum(1 for t in raw_trades if not _avenue_key(t)),
+        "normalization": dq_resolve,
+        "rows_usable_for_windows": len(usable),
     }
+    goal_truth_discrepancy = compare_ledger_to_trade_sum(rt_resolve.get("rows_normalized") or [])
 
     return {
+        "source_policy_used": policy_for_runtime(),
+        "runtime_trade_resolution": {
+            "truth_version": rt_resolve.get("truth_version"),
+            "rows_raw_count": rt_resolve.get("rows_raw_count"),
+            "federation_meta": rt_resolve.get("federation_meta"),
+        },
+        "goal_truth_discrepancy": goal_truth_discrepancy,
         "capital_total": capital_total,
         "daily_pnl": daily_pnl,
         "weekly_pnl": weekly_pnl,
@@ -275,6 +258,9 @@ def get_system_state(
         "current_active_avenues": sorted(active_avenues),
         "active_gates": sorted(active_gates),
         "edge_stability_score": edge_stability_score,
+        "edge_stability_confidence": edge_stability_confidence,
+        "edge_stability_components": edge_stability_components,
+        "edge_stability_honesty": edge_stability_honesty,
         "recent_trade_outcomes": recent_trade_outcomes,
         "volatility_state": vol,
         "ceo_session_log": _read_ceo_session_digest(),
