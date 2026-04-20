@@ -264,6 +264,22 @@ def main() -> int:
         "write-avenue-a-autonomous-blockers",
         help="Write avenue_a_autonomous_remaining_blockers.json from current artifacts",
     )
+    sub.add_parser(
+        "autonomous-verification-smoke",
+        help="Write autonomous verification proof bundle (context loop + failure-stop + lock exclusivity); no orders",
+    )
+    sub.add_parser(
+        "autonomous-failure-stop-verification-smoke",
+        help="Write daemon_failure_stop_runtime_proof.json from runtime_runner_daemon_verification; no orders",
+    )
+    sub.add_parser(
+        "autonomous-lock-exclusivity-verification-smoke",
+        help="Write daemon_lock_exclusivity_runtime_proof.json from runtime verification + lock path; no orders",
+    )
+    sub.add_parser(
+        "autonomous-proof-report",
+        help="Print autonomous operator path + proof summary from on-disk artifacts (no orders)",
+    )
 
     sub.add_parser("daemon-status", help="Armed/off + blockers + live matrix (no orders)")
     p_ds = sub.add_parser(
@@ -782,6 +798,40 @@ def main() -> int:
         rt = _cli_runtime_root()
         out = write_avenue_a_autonomous_remaining_blockers(runtime_root=rt)
         print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "autonomous-verification-smoke":
+
+        from trading_ai.orchestration.autonomous_verification_proofs import write_autonomous_verification_proof_bundle
+
+        rt = _cli_runtime_root()
+        out = write_autonomous_verification_proof_bundle(runtime_root=rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "autonomous-failure-stop-verification-smoke":
+
+        from trading_ai.orchestration.autonomous_verification_proofs import write_daemon_failure_stop_runtime_proof
+
+        rt = _cli_runtime_root()
+        out = write_daemon_failure_stop_runtime_proof(runtime_root=rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "autonomous-lock-exclusivity-verification-smoke":
+
+        from trading_ai.orchestration.autonomous_verification_proofs import write_daemon_lock_exclusivity_runtime_proof
+
+        rt = _cli_runtime_root()
+        out = write_daemon_lock_exclusivity_runtime_proof(runtime_root=rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "autonomous-proof-report":
+
+        from trading_ai.orchestration.autonomous_operator_path import build_autonomous_operator_path
+        from trading_ai.orchestration.autonomous_verification_proofs import write_autonomous_verification_proof_bundle
+
+        rt = _cli_runtime_root()
+        bundle = write_autonomous_verification_proof_bundle(runtime_root=rt)
+        report = build_autonomous_operator_path(runtime_root=rt)
+        print(json.dumps({"proof_bundle": bundle, "operator_path": report}, indent=2, default=str)[:24000])
         return 0
     if args.cmd == "daemon-status":
 
