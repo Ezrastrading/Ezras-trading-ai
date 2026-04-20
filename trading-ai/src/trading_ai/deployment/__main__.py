@@ -389,6 +389,62 @@ def main() -> int:
         ),
     )
 
+    p_lbh = sub.add_parser(
+        "list-bot-hierarchy",
+        help="List Ezra bot hierarchy (avenue masters, gate managers, workers) + gate candidates (JSON)",
+    )
+    p_lbh.add_argument("--hierarchy-root", default=None, help="Override EZRAS_BOT_HIERARCHY_ROOT")
+
+    p_ams = sub.add_parser("avenue-master-status", help="Status for one avenue master and direct children (JSON)")
+    p_ams.add_argument("--avenue", required=True, help="Avenue id (e.g. A, B, kalshi)")
+    p_ams.add_argument("--hierarchy-root", default=None)
+
+    p_gms = sub.add_parser("gate-manager-status", help="Gate manager + workers for avenue+gate (JSON)")
+    p_gms.add_argument("--avenue", required=True)
+    p_gms.add_argument("--gate", required=True, help="Gate id (e.g. gate_a, gate_b)")
+    p_gms.add_argument("--hierarchy-root", default=None)
+
+    p_dgc = sub.add_parser("discover-gate-candidate", help="Create research-only gate candidate + hierarchy bots (JSON)")
+    p_dgc.add_argument("--avenue", required=True)
+    p_dgc.add_argument("--gate", required=True)
+    p_dgc.add_argument("--thesis", required=True)
+    p_dgc.add_argument("--edge", required=True, help="Edge hypothesis (not a guarantee)")
+    p_dgc.add_argument("--exec-path", required=True, help="Execution path label / description")
+    p_dgc.add_argument("--hierarchy-root", default=None)
+
+    p_bgc = sub.add_parser(
+        "build-gate-candidate-from-review",
+        help="Stub candidate from review excerpt — still research-only (JSON)",
+    )
+    p_bgc.add_argument("--avenue", required=True)
+    p_bgc.add_argument("--gate", required=True)
+    p_bgc.add_argument("--excerpt", required=True)
+    p_bgc.add_argument("--hierarchy-root", default=None)
+
+    p_pgr = sub.add_parser(
+        "promote-gate-candidate-report",
+        help="Print candidate stage, next stage, blockers — does not grant live authority (JSON)",
+    )
+    p_pgr.add_argument("--candidate-id", required=True)
+    p_pgr.add_argument("--hierarchy-root", default=None)
+
+    p_gca = sub.add_parser(
+        "gate-candidate-advance",
+        help="Advance gate candidate one lifecycle stage with optional evidence refs (JSON)",
+    )
+    p_gca.add_argument("--candidate-id", required=True)
+    p_gca.add_argument("--to-stage", required=True)
+    p_gca.add_argument("--hierarchy-root", default=None)
+
+    p_eibr = sub.add_parser(
+        "execution-intelligence-bot-report",
+        help="Hierarchy advisory context for execution intelligence (not runtime proof) (JSON)",
+    )
+    p_eibr.add_argument("--hierarchy-root", default=None)
+
+    p_bhh = sub.add_parser("bot-hierarchy-health-report", help="Health/issues checklist for hierarchy store (JSON)")
+    p_bhh.add_argument("--hierarchy-root", default=None)
+
     args = p.parse_args()
     if "EZRAS_BOT_REGISTRY_PATH" not in os.environ:
         pass  # optional; orchestration CLIs use default path or --registry-path
@@ -1062,6 +1118,116 @@ def main() -> int:
             )
         )
         return 0 if split.get("ok") or dep is None else 4
+
+    def _hierarchy_root_cli() -> Any:
+        hr = getattr(args, "hierarchy_root", None)
+        if hr:
+            return Path(str(hr)).expanduser().resolve()
+        return None
+
+    if args.cmd == "list-bot-hierarchy":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_list_bot_hierarchy
+
+        print(json.dumps(cmd_list_bot_hierarchy(root=_hierarchy_root_cli()), indent=2, default=str, ensure_ascii=False))
+        return 0
+    if args.cmd == "avenue-master-status":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_avenue_master_status
+
+        print(
+            json.dumps(
+                cmd_avenue_master_status(avenue=str(args.avenue), root=_hierarchy_root_cli()),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "gate-manager-status":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_gate_manager_status
+
+        print(
+            json.dumps(
+                cmd_gate_manager_status(avenue=str(args.avenue), gate=str(args.gate), root=_hierarchy_root_cli()),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "discover-gate-candidate":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_discover_gate_candidate
+
+        print(
+            json.dumps(
+                cmd_discover_gate_candidate(
+                    avenue=str(args.avenue),
+                    gate=str(args.gate),
+                    thesis=str(args.thesis),
+                    edge=str(args.edge),
+                    exec_path=str(args.exec_path),
+                    root=_hierarchy_root_cli(),
+                ),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "build-gate-candidate-from-review":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_build_gate_candidate_from_review
+
+        print(
+            json.dumps(
+                cmd_build_gate_candidate_from_review(
+                    avenue=str(args.avenue),
+                    gate=str(args.gate),
+                    excerpt=str(args.excerpt),
+                    root=_hierarchy_root_cli(),
+                ),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "promote-gate-candidate-report":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_promote_gate_candidate_report
+
+        print(
+            json.dumps(
+                cmd_promote_gate_candidate_report(candidate_id=str(args.candidate_id), root=_hierarchy_root_cli()),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "gate-candidate-advance":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_gate_candidate_advance
+
+        print(
+            json.dumps(
+                cmd_gate_candidate_advance(
+                    candidate_id=str(args.candidate_id),
+                    to_stage=str(args.to_stage),
+                    root=_hierarchy_root_cli(),
+                ),
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.cmd == "execution-intelligence-bot-report":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_execution_intelligence_bot_report
+
+        print(json.dumps(cmd_execution_intelligence_bot_report(root=_hierarchy_root_cli()), indent=2, default=str, ensure_ascii=False))
+        return 0
+    if args.cmd == "bot-hierarchy-health-report":
+        from trading_ai.global_layer.bot_hierarchy.cli_actions import cmd_bot_hierarchy_health_report
+
+        print(json.dumps(cmd_bot_hierarchy_health_report(root=_hierarchy_root_cli()), indent=2, default=str, ensure_ascii=False))
+        return 0
     if args.cmd == "controlled-live-readiness":
         from trading_ai.deployment.controlled_live_readiness import build_controlled_live_readiness_report
 

@@ -561,6 +561,19 @@ def build_review_packet(
         },
     }
 
+    try:
+        from trading_ai.global_layer.bot_hierarchy.integration import (
+            build_execution_intelligence_hierarchy_advisory,
+            build_review_packet_hierarchy_section,
+        )
+
+        raw["bot_hierarchy_snapshot"] = build_review_packet_hierarchy_section()
+        adv = build_execution_intelligence_hierarchy_advisory()
+        if isinstance(raw.get("execution_intelligence"), dict):
+            raw["execution_intelligence"]["hierarchy_advisory_context"] = adv
+    except Exception as exc:
+        raw["bot_hierarchy_snapshot"] = {"truth_version": "bot_hierarchy_review_section_v1", "honesty": f"unavailable:{exc}"}
+
     # Single place for downstream ranker/merger: mirror hard-stop into risk_summary when live summary flags it.
     lt0 = raw["live_trading_summary"]
     raw["risk_summary"]["hard_stop_events"] = int(lt0.get("hard_stop_events") or 0)

@@ -136,6 +136,12 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
         "honesty": "Deterministic summary grounded in registry + measured artifacts; aggressive upside is a scored trajectory — not a promised return. Does not grant live authority.",
     }
     try:
+        from trading_ai.global_layer.bot_hierarchy.integration import build_ceo_hierarchy_attachment
+
+        out["bot_hierarchy_ceo_attachment"] = build_ceo_hierarchy_attachment(registry_path=registry_path)
+    except Exception as exc:
+        out["bot_hierarchy_ceo_attachment"] = {"truth_version": "bot_hierarchy_ceo_attachment_v1", "honesty": f"unavailable:{exc}"}
+    try:
         rst = ReviewStorage()
         ei = rst.load_json("global_execution_intelligence_snapshot.json")
         gp = rst.load_json("goal_progress_snapshot.json")
