@@ -190,6 +190,39 @@ def _analyze_ticker_for_spread(
     }
 
 
+def _operator_exact_gate_b_status(row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Operator-grade labels (machine-stable): live_eligible, blocked_by_*, thin_data_heuristic_only.
+
+    Momentum score is a bid/ask-width heuristic — not forward returns.
+    """
+    cat = str(row.get("selection_rejection_category") or "")
+    passed = bool(row.get("candidate_passed"))
+    tags: List[str] = []
+    primary = "unknown"
+    if passed:
+        primary = "live_eligible"
+        tags = ["live_eligible", "thin_data_heuristic_only"]
+    elif cat == "feed_error":
+        primary = "blocked_by_feed_error"
+        tags = ["blocked_by_feed_error", "thin_data_heuristic_only"]
+    elif cat == "market_spread_policy":
+        primary = "blocked_by_spread"
+        tags = ["blocked_by_spread"]
+    elif cat == "missing_or_stale_quote":
+        primary = "blocked_by_stale_quote_or_missing_quote"
+        tags = ["blocked_by_stale_quote_or_missing_quote"]
+    else:
+        primary = "blocked_by_policy_or_data"
+        tags = ["blocked_by_policy_or_data"]
+    return {
+        "primary_status": primary,
+        "status_tags": tags,
+        "momentum_is_heuristic_not_forward_returns": True,
+        "liquidity_not_filtered_in_this_snapshot": True,
+    }
+
+
 def _annotate_gainer_candidate_row(
     base: Dict[str, Any],
     *,
@@ -407,6 +440,9 @@ def run_gate_b_gainers_selection(
             )
         )
 
+    for r in rows:
+        r["operator_exact_gate_b_status"] = _operator_exact_gate_b_status(r)
+
     viable = [r for r in rows if r.get("passed")]
     viable.sort(key=lambda r: float(r.get("score") or 0), reverse=True)
     selected = [r["product_id"] for r in viable[:8]]
@@ -459,6 +495,14 @@ def run_gate_b_gainers_selection(
         "max_ticker_age_sec": max_quote_age,
         "max_concurrent_gainer_pursuit_per_symbol": policy.get("max_concurrent_gainer_pursuit_per_symbol"),
         "cooldown_sec_after_failed_chase": policy.get("cooldown_sec_after_failed_chase"),
+        "liquidity_policy": {
+            "min_liquidity_proxy_usd_configured": float(policy.get("min_liquidity_proxy_usd") or 0.0),
+            "enforced_in_this_snapshot": False,
+            "honesty": (
+                "Public ticker-only snapshot does not apply min_liquidity_proxy_usd; spread + freshness only. "
+                "Do not treat ranked symbols as liquidity-proven for size."
+            ),
+        },
     }
 
     snap = {

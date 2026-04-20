@@ -381,6 +381,14 @@ def main() -> int:
     )
     p_csr.add_argument("--deployable-usd", type=float, default=None, help="Optional deployable USD for split")
 
+    sub.add_parser(
+        "controlled-live-readiness",
+        help=(
+            "Single JSON: env/SSL/Coinbase, Gate A/B blockers, Avenue A supervised+autonomous, Supabase schema, proof alignment "
+            "(writes data/control/controlled_live_readiness.json)"
+        ),
+    )
+
     args = p.parse_args()
     if "EZRAS_BOT_REGISTRY_PATH" not in os.environ:
         pass  # optional; orchestration CLIs use default path or --registry-path
@@ -1054,6 +1062,15 @@ def main() -> int:
             )
         )
         return 0 if split.get("ok") or dep is None else 4
+    if args.cmd == "controlled-live-readiness":
+        from trading_ai.deployment.controlled_live_readiness import build_controlled_live_readiness_report
+
+        out = build_controlled_live_readiness_report(runtime_root=_cli_runtime_root(), write_artifact=True)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        rc = 0
+        if not out.get("rollup_answers", {}).get("are_env_ssl_coinbase_commands_clean"):
+            rc = 12
+        return rc
     return 1
 
 

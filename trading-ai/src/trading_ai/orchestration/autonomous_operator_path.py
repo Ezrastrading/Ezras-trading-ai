@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from trading_ai.orchestration.autonomous_blocker_playbook import enrich_active_blockers_with_playbook
 from trading_ai.orchestration.autonomous_blocker_normalization import (
     extract_historical_from_last_failure_json,
     normalize_autonomous_blockers,
@@ -206,6 +207,7 @@ def build_autonomous_operator_path(*, runtime_root: Path) -> Dict[str, Any]:
         "autonomous_blocker_debug": norm.get("autonomous_blocker_debug"),
         "deduped_blocker_chain_string": norm.get("deduped_blocker_chain_string"),
         "operator_blocker_domain_groups_v2": norm.get("operator_domain_groups_v2"),
+        "active_blocker_playbook_rows": enrich_active_blockers_with_playbook(norm.get("active_blockers") or []),
         "progression": {
             "already_satisfied": already_satisfied,
             "still_missing": still_missing,
