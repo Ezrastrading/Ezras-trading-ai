@@ -136,6 +136,13 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
         "honesty": "Deterministic summary grounded in registry + measured artifacts; aggressive upside is a scored trajectory — not a promised return. Does not grant live authority.",
     }
     try:
+        if runtime_root:
+            from trading_ai.safety.kill_switch_engine import ceo_kill_switch_dashboard
+
+            out["kill_switch_ceo_snapshot"] = ceo_kill_switch_dashboard(runtime_root=runtime_root, max_events=30)
+    except Exception:
+        pass
+    try:
         from trading_ai.global_layer.bot_hierarchy.integration import build_ceo_hierarchy_attachment
 
         out["bot_hierarchy_ceo_attachment"] = build_ceo_hierarchy_attachment(registry_path=registry_path)

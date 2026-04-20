@@ -1,0 +1,153 @@
+{
+  "truth_version": "kill_switch_registry_v1",
+  "description": "Canonical kill-switch triggers — codes are stable API surface for automation and rehearsals.",
+  "triggers": {
+    "RUNTIME_CONSISTENCY_FAILURE": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "RUNTIME_CONSISTENCY_FAILURE",
+      "severity": "CRITICAL",
+      "source_component": "daemon_runtime_consistency",
+      "immediate_action_required": "Halt trading; fix consistency artifacts; rehearse recovery before supervised resume."
+    },
+    "ENV_FINGERPRINT_MISMATCH": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "ENV_FINGERPRINT_MISMATCH",
+      "severity": "CRITICAL",
+      "source_component": "runtime_env_contract",
+      "immediate_action_required": "Halt; reconcile process env with authoritative runtime artifacts; operator sign-off."
+    },
+    "LOCK_EXCLUSIVITY_VIOLATION": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "LOCK_EXCLUSIVITY_VIOLATION",
+      "severity": "CRITICAL",
+      "source_component": "system_execution_lock",
+      "immediate_action_required": "Halt; release duplicate runners; verify single live authority."
+    },
+    "FAILURE_STOP_VIOLATION": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "FAILURE_STOP_VIOLATION",
+      "severity": "CRITICAL",
+      "source_component": "runtime_runner",
+      "immediate_action_required": "Halt; inspect failure model / streak; clear only after proof of stability."
+    },
+    "STALE_INVALID_HALT_TRUTH": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "STALE_INVALID_HALT_TRUTH",
+      "severity": "CRITICAL",
+      "source_component": "kill_switch_truth",
+      "immediate_action_required": "Fail-closed until halt truth reconciled with system_kill_switch + guard state."
+    },
+    "CORRUPTED_STATE_ARTIFACTS": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "CORRUPTED_STATE_ARTIFACTS",
+      "severity": "CRITICAL",
+      "source_component": "control_artifacts",
+      "immediate_action_required": "Halt; restore artifacts from known-good backup or regenerate under supervision."
+    },
+    "REPEATED_EXECUTION_FAILURE_LOOP": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "REPEATED_EXECUTION_FAILURE_LOOP",
+      "severity": "CRITICAL",
+      "source_component": "execution_layer",
+      "immediate_action_required": "Halt; triage venue/API; verify failsafe streak counters and order path."
+    },
+    "MISSING_PROOF_ARTIFACTS_LIVE_PATH": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "MISSING_PROOF_ARTIFACTS_LIVE_PATH",
+      "severity": "CRITICAL",
+      "source_component": "autonomous_proof",
+      "immediate_action_required": "Halt live path; refresh proofs; no autonomous trading until proven."
+    },
+    "SUPABASE_DATABANK_WRITE_FAILURE_THRESHOLD": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "SUPABASE_DATABANK_WRITE_FAILURE_THRESHOLD",
+      "severity": "CRITICAL",
+      "source_component": "supabase_trade_sync",
+      "immediate_action_required": "Halt; restore databank health; verify sync probes before resume."
+    },
+    "EXTREME_SLIPPAGE_THRESHOLD": {
+      "category": "MARKET_EXECUTION",
+      "kill_switch_reason_code": "EXTREME_SLIPPAGE_THRESHOLD",
+      "severity": "HIGH",
+      "source_component": "execution_intelligence",
+      "immediate_action_required": "Halt new entries; review venue depth and sizing; exits may still be allowed by policy."
+    },
+    "FILL_ANOMALY": {
+      "category": "MARKET_EXECUTION",
+      "kill_switch_reason_code": "FILL_ANOMALY",
+      "severity": "HIGH",
+      "source_component": "order_reconciliation",
+      "immediate_action_required": "Halt; reconcile fills vs intent; inspect partial fill handling."
+    },
+    "REPEATED_FAILED_ORDERS": {
+      "category": "MARKET_EXECUTION",
+      "kill_switch_reason_code": "REPEATED_FAILED_ORDERS",
+      "severity": "HIGH",
+      "source_component": "venue_router",
+      "immediate_action_required": "Halt; inspect API errors and rate limits; verify credentials and product policy."
+    },
+    "ABNORMAL_LATENCY": {
+      "category": "MARKET_EXECUTION",
+      "kill_switch_reason_code": "ABNORMAL_LATENCY",
+      "severity": "HIGH",
+      "source_component": "system_guard",
+      "immediate_action_required": "Halt; inspect network and venue latency; stabilize before resume."
+    },
+    "LIQUIDITY_COLLAPSE": {
+      "category": "MARKET_EXECUTION",
+      "kill_switch_reason_code": "LIQUIDITY_COLLAPSE",
+      "severity": "HIGH",
+      "source_component": "market_data",
+      "immediate_action_required": "Halt entries; verify book depth and halts from intelligence layer."
+    },
+    "INVALID_GATE_SELECTION": {
+      "category": "STRATEGY_LOGIC",
+      "kill_switch_reason_code": "INVALID_GATE_SELECTION",
+      "severity": "HIGH",
+      "source_component": "gate_routing",
+      "immediate_action_required": "Halt; fix gate selection inputs; verify orchestration truth chain."
+    },
+    "INVALID_EXECUTION_PARAMETERS": {
+      "category": "STRATEGY_LOGIC",
+      "kill_switch_reason_code": "INVALID_EXECUTION_PARAMETERS",
+      "severity": "HIGH",
+      "source_component": "execution_parameters",
+      "immediate_action_required": "Halt; validate sizing, product, and mode flags."
+    },
+    "CONFLICTING_GATE_SIGNALS": {
+      "category": "STRATEGY_LOGIC",
+      "kill_switch_reason_code": "CONFLICTING_GATE_SIGNALS",
+      "severity": "HIGH",
+      "source_component": "multi_gate_coordination",
+      "immediate_action_required": "Halt; resolve signal conflicts; enforce single authority path."
+    },
+    "CONFIDENCE_COLLAPSE": {
+      "category": "STRATEGY_LOGIC",
+      "kill_switch_reason_code": "CONFIDENCE_COLLAPSE",
+      "severity": "MEDIUM",
+      "source_component": "strategy_scoring",
+      "immediate_action_required": "Halt new risk; review model inputs; optional if scoring not implemented."
+    },
+    "HALT_TRUTH_READ_FAILURE": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "HALT_TRUTH_READ_FAILURE",
+      "severity": "CRITICAL",
+      "source_component": "kill_switch_engine",
+      "immediate_action_required": "Fail-closed: cannot read halt truth — treat as unsafe; repair filesystem JSON."
+    },
+    "HALT_TRUTH_MISMATCH": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "HALT_TRUTH_MISMATCH",
+      "severity": "CRITICAL",
+      "source_component": "kill_switch_engine",
+      "immediate_action_required": "Fail-closed: system_kill_switch.json disagrees with kill_switch_truth.json."
+    },
+    "MANUAL_OPERATOR_HALT": {
+      "category": "CRITICAL",
+      "kill_switch_reason_code": "MANUAL_OPERATOR_HALT",
+      "severity": "CRITICAL",
+      "source_component": "operator",
+      "immediate_action_required": "Review incident; clear through recovery_engine with explicit operator signal."
+    }
+  }
+}
