@@ -296,6 +296,69 @@ class CoinbaseClient:
         finally:
             _COINBASE_ORDER_GUARD.reset(tok)
 
+    def _coinbase_ledger_and_failsafe(
+        self,
+        client_order_id: str,
+        product_id: str,
+        action: str,
+        *,
+        success: bool,
+        reason: str = "",
+        quote_used: Optional[float] = None,
+        entry_price: Optional[float] = None,
+        execution_status: str = "unknown",
+        venue_reached: bool = False,
+        execution_gate_id: str = "gate_a",
+    ) -> None:
+        """Ledger line + venue outcome + live state (best-effort; never raises)."""
+        try:
+            from trading_ai.runtime.live_execution_state import record_execution_step
+            from trading_ai.runtime.trade_ledger import append_trade_ledger_line
+            from trading_ai.safety.error_taxonomy import normalize_error_code
+            from trading_ai.safety.failsafe_guard import record_venue_outcome
+
+            code = normalize_error_code(reason) if not success else "ok"
+            gid = (execution_gate_id or "gate_a").strip() or "gate_a"
+            append_trade_ledger_line(
+                {
+                    "trade_id": client_order_id,
+                    "avenue_id": "coinbase",
+                    "gate_id": gid,
+                    "product_id": product_id,
+                    "quote_used": quote_used,
+                    "notional": quote_used,
+                    "entry_price": entry_price,
+                    "exit_price": None,
+                    "pnl": None,
+                    "timestamp_open": time.time(),
+                    "timestamp_close": None,
+                    "execution_status": execution_status,
+                    "validation_status": "guard_passed" if success else "blocked",
+                    "ratio_context": {},
+                    "failure_reason": reason if not success else None,
+                    "error_code": code,
+                    "action": action,
+                }
+            )
+            record_venue_outcome(
+                success=success,
+                product_id=product_id,
+                avenue="coinbase",
+                venue_reached=venue_reached,
+            )
+            record_execution_step(
+                step=f"coinbase:{action}:{'ok' if success else 'fail'}",
+                avenue="coinbase",
+                gate=gid,
+                mode="executing" if success else "idle",
+                trade_id=client_order_id,
+                success=success,
+                error=reason if not success else "",
+                health="healthy" if success else "warning",
+            )
+        except Exception:
+            pass
+
     # ── JWT ───────────────────────────────────────────────────────────────────
 
     def _build_jwt(self, method: str, request_path: str) -> str:
@@ -1055,12 +1118,22 @@ class CoinbaseClient:
 
     # ── orders ────────────────────────────────────────────────────────────────
 
-    def place_market_buy(self, product_id: str, usd_amount: float) -> OrderResult:
+    def place_market_buy(
+        self, product_id: str, usd_amount: float, *, execution_gate: str = "gate_a"
+    ) -> OrderResult:
         """
         Market buy ``usd_amount`` USD worth of ``product_id``.
         Uses ``market_market_ioc`` with ``quote_size`` (USD spend).
         """
         self._sync_credentials_from_env()
+        client_order_id = uuid.uuid4().hex
+        quote_balances = None
+        try:
+            from trading_ai.runtime_proof.coinbase_accounts import get_available_quote_balances
+
+            quote_balances = get_available_quote_balances(self)
+        except Exception:
+            quote_balances = None
         try:
             assert_live_order_permitted(
                 "place_market_entry",
@@ -1070,8 +1143,22 @@ class CoinbaseClient:
                 source="coinbase_client",
                 order_side="BUY",
                 quote_notional=float(usd_amount),
+                quote_balances_for_capital_truth=quote_balances,
+                trade_id=client_order_id,
+                execution_gate=execution_gate,
             )
         except RuntimeError as exc:
+            self._coinbase_ledger_and_failsafe(
+                client_order_id,
+                product_id,
+                "place_market_buy",
+                success=False,
+                reason=str(exc),
+                quote_used=float(usd_amount),
+                execution_status="guard_blocked",
+                venue_reached=False,
+                execution_gate_id=execution_gate,
+            )
             return OrderResult(
                 order_id="",
                 filled_price=0.0,
@@ -1083,7 +1170,6 @@ class CoinbaseClient:
                 reason=str(exc),
                 raw={},
             )
-        client_order_id = uuid.uuid4().hex
         body = {
             "client_order_id": client_order_id,
             "product_id": product_id,
@@ -1101,6 +1187,17 @@ class CoinbaseClient:
                 err = j.get("error_response") or {}
                 reason = str(err.get("message") or err.get("error") or "order failed")
                 logger.warning("Coinbase BUY failed (%s): %s", product_id, reason)
+                self._coinbase_ledger_and_failsafe(
+                    client_order_id,
+                    product_id,
+                    "place_market_buy",
+                    success=False,
+                    reason=reason,
+                    quote_used=float(usd_amount),
+                    execution_status="order_rejected",
+                    venue_reached=True,
+                    execution_gate_id=execution_gate,
+                )
                 return OrderResult(
                     order_id=client_order_id,
                     filled_price=0.0,
@@ -1118,6 +1215,16 @@ class CoinbaseClient:
                 usd_amount,
                 order_id,
             )
+            self._coinbase_ledger_and_failsafe(
+                order_id,
+                product_id,
+                "place_market_buy",
+                success=True,
+                quote_used=float(usd_amount),
+                execution_status="buy_placed",
+                venue_reached=True,
+                execution_gate_id=execution_gate,
+            )
             return OrderResult(
                 order_id=order_id,
                 filled_price=0.0,  # exact fill resolved via get_fills
@@ -1130,6 +1237,17 @@ class CoinbaseClient:
             )
         except Exception as exc:
             logger.error("Coinbase BUY exception (%s): %s", product_id, exc)
+            self._coinbase_ledger_and_failsafe(
+                client_order_id,
+                product_id,
+                "place_market_buy",
+                success=False,
+                reason=str(exc),
+                quote_used=float(usd_amount),
+                execution_status="exception",
+                venue_reached=True,
+                execution_gate_id=execution_gate,
+            )
             return OrderResult(
                 order_id=client_order_id,
                 filled_price=0.0,
@@ -1142,7 +1260,9 @@ class CoinbaseClient:
                 raw={},
             )
 
-    def place_market_sell(self, product_id: str, base_size: str) -> OrderResult:
+    def place_market_sell(
+        self, product_id: str, base_size: str, *, execution_gate: str = "gate_a"
+    ) -> OrderResult:
         """
         Market sell ``base_size`` units of ``product_id`` (e.g. '0.00135' BTC).
         Uses ``market_market_ioc`` with ``base_size`` (asset quantity).
@@ -1157,6 +1277,7 @@ class CoinbaseClient:
                 source="coinbase_client",
                 order_side="SELL",
                 base_size=str(base_size),
+                execution_gate=execution_gate,
             )
         except RuntimeError as exc:
             return OrderResult(
@@ -1439,7 +1560,15 @@ class CoinbaseFetcher(BaseOutletFetcher):
             return None
 
     @classmethod
-    def place_market_order(cls, product_id: str, side: str, size: str) -> Dict[str, Any]:
+    def place_market_order(
+        cls,
+        product_id: str,
+        side: str,
+        size: str,
+        client_order_id: Optional[str] = None,
+        *,
+        execution_gate: str = "gate_a",
+    ) -> Dict[str, Any]:
         try:
             act = (
                 "place_market_entry"
@@ -1454,6 +1583,8 @@ class CoinbaseFetcher(BaseOutletFetcher):
                 source="coinbase_fetcher",
                 order_side=str(side).strip().upper(),
                 base_size=str(size),
+                execution_gate=execution_gate,
+                trade_id=client_order_id,
             )
         except RuntimeError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1461,7 +1592,7 @@ class CoinbaseFetcher(BaseOutletFetcher):
         if client is None:
             return {"ok": False, "error": "coinbase_client_unavailable"}
         try:
-            oid = f"ezras-{product_id}-{side}-{size}"[:128]
+            oid = (client_order_id or "").strip()[:128] or f"ezras-{product_id}-{side}-{size}"[:128]
             side_l = side.strip().lower()
             if side_l == "buy":
                 r = client.market_order_buy(
@@ -1480,7 +1611,13 @@ class CoinbaseFetcher(BaseOutletFetcher):
 
     @classmethod
     def place_limit_order(
-        cls, product_id: str, side: str, size: str, price: str
+        cls,
+        product_id: str,
+        side: str,
+        size: str,
+        price: str,
+        *,
+        execution_gate: str = "gate_a",
     ) -> Dict[str, Any]:
         try:
             su = str(side).strip().upper()
@@ -1493,6 +1630,7 @@ class CoinbaseFetcher(BaseOutletFetcher):
                 source="coinbase_fetcher",
                 order_side=su,
                 base_size=str(size),
+                execution_gate=execution_gate,
             )
         except RuntimeError as exc:
             return {"ok": False, "error": str(exc)}

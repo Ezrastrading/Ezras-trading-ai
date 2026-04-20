@@ -23,13 +23,17 @@ def load_kill_switch(path: Path | None = None) -> Dict[str, Any]:
             "truth_version": "orchestration_kill_switch_v1",
             "orchestration_frozen": False,
             "avenue": {},
+            "venue_family": {},
             "gate": {},
             "bot_class": {},
             "bot_id": {},
             "degrade_to_observe_only": True,
             "updated_at": None,
         }
-    return json.loads(p.read_text(encoding="utf-8"))
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and "venue_family" not in raw:
+        raw["venue_family"] = {}
+    return raw
 
 
 def save_kill_switch(cfg: Dict[str, Any]) -> None:
@@ -63,6 +67,39 @@ def freeze_avenue(avenue_id: str, enabled: bool = True) -> Dict[str, Any]:
     return c
 
 
+def freeze_venue_family(family_id: str, enabled: bool = True) -> Dict[str, Any]:
+    """
+    Freeze all avenues in :data:`VENUE_FAMILY_MEMBERS` for ``family_id`` and record the family flag.
+
+    Does not set ``orchestration_frozen`` globally.
+    """
+    from trading_ai.global_layer.venue_family_contract import avenues_for_venue_family
+
+    c = load_kill_switch()
+    av = dict(c.get("avenue") or {})
+    vf = dict(c.get("venue_family") or {})
+    fid = str(family_id or "").strip()
+    if not fid:
+        return c
+    aids = avenues_for_venue_family(fid)
+    if enabled:
+        vf[fid] = True
+        for a in aids:
+            av[str(a).strip()] = True
+    else:
+        vf.pop(fid, None)
+        for a in aids:
+            av.pop(str(a).strip(), None)
+    c["venue_family"] = vf
+    c["avenue"] = av
+    save_kill_switch(c)
+    return {
+        **c,
+        "freeze_venue_family_applied": fid,
+        "freeze_target_avenue_ids": list(aids),
+    }
+
+
 def orchestration_blocked_for_bot(bot: Dict[str, Any]) -> Tuple[bool, str]:
     c = load_kill_switch()
     if c.get("orchestration_frozen"):
@@ -73,6 +110,13 @@ def orchestration_blocked_for_bot(bot: Dict[str, Any]) -> Tuple[bool, str]:
     bid = str(bot.get("bot_id") or "")
     if c.get("avenue", {}).get(aid):
         return True, "avenue_frozen"
+    vf_map = c.get("venue_family") or {}
+    if isinstance(vf_map, dict):
+        from trading_ai.global_layer.venue_family_contract import venue_family_for_avenue
+
+        fam = venue_family_for_avenue(aid)
+        if fam != "unknown" and vf_map.get(fam):
+            return True, "venue_family_frozen"
     if c.get("gate", {}).get(f"{aid}|{gate}"):
         return True, "gate_frozen"
     if c.get("bot_class", {}).get(bclass):

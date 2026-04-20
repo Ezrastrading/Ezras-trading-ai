@@ -56,6 +56,7 @@ def test_orchestration_freeze_scope_local_skips_global(
         freeze_orchestration_on_critical=True,
         orchestration_freeze_scope="local_only",
         avenue_id=None,
+        venue_family_id=None,
     )
     assert scope in ("local_only", "local")
     assert applied is False
@@ -142,4 +143,4 @@ def test_controlled_live_readiness_has_summary(tmp_path: Path, monkeypatch: pyte
         ):
             out = build_controlled_live_readiness_report(runtime_root=tmp_path, write_artifact=False)
     assert "human_summary" in out
-    assert out.get("truth_version") == "controlled_live_readiness_v2"
+    assert out.get("truth_version") == "controlled_live_readiness_v3"

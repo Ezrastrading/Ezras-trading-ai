@@ -218,6 +218,7 @@ def _resolve_orchestration_freeze_policy(
     freeze_orchestration_on_critical: bool,
     orchestration_freeze_scope: Optional[str],
     avenue_id: Optional[str],
+    venue_family_id: Optional[str],
 ) -> Tuple[str, bool, Dict[str, Any]]:
     """
     Returns ``(freeze_scope_label, should_apply_orchestration_freeze, meta)``.
@@ -226,7 +227,7 @@ def _resolve_orchestration_freeze_policy(
     - ``global`` — freeze entire orchestration (legacy default for CRITICAL when enabled).
     - ``none`` / ``local_only`` — no orchestration freeze (kill-switch + system_guard still apply).
     - ``avenue`` — freeze only the given ``avenue_id`` bucket in orchestration_kill_switch.
-    - ``venue_family`` — currently coerced to ``global`` with explicit note (extend when venue families are modeled).
+    - ``venue_family`` — freeze all avenues in :mod:`trading_ai.global_layer.venue_family_contract`.
     """
     overrides: List[str] = []
     if not freeze_orchestration_on_critical or severity.upper() != "CRITICAL":
@@ -252,8 +253,11 @@ def _resolve_orchestration_freeze_policy(
             return scope, False, {"overrides_applied": overrides + ["missing_avenue_id"], "inheritance": "direct"}
         return scope, True, {"overrides_applied": overrides, "inheritance": "direct"}
     if scope == "venue_family":
-        overrides.append("venue_family_maps_to_global_until_modeled")
-        return "global", True, {"overrides_applied": overrides, "inheritance": "coerced"}
+        vf = (venue_family_id or os.environ.get("EZRAS_KILL_SWITCH_VENUE_FAMILY_ID") or "").strip()
+        if not vf:
+            return scope, False, {"overrides_applied": overrides + ["missing_venue_family_id"], "inheritance": "direct"}
+        overrides.append("venue_family:" + vf)
+        return "venue_family", True, {"overrides_applied": overrides, "inheritance": "direct", "venue_family_id": vf}
     return "global", True, {"overrides_applied": overrides, "inheritance": "direct"}
 
 
@@ -295,6 +299,7 @@ def activate_halt(
     detail: Optional[Dict[str, Any]] = None,
     avenue_id: Optional[str] = None,
     gate: Optional[str] = None,
+    venue_family_id: Optional[str] = None,
     runtime_root: Optional[Path] = None,
     broadcast_system_guard: bool = True,
     freeze_orchestration_on_critical: bool = True,
@@ -313,18 +318,23 @@ def activate_halt(
     event_id = str(uuid.uuid4())
     ts = _iso()
     merged_detail = dict(detail or {})
+    req_scope = orchestration_freeze_scope or os.environ.get("EZRAS_KILL_SWITCH_ORCHESTRATION_FREEZE_SCOPE")
+    merged_detail.setdefault("requested_freeze_scope", (str(req_scope).strip().lower() if req_scope else None) or "global_default")
     freeze_scope, freeze_applied, freeze_meta = _resolve_orchestration_freeze_policy(
         severity=severity,
         freeze_orchestration_on_critical=freeze_orchestration_on_critical,
         orchestration_freeze_scope=orchestration_freeze_scope,
         avenue_id=avenue_id,
+        venue_family_id=venue_family_id,
     )
+    merged_detail["resolved_freeze_scope"] = freeze_scope
     merged_detail.setdefault("freeze_scope", freeze_scope)
     merged_detail.setdefault("freeze_source", "kill_switch_engine.activate_halt")
     merged_detail.setdefault("freeze_reason_code", kill_switch_reason_code)
     merged_detail.setdefault("freeze_overrides_applied", freeze_meta.get("overrides_applied"))
     merged_detail.setdefault("freeze_inherited_or_direct", freeze_meta.get("inheritance", "direct"))
     merged_detail.setdefault("orchestration_freeze_executed", False)
+    merged_detail.setdefault("freeze_target_ids", [])
 
     truth = _default_truth()
     truth.update(
@@ -368,14 +378,32 @@ def activate_halt(
             "no",
         ):
             try:
-                from trading_ai.global_layer.orchestration_kill_switch import freeze_avenue, freeze_orchestration
+                from trading_ai.global_layer.orchestration_kill_switch import (
+                    freeze_avenue,
+                    freeze_orchestration,
+                    freeze_venue_family,
+                )
 
                 if freeze_scope == "global":
                     freeze_orchestration(True)
                     orch_frozen = True
+                    merged_detail["freeze_target_ids"] = ["*global*"]
                 elif freeze_scope == "avenue" and avenue_id:
                     freeze_avenue(str(avenue_id), True)
                     orch_frozen = True
+                    merged_detail["freeze_target_ids"] = [str(avenue_id)]
+                elif freeze_scope == "venue_family":
+                    vfid = str(
+                        venue_family_id
+                        or os.environ.get("EZRAS_KILL_SWITCH_VENUE_FAMILY_ID")
+                        or freeze_meta.get("venue_family_id")
+                        or ""
+                    ).strip()
+                    if vfid:
+                        out_vf = freeze_venue_family(vfid, True)
+                        orch_frozen = True
+                        merged_detail["freeze_target_ids"] = list(out_vf.get("freeze_target_avenue_ids") or [])
+                        merged_detail["venue_family_id_resolved"] = vfid
             except Exception:
                 pass
     merged_detail["orchestration_freeze_executed"] = orch_frozen

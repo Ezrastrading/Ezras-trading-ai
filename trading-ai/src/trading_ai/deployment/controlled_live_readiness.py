@@ -171,8 +171,66 @@ def build_controlled_live_readiness_report(*, runtime_root: Path, write_artifact
     ]
     human_summary = "\n".join(human_summary_lines)
 
+    ulg_last = root / "data" / "control" / "universal_live_guard_last_eval.json"
+    db_halt = root / "data" / "control" / "databank_write_halt_truth.json"
+    ks_truth = root / "data" / "control" / "kill_switch_truth.json"
+    gb_wr = root / "data" / "control" / "gate_b_truth_write_report.json"
+    reg_x = root / "data" / "control" / "registry_cross_link_truth.json"
+
+    def _ws(has_artifact: bool, code_paths: List[str]) -> str:
+        if has_artifact:
+            return "wired_and_runtime_observable"
+        if code_paths:
+            return "implemented_but_not_wired"
+        return "contract_defined_only"
+
+    safety_wiring_truth = {
+        "truth_version": "safety_wiring_truth_v1",
+        "universal_live_guard": {
+            "status": _ws(ulg_last.is_file(), ["trading_ai.nte.hardening.live_order_guard", "trading_ai.shark.execution_live"]),
+            "evidence_artifacts": ["data/control/universal_live_guard_last_eval.json"],
+            "code_reference": "assert_live_order_permitted + _universal_live_guard_shark_block",
+        },
+        "databank_write_halt": {
+            "status": _ws(db_halt.is_file(), ["trading_ai.nte.databank.supabase_trade_sync"]),
+            "evidence_artifacts": ["data/control/databank_write_halt_truth.json"],
+        },
+        "freeze_policy_kill_switch": {
+            "status": _ws(ks_truth.is_file(), ["trading_ai.safety.kill_switch_engine.activate_halt"]),
+            "evidence_artifacts": ["data/control/kill_switch_truth.json"],
+            "notes": "resolved_freeze_scope appears in detail when halt fired; empty file means no halt yet.",
+        },
+        "gate_b_compact_verbose_fallback": {
+            "status": _ws(gb_wr.is_file(), ["trading_ai.reports.gate_b_control_truth.write_gate_b_truth_artifacts"]),
+            "evidence_artifacts": ["data/control/gate_b_truth_write_report.json", "data/control/gate_b_truth_compact.json"],
+        },
+        "registry_cross_link": {
+            "status": _ws(reg_x.is_file(), ["trading_ai.global_layer.registry_cross_link.build_registry_cross_link_report"]),
+            "evidence_artifacts": ["data/control/registry_cross_link_truth.json"],
+        },
+        "gate_discovery_idempotency": {
+            "status": "wired_and_runtime_observable",
+            "evidence": "trading_ai.global_layer.bot_hierarchy.gate_discovery.discover_gate_candidate",
+            "notes": "Code-enforced fingerprint dedupe — no separate daemon artifact required.",
+        },
+    }
+
+    sup_ok_roll = bool(auth.get("avenue_a_can_run_supervised_live_now")) and len(sup_blockers) == 0
+    auton_blockers = [str(x) for x in (ap.get("active_blockers") or []) if x][:24]
+    operator_summary = {
+        "safe_for_supervised_confirmation_now": bool(sup_ok_roll and env_structured.get("coinbase_credentials_ok")),
+        "not_ready_for_autonomous_live_because": list(
+            dict.fromkeys(
+                auton_blockers
+                + ([] if can_a_autonomous_arm else ["autonomous_path_blocked"])
+                + ([] if supabase_ok else ["supabase_schema_not_ready"])
+            )
+        ),
+        "exact_next_runtime_commands": ordered_verify_commands,
+    }
+
     payload: Dict[str, Any] = {
-        "truth_version": "controlled_live_readiness_v2",
+        "truth_version": "controlled_live_readiness_v3",
         "runtime_root": str(root),
         "env_ssl_coinbase": {
             "coinbase_credentials_ok": env_structured.get("coinbase_credentials_ok"),
@@ -221,6 +279,8 @@ def build_controlled_live_readiness_report(*, runtime_root: Path, write_artifact
         "proof_bundle_alignment": proof_alignment,
         "human_summary": human_summary,
         "blocker_lineage": blocker_lineage,
+        "safety_wiring_truth": safety_wiring_truth,
+        "operator_summary": operator_summary,
         "rollup_answers": {
             "is_avenue_a_supervised_live_ready": bool(auth.get("avenue_a_can_run_supervised_live_now"))
             and len(sup_blockers) == 0,

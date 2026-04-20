@@ -6,14 +6,20 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Literal, Optional, Set
 
 from trading_ai.nte.config.config_validator import validate_nte_settings
 from trading_ai.nte.execution.product_rules import validate_order_size
 from trading_ai.nte.hardening.failure_guard import FailureClass, log_failure
-from trading_ai.nte.hardening.mode_context import ExecutionMode, get_mode_context
+from trading_ai.nte.hardening.coinbase_product_policy import coinbase_product_nte_allowed
+from trading_ai.nte.hardening.mode_context import (
+    ExecutionMode,
+    describe_coinbase_avenue_enablement,
+    get_mode_context,
+)
 from trading_ai.nte.paths import nte_system_health_path
 from trading_ai.nte.utils.atomic_json import atomic_write_json
+from trading_ai.runtime_paths import ezras_runtime_root
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +95,6 @@ def _coinbase_credentials_ready() -> bool:
         return False
 
 
-def _product_allowed(product_id: str) -> bool:
-    from trading_ai.nte.config.settings import load_nte_settings
-
-    s = load_nte_settings()
-    pid = (product_id or "").strip()
-    if pid == "*" or not pid:
-        return True
-    return pid in set(s.products)
-
-
 def _validate_size_notional(
     action: str,
     *,
@@ -128,6 +124,53 @@ def _validate_size_notional(
     return None
 
 
+def deployment_micro_validation_duplicate_isolation_key() -> Optional[str]:
+    """
+    When ``python -m trading_ai.deployment micro-validation`` runs a streak, it sets
+    ``EZRAS_DEPLOYMENT_MICRO_VALIDATION_ACTIVE`` plus session + run index. Each run then gets a
+    distinct failsafe duplicate key so successive validation round-trips on the same product do not
+    collide with the normal ``PRODUCT:place_market_entry`` duplicate window.
+
+    Returns None outside that controlled context — production duplicate behavior unchanged.
+    """
+    if (os.environ.get("EZRAS_DEPLOYMENT_MICRO_VALIDATION_ACTIVE") or "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return None
+    sid = (os.environ.get("EZRAS_MICRO_VALIDATION_SESSION_ID") or "").strip()
+    run = (os.environ.get("EZRAS_MICRO_VALIDATION_RUN_INDEX") or "").strip()
+    if not sid or not run:
+        return None
+    return f"{sid}_r{run}"
+
+
+def gate_b_live_micro_validation_duplicate_isolation_key() -> Optional[str]:
+    """
+    When :func:`run_gate_b_live_micro_validation` runs, it sets
+    ``EZRAS_GATE_B_LIVE_MICRO_VALIDATION_ACTIVE`` plus session + run index so successive Gate B
+    live-micro round-trips on the same product do not collide with the standard duplicate window
+    (and remain distinct from Gate A validation streak keys).
+    """
+    if (os.environ.get("EZRAS_GATE_B_LIVE_MICRO_VALIDATION_ACTIVE") or "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return None
+    sid = (os.environ.get("EZRAS_GATE_B_LIVE_MICRO_SESSION_ID") or "").strip()
+    run = (os.environ.get("EZRAS_GATE_B_LIVE_MICRO_RUN_INDEX") or "").strip()
+    if not sid or not run:
+        return None
+    return f"gate_b_lm_{sid}_r{run}"
+
+
+def validation_duplicate_isolation_key() -> Optional[str]:
+    """Deployment streak OR Gate B live-micro session scope (mutually exclusive in practice)."""
+    return deployment_micro_validation_duplicate_isolation_key() or gate_b_live_micro_validation_duplicate_isolation_key()
+
+
 def assert_live_order_permitted(
     action: str,
     avenue_id: str,
@@ -140,6 +183,10 @@ def assert_live_order_permitted(
     quote_notional: Optional[float] = None,
     skip_config_validation: bool = False,
     credentials_ready: Optional[bool] = None,
+    execution_gate: str = "gate_a",
+    quote_balances_for_capital_truth: Optional[Dict[str, float]] = None,
+    trade_id: Optional[str] = None,
+    multi_leg: bool = False,
 ) -> None:
     """
     Raise RuntimeError if a live order must not be sent.
@@ -162,6 +209,8 @@ def assert_live_order_permitted(
             "strategy_id": strategy_id,
             "source": source,
         }
+        if (avenue_id or "").lower() == "coinbase":
+            meta["coinbase_avenue_enablement"] = describe_coinbase_avenue_enablement()
         log_failure(
             FailureClass.MODE_MISMATCH,
             f"Live order blocked: {reason}",
@@ -195,6 +244,55 @@ def assert_live_order_permitted(
     if sz_err:
         _block(sz_err, severe=False)
 
+    # Universal live guard registry (fail-closed) — single eval per assert_live_order_permitted call
+    try:
+        from trading_ai.safety.universal_live_guard import run_universal_live_guard_precheck
+
+        ulg = run_universal_live_guard_precheck(
+            str(avenue_id).lower(),
+            execution_gate,
+            runtime_root=ezras_runtime_root(),
+            trade_id=trade_id,
+        )
+        _merge_system_health({"universal_live_guard_last": ulg})
+    except RuntimeError as exc:
+        _merge_system_health(
+            {
+                "universal_live_guard_last": {
+                    "universal_live_guard_evaluated": True,
+                    "universal_live_guard_allowed": False,
+                    "universal_live_guard_reason_codes": [str(exc)],
+                }
+            }
+        )
+        _block(str(exc), severe=False)
+
+    # Final failsafe layer (kill switch, PnL caps, governance, duplicates, capital truth)
+    try:
+        from trading_ai.safety.failsafe_guard import FailsafeContext, assert_failsafe_or_raise
+
+        g: Literal["gate_a", "gate_b"] = "gate_b" if execution_gate == "gate_b" else "gate_a"
+        dup_iso = validation_duplicate_isolation_key()
+        assert_failsafe_or_raise(
+            FailsafeContext(
+                action=action,
+                avenue_id=avenue_id,
+                product_id=product_id,
+                gate=g,
+                quote_notional=quote_notional,
+                base_size=base_size,
+                quote_balances_by_ccy=quote_balances_for_capital_truth,
+                strategy_id=strategy_id,
+                trade_id=trade_id,
+                multi_leg=multi_leg,
+                skip_governance=False,
+                validation_duplicate_isolation_key=dup_iso,
+            ),
+            runtime_root=None,
+        )
+    except RuntimeError as exc:
+        _block(str(exc), severe=False)
+
     # Mode / flags
     if ctx.execution_mode != ExecutionMode.LIVE:
         _block(f"execution_mode_not_live:{ctx.execution_mode.value}", severe=False)
@@ -205,6 +303,7 @@ def assert_live_order_permitted(
     if not ctx.nte_live_trading_enabled:
         _block("nte_live_trading_not_enabled", severe=False)
     if avenue_id.lower() == "coinbase" and not ctx.coinbase_enabled:
+        # ctx.coinbase_enabled follows coinbase_avenue_execution_enabled() — COINBASE_EXECUTION_ENABLED OR COINBASE_ENABLED
         _block("coinbase_avenue_disabled", severe=False)
     if ctx.execution_scope in ("sandbox", "research", "paper"):
         if action not in _EXIT_SAFE_ACTIONS:
@@ -235,7 +334,7 @@ def assert_live_order_permitted(
     if avenue_id.lower() == "coinbase" and not cred_ok:
         _block("coinbase_credentials_missing_or_invalid", severe=True)
 
-    if not _product_allowed(product_id):
+    if not coinbase_product_nte_allowed(product_id):
         _block("product_not_allowed", severe=False)
 
     ok_sz, sz_reason = validate_order_size(
@@ -254,6 +353,35 @@ def assert_live_order_permitted(
         ok, errs = validate_nte_settings()
         if not ok:
             _block("config_invalid:" + ";".join(errs), severe=True)
+
+    if avenue_id.lower() == "coinbase" and action not in _EXIT_SAFE_ACTIONS:
+        try:
+            from trading_ai.nte.hardening.control_artifact_preflight import (
+                control_artifact_preflight_enabled,
+                require_control_artifacts_for_live_execution,
+            )
+
+            if control_artifact_preflight_enabled():
+                require_control_artifacts_for_live_execution()
+        except RuntimeError as exc:
+            _block(str(exc), severe=True)
+        except Exception as exc:
+            logger.debug("control artifact preflight skipped: %s", exc)
+
+    try:
+        from trading_ai.runtime.live_execution_state import record_execution_step
+
+        record_execution_step(
+            step=f"order_guard_passed:{action}",
+            avenue=avenue_id,
+            gate=execution_gate,
+            mode="executing",
+            trade_id=trade_id or "",
+            success=True,
+            health="healthy",
+        )
+    except Exception:
+        pass
 
 
 def assert_live_order_permitted_legacy(operation: str) -> None:

@@ -11,6 +11,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from trading_ai.governance.storage_architecture import append_shark_audit_record
@@ -26,6 +27,64 @@ from trading_ai.shark.state_store import load_positions, save_positions
 logger = logging.getLogger(__name__)
 
 SleepFn = Callable[[float], None]
+
+
+def _universal_live_guard_shark_block(intent: ExecutionIntent, *, outlet: str, gate: str) -> Optional[OrderResult]:
+    """Non-Coinbase shark outlets: registry + halt (Coinbase uses live_order_guard.assert_live_order_permitted only)."""
+    try:
+        from trading_ai.safety.universal_live_guard import run_universal_live_guard_precheck
+
+        meta = intent.meta if isinstance(intent.meta, dict) else {}
+        tid = str(meta.get("client_order_id") or intent.market_id or "").strip()
+        run_universal_live_guard_precheck(str(outlet).lower(), gate, trade_id=tid or None)
+    except RuntimeError as exc:
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="universal_live_guard",
+            outlet=str(outlet),
+            raw={"reason": str(exc)},
+            success=False,
+            reason=str(exc),
+        )
+    return None
+
+
+def _trading_intelligence_block(intent: ExecutionIntent) -> Optional[OrderResult]:
+    """Prefer NO_TRADE over BAD_TRADE when ``EZRAS_TRADING_INTELLIGENCE`` is enabled."""
+    try:
+        from trading_ai.intelligence.preflight import run_intelligence_preflight, trading_intelligence_enabled
+
+        if not trading_intelligence_enabled():
+            return None
+        meta = intent.meta if isinstance(intent.meta, dict) else {}
+        nu = float(getattr(intent, "notional_usd", 0.0) or 0.0)
+        if nu <= 0:
+            nu = float(meta.get("quote_usd") or meta.get("notional_usd") or meta.get("size_usd") or 0.0)
+        allow, reason, ctx = run_intelligence_preflight(
+            outlet=str(intent.outlet or ""),
+            intent_meta=meta,
+            system_ok=True,
+            notional_usd=max(nu, 1e-9),
+        )
+        if allow:
+            return None
+        return OrderResult(
+            order_id="",
+            filled_price=0.0,
+            filled_size=0.0,
+            timestamp=time.time(),
+            status="intelligence_blocked",
+            outlet=str(intent.outlet or ""),
+            raw={"intelligence_context": ctx},
+            success=False,
+            reason=reason or "intelligence_blocked",
+        )
+    except Exception as exc:
+        logger.debug("trading intelligence preflight skipped: %s", exc)
+        return None
 
 
 def _governance_preflight_live_submit(
@@ -136,7 +195,22 @@ def _core_execution_preflight(intent: ExecutionIntent) -> Optional[OrderResult]:
     return None
 
 
+def _hook_intelligence_submit_outcome(intent: ExecutionIntent, result: OrderResult) -> None:
+    try:
+        from trading_ai.intelligence.integration.live_hooks import record_shark_submit_outcome
+
+        record_shark_submit_outcome(intent, result)
+    except Exception:
+        logger.debug("intelligence submit outcome hook failed", exc_info=True)
+
+
 def submit_order(intent: ExecutionIntent) -> OrderResult:
+    res = _submit_order_impl(intent)
+    _hook_intelligence_submit_outcome(intent, res)
+    return res
+
+
+def _submit_order_impl(intent: ExecutionIntent) -> OrderResult:
     """
     Live submit — credentials:
     Kalshi: ``KALSHI_API_KEY`` (``KalshiClient.place_order``).
@@ -175,6 +249,45 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
     if blocked_core is not None:
         return blocked_core
     try:
+        from trading_ai.control.kill_switch import kill_switch_active
+        from trading_ai.risk.daily_loss_guard import check_daily_loss_limit
+
+        if kill_switch_active():
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="halted",
+                outlet=o or "unknown",
+                raw={},
+                success=False,
+                reason="operator_kill_switch",
+            )
+        dl_b, _ = check_daily_loss_limit()
+        if dl_b:
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="halted",
+                outlet=o or "unknown",
+                raw={},
+                success=False,
+                reason="daily_loss_limit",
+            )
+    except Exception:
+        logger.debug("operator submit_order preflight skipped", exc_info=True)
+    try:
+        from trading_ai.shark.production_hardening.runtime_hooks import submit_order_preflight
+
+        pre = submit_order_preflight(intent)
+        if pre is not None:
+            return pre
+    except Exception:
+        logger.debug("production_hardening preflight skipped", exc_info=True)
+    try:
         from trading_ai.core.system_guard import get_system_guard
 
         halt_x, why_x = get_system_guard().should_shutdown()
@@ -193,7 +306,86 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             )
     except Exception:
         logger.debug("system guard submit_order skipped", exc_info=True)
+    blocked_intel = _trading_intelligence_block(intent)
+    if blocked_intel is not None:
+        return blocked_intel
+    try:
+        from trading_ai.control.system_execution_lock import require_live_execution_allowed
+
+        if o == "kalshi":
+            ok_lock, lock_reason = require_live_execution_allowed("gate_b")
+        elif o == "coinbase":
+            ok_lock, lock_reason = require_live_execution_allowed("gate_a")
+        else:
+            ok_lock, lock_reason = True, "ok"
+        if not ok_lock:
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="system_execution_lock",
+                outlet=o or "unknown",
+                raw={"reason": lock_reason},
+                success=False,
+                reason=f"system_execution_lock:{lock_reason}",
+            )
+    except Exception as exc:
+        logger.debug("system_execution_lock preflight skipped: %s", exc)
     if o == "kalshi":
+        pre_ulg = _universal_live_guard_shark_block(intent, outlet="kalshi", gate="gate_b")
+        if pre_ulg is not None:
+            return pre_ulg
+        try:
+            from trading_ai.shark.coinbase_spot.gate_b_live_status import is_gate_b_live_execution_enabled
+
+            if is_gate_b_live_execution_enabled():
+                from trading_ai.control.live_adaptive_integration import (
+                    build_live_operating_snapshot,
+                    run_live_adaptive_evaluation,
+                )
+
+                snap = build_live_operating_snapshot()
+                proof = run_live_adaptive_evaluation(
+                    snap,
+                    write_proof=True,
+                    proof_context={
+                        "entrypoint": "submit_order",
+                        "route": "kalshi_gate_b_live_preflight",
+                        "venue": "kalshi",
+                        "gate": "gate_b",
+                        "trade_intent": "live_order_submit_preflight",
+                        "product_id": str(intent.market_id or ""),
+                        "proof_source": "trading_ai.shark.execution_live:submit_order",
+                    },
+                )
+                allow = bool(proof.get("allow_new_trades", True))
+                mode = str(proof.get("current_operating_mode") or proof.get("mode") or "")
+                if not allow or mode == "halted":
+                    return OrderResult(
+                        order_id="",
+                        filled_price=0.0,
+                        filled_size=0.0,
+                        timestamp=time.time(),
+                        status="adaptive_os_blocked",
+                        outlet="kalshi",
+                        raw={"adaptive_proof": proof},
+                        success=False,
+                        reason=f"adaptive_os:{mode or 'no_new_trades'}",
+                    )
+                mult = float(proof.get("size_multiplier_effective") or 1.0)
+                if mult > 0.0 and mult < 1.501:
+                    meta = dict(intent.meta or {})
+                    meta["adaptive_size_multiplier"] = mult
+                    meta["adaptive_operating_mode"] = mode
+                    intent.meta = meta
+                    try:
+                        scaled = max(1, int(round(float(intent.shares) * mult)))
+                        intent.shares = scaled
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as exc:
+            logger.warning("kalshi_gate_b_adaptive_os_preflight: %s", exc)
         blocked = _governance_preflight_live_submit(
             intent,
             operation="shark_live_submit",
@@ -207,10 +399,12 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
         ticker = intent.market_id
         if ":" in ticker:
             ticker = ticker.split(":")[-1]
+        cid = str((intent.meta or {}).get("client_order_id") or "").strip() or None
         res = client.place_order(
             ticker=ticker,
             side=intent.side,
             count=max(1, int(intent.shares)),
+            client_order_id=cid,
         )
         try:
             from trading_ai.global_layer.kalshi_execution_mirror import append_kalshi_execution_mirror
@@ -229,8 +423,32 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             )
         except Exception as exc:
             logger.warning("kalshi execution mirror append skipped: %s", exc)
+        try:
+            from trading_ai.runtime.trade_ledger import append_trade_ledger_line
+            from trading_ai.runtime_paths import ezras_runtime_root
+
+            lid = str(res.order_id or cid or "").strip() or f"kalshi_{time.time():.3f}"
+            append_trade_ledger_line(
+                {
+                    "trade_id": lid,
+                    "avenue_id": "kalshi",
+                    "gate_id": "gate_b",
+                    "product_id": ticker,
+                    "execution_status": str(res.status or "unknown"),
+                    "validation_status": "gate_b_non_coinbase_ledger",
+                    "failure_reason": None if res.success else str(res.reason or res.status or ""),
+                    "capital_truth_hook": "not_applicable_not_coinbase_quote_schema",
+                    "ledger_semantics": "gate_b_execution_record_mandatory_stub",
+                },
+                runtime_root=Path(ezras_runtime_root()),
+            )
+        except Exception as exc:
+            logger.debug("kalshi gate_b ledger append skipped: %s", exc)
         return res
     if o == "manifold":
+        pre_m = _universal_live_guard_shark_block(intent, outlet="manifold", gate="default")
+        if pre_m is not None:
+            return pre_m
         if not manifold_real_money_execution_enabled():
             logger.info("Manifold skipped — play money only")
             raise ValueError("manifold_play_money_skip")
@@ -251,7 +469,9 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             reason="Metaculus has no tradeable venue in this stack",
         )
     if o == "coinbase":
-        if (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() != "true":
+        from trading_ai.nte.hardening.mode_context import coinbase_avenue_execution_enabled
+
+        if not coinbase_avenue_execution_enabled():
             return OrderResult(
                 order_id="",
                 filled_price=0.0,
@@ -261,8 +481,33 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 outlet="coinbase",
                 raw={},
                 success=False,
-                reason="COINBASE_EXECUTION_ENABLED is not true",
+                reason="coinbase_live_execution_disabled_set_COINBASE_EXECUTION_ENABLED_or_COINBASE_ENABLED",
             )
+        try:
+            from trading_ai.organism.deployment_guard import (
+                DeploymentGuard,
+                assert_system_not_halted,
+                deployment_enforcement_enabled,
+            )
+
+            if deployment_enforcement_enabled():
+                assert_system_not_halted()
+                meta = intent.meta if isinstance(intent.meta, dict) else {}
+                q = float(getattr(intent, "notional_usd", 0.0) or meta.get("quote_usd") or 0.0)
+                px = float(getattr(intent, "expected_price", 0.0) or meta.get("ref_price") or meta.get("mid") or 0.0)
+                if q > 0 and px > 0:
+                    DeploymentGuard().validate_pre_trade({"quote_size": q, "price": px})
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            try:
+                from trading_ai.organism.deployment_guard import deployment_enforcement_enabled as _den
+
+                if _den():
+                    raise
+            except RuntimeError:
+                raise
+            logger.debug("deployment pre-trade guard skipped: %s", exc)
         blocked = _governance_preflight_live_submit(
             intent,
             operation="shark_live_coinbase_submit",
@@ -292,7 +537,16 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
                 sell_base = min(pos_base, req_base)
                 assert_no_oversell(pos_base, sell_base)
                 size = str(sell_base)
-        r = CoinbaseFetcher.place_market_order(pid, side, size)
+        cid_cb = str((intent.meta or {}).get("client_order_id") or "").strip()
+        meta_cb = intent.meta if isinstance(intent.meta, dict) else {}
+        gex = str(meta_cb.get("execution_gate") or meta_cb.get("gate_id") or "gate_a").strip().lower()
+        if "gate_b" in gex or gex in ("b", "gb"):
+            egate = "gate_b"
+        else:
+            egate = "gate_a"
+        r = CoinbaseFetcher.place_market_order(
+            pid, side, size, client_order_id=cid_cb or None, execution_gate=egate
+        )
         return OrderResult(
             order_id=str((r.get("raw") or {}).get("order_id", "") or ""),
             filled_price=float(intent.expected_price or 0.0),
@@ -305,6 +559,9 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             reason=None if r.get("ok") else str(r.get("error")),
         )
     if o == "robinhood":
+        pre_rh = _universal_live_guard_shark_block(intent, outlet="robinhood", gate="default")
+        if pre_rh is not None:
+            return pre_rh
         if (os.environ.get("ROBINHOOD_EXECUTION_ENABLED") or "").strip().lower() != "true":
             return OrderResult(
                 order_id="",
@@ -345,6 +602,9 @@ def submit_order(intent: ExecutionIntent) -> OrderResult:
             reason=None if r.get("ok") else str(r.get("error")),
         )
     if o == "tastytrade":
+        pre_tt = _universal_live_guard_shark_block(intent, outlet="tastytrade", gate="default")
+        if pre_tt is not None:
+            return pre_tt
         if (os.environ.get("TASTYTRADE_EXECUTION_ENABLED") or "").strip().lower() != "true":
             return OrderResult(
                 order_id="",
@@ -479,6 +739,20 @@ def handle_resolution(
     from trading_ai.shark.state_store import apply_win_loss_to_capital
 
     apply_win_loss_to_capital(pnl)
+
+    try:
+        from trading_ai.shark.production_hardening.loss_cooldown import record_trade_close_pnl
+        from trading_ai.shark.production_hardening.metrics_dashboard import record_trade_metrics
+
+        record_trade_close_pnl(float(pnl))
+        record_trade_metrics(
+            venue=str(position.outlet or ""),
+            realized_pnl_delta=float(pnl),
+            gross_pnl=abs(float(pnl)),
+            fees_usd=0.0,
+        )
+    except Exception:
+        logger.debug("production_hardening resolution metrics skipped", exc_info=True)
 
     try:
         from trading_ai.core.portfolio_engine import PortfolioEngine
