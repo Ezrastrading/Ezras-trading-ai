@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from trading_ai.control.adaptive_scope import (
     audit_trade_event_row_stats,
@@ -192,25 +192,71 @@ def write_gate_b_truth_artifacts(*, runtime_root: Optional[Path] = None) -> Dict
     }
 
     paths_written: Dict[str, str] = {}
+    skipped_sections: List[str] = []
+    verbose_failures: List[Dict[str, Any]] = []
+    failure_stage: Optional[str] = None
+    fallback_used = False
 
     def _write(name: str, sub: Dict[str, Any]) -> None:
         p = ctrl / name
         p.write_text(json.dumps(sub, indent=2, default=str) + "\n", encoding="utf-8")
         paths_written[name] = str(p)
 
+    def _safe_txt(rel: Path, body: str, *, section: str) -> None:
+        nonlocal failure_stage
+        try:
+            rel.write_text(body, encoding="utf-8")
+        except OSError as exc:
+            verbose_failures.append({"section": section, "error": type(exc).__name__, "detail": str(exc)[:500]})
+            skipped_sections.append(section)
+            if failure_stage is None:
+                failure_stage = section
+
+    compact_truth = {
+        "truth_version": "gate_b_truth_compact_v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "live_validated": live_validated,
+        "can_run_gate_b_loop_now": bool(can_tick_adaptive),
+        "gate_b_ready_for_live": gb.get("gate_b_ready_for_live"),
+        "row_stats_summary": {
+            "raw_trade_event_rows": row_stats.get("raw_trade_event_rows"),
+            "gate_b_rows_seen_count": row_stats.get("gate_b_rows_seen_count"),
+            "gate_a_rows_seen_count": row_stats.get("gate_a_rows_seen_count"),
+        },
+        "blocked_by_global_adaptive": blocked_by_global,
+        "blocked_by_gate_b_adaptive": blocked_by_gate_b,
+        "honesty": "Compact slice for fault-tolerant writes — see full JSON siblings for operator detail.",
+    }
+    compact_write_ok = False
+    try:
+        (ctrl / "gate_b_truth_compact.json").write_text(
+            json.dumps(compact_truth, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        paths_written["gate_b_truth_compact.json"] = str(ctrl / "gate_b_truth_compact.json")
+        compact_write_ok = True
+    except OSError as exc:
+        failure_stage = "gate_b_truth_compact"
+        verbose_failures.append({"section": "compact", "error": type(exc).__name__, "detail": str(exc)[:500]})
+
     _write("gate_b_adaptive_truth.json", adaptive_truth)
-    (ctrl / "gate_b_adaptive_truth.txt").write_text(
+    _safe_txt(
+        ctrl / "gate_b_adaptive_truth.txt",
         _txt_lines("Gate B adaptive truth", {**adaptive_truth, **enablement}),
-        encoding="utf-8",
+        section="gate_b_adaptive_truth.txt",
     )
     paths_written["gate_b_adaptive_truth.txt"] = str(ctrl / "gate_b_adaptive_truth.txt")
 
     _write("gate_b_live_enablement_truth.json", enablement)
-    (ctrl / "gate_b_live_enablement_truth.txt").write_text(_txt_lines("Gate B live enablement", enablement), encoding="utf-8")
+    _safe_txt(
+        ctrl / "gate_b_live_enablement_truth.txt",
+        _txt_lines("Gate B live enablement", enablement),
+        section="gate_b_live_enablement_truth.txt",
+    )
     paths_written["gate_b_live_enablement_truth.txt"] = str(ctrl / "gate_b_live_enablement_truth.txt")
 
     _write("gate_b_operator_go_live_status.json", go_live)
-    (ctrl / "gate_b_operator_go_live_status.txt").write_text(_txt_lines("Gate B go-live", go_live), encoding="utf-8")
+    _safe_txt(ctrl / "gate_b_operator_go_live_status.txt", _txt_lines("Gate B go-live", go_live), section="gate_b_operator_go_live_status.txt")
     paths_written["gate_b_operator_go_live_status.txt"] = str(ctrl / "gate_b_operator_go_live_status.txt")
 
     gb_live_status_out = {
@@ -228,16 +274,18 @@ def write_gate_b_truth_artifacts(*, runtime_root: Optional[Path] = None) -> Dict
     paths_written["gate_b_live_status.json"] = str(ctrl / "gate_b_live_status.json")
 
     _write("gate_b_scope_contamination_audit.json", contamination_audit)
-    (ctrl / "gate_b_scope_contamination_audit.txt").write_text(
+    _safe_txt(
+        ctrl / "gate_b_scope_contamination_audit.txt",
         _txt_lines("Gate B scope / contamination audit", contamination_audit),
-        encoding="utf-8",
+        section="gate_b_scope_contamination_audit.txt",
     )
     paths_written["gate_b_scope_contamination_audit.txt"] = str(ctrl / "gate_b_scope_contamination_audit.txt")
 
     _write("gate_b_production_readiness_matrix.json", readiness)
-    (ctrl / "gate_b_production_readiness_matrix.txt").write_text(
+    _safe_txt(
+        ctrl / "gate_b_production_readiness_matrix.txt",
         _txt_lines("Gate B production readiness matrix", readiness),
-        encoding="utf-8",
+        section="gate_b_production_readiness_matrix.txt",
     )
     paths_written["gate_b_production_readiness_matrix.txt"] = str(ctrl / "gate_b_production_readiness_matrix.txt")
 
@@ -247,9 +295,13 @@ def write_gate_b_truth_artifacts(*, runtime_root: Optional[Path] = None) -> Dict
         "go_live_status": go_live,
         "read_daily": str(rep / "gate_b_daily_operator_report.json"),
     }
-    (rev / "gate_b_ceo_daily_review.json").write_text(json.dumps(ceo, indent=2) + "\n", encoding="utf-8")
-    (rev / "gate_b_ceo_daily_review.txt").write_text(_txt_lines("Gate B CEO daily (excerpt)", ceo), encoding="utf-8")
-    paths_written["gate_b_ceo_daily_review.json"] = str(rev / "gate_b_ceo_daily_review.json")
+    try:
+        (rev / "gate_b_ceo_daily_review.json").write_text(json.dumps(ceo, indent=2) + "\n", encoding="utf-8")
+        paths_written["gate_b_ceo_daily_review.json"] = str(rev / "gate_b_ceo_daily_review.json")
+    except OSError as exc:
+        verbose_failures.append({"section": "gate_b_ceo_daily_review.json", "error": type(exc).__name__, "detail": str(exc)[:500]})
+        skipped_sections.append("gate_b_ceo_daily_review.json")
+    _safe_txt(rev / "gate_b_ceo_daily_review.txt", _txt_lines("Gate B CEO daily (excerpt)", ceo), section="gate_b_ceo_daily_review.txt")
 
     operator_readiness_operator_truth = {
         "truth_version": "gate_b_operator_readiness_compact_v1",
@@ -305,7 +357,42 @@ def write_gate_b_truth_artifacts(*, runtime_root: Optional[Path] = None) -> Dict
 
     from trading_ai.reports.gate_b_global_halt_truth import write_gate_b_global_halt_truth_artifacts
 
-    gh_out = write_gate_b_global_halt_truth_artifacts(runtime_root=root)
-    paths_written["gate_b_global_halt_truth.json"] = gh_out["path"]
+    gh_out: Dict[str, Any] = {}
+    try:
+        gh_out = write_gate_b_global_halt_truth_artifacts(runtime_root=root)
+        paths_written["gate_b_global_halt_truth.json"] = gh_out["path"]
+    except Exception as exc:
+        verbose_failures.append({"section": "gate_b_global_halt_truth", "error": type(exc).__name__, "detail": str(exc)[:500]})
+        skipped_sections.append("gate_b_global_halt_truth")
+        fallback_used = True
+        if failure_stage is None:
+            failure_stage = "gate_b_global_halt_truth"
 
-    return {"generated_at": datetime.now(timezone.utc).isoformat(), "runtime_root": str(root), "paths": paths_written}
+    verbose_write_ok = len(verbose_failures) == 0
+    write_report = {
+        "truth_version": "gate_b_truth_write_report_v1",
+        "compact_write_ok": compact_write_ok,
+        "verbose_write_ok": verbose_write_ok,
+        "failure_stage": failure_stage,
+        "fallback_used": fallback_used,
+        "skipped_sections": skipped_sections,
+        "verbose_failures": verbose_failures,
+        "artifact_json_count": len([k for k in paths_written if k.endswith(".json")]),
+        "paths_written_count": len(paths_written),
+        "honesty": "If verbose_write_ok is false, JSON siblings may still be complete — inspect verbose_failures.",
+    }
+    try:
+        (ctrl / "gate_b_truth_write_report.json").write_text(
+            json.dumps(write_report, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        paths_written["gate_b_truth_write_report.json"] = str(ctrl / "gate_b_truth_write_report.json")
+    except OSError:
+        pass
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_root": str(root),
+        "paths": paths_written,
+        "gate_b_truth_write_report": write_report,
+    }

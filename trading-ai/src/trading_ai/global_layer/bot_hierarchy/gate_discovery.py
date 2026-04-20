@@ -33,6 +33,21 @@ def _slug(s: str) -> str:
     return t or "gate"
 
 
+def _same_avenue_gate_existing(
+    items: List[Any],
+    *,
+    avenue_id: str,
+    gate_id: str,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("avenue_id")) == str(avenue_id) and str(it.get("gate_id")) == str(gate_id):
+            out.append(it)
+    return out
+
+
 def discover_gate_candidate(
     *,
     avenue_id: str,
@@ -56,9 +71,53 @@ def discover_gate_candidate(
     st = load_hierarchy_state(path)
     av = _slug(avenue_id)
     g = _slug(gate_id)
+    items_existing = list(st.get("gate_candidates") or [])
+
+    probe = GateCandidateRecord(
+        candidate_id="probe",
+        avenue_id=str(avenue_id).strip(),
+        gate_id=str(gate_id).strip(),
+        strategy_thesis=strategy_thesis,
+        edge_hypothesis=edge_hypothesis,
+        execution_path=execution_path,
+        expected_conditions=list(expected_conditions or ()),
+        expected_pnl_shape_notes=expected_pnl_shape_notes or "Not a performance guarantee; descriptive hypothesis only.",
+        limits=dict(limits or {}),
+        constraints=list(constraints or ()),
+        kill_conditions=list(kill_conditions or ()),
+        required_proofs=list(required_proofs or ("replay_artifact", "sim_scorecard", "staged_runtime_truth")),
+        stage=GateCandidateStage.DISCOVERED,
+    )
+    fp = probe.compute_fingerprint()
+
+    for it in items_existing:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("canonical_fingerprint") or "") == fp:
+            found = dict(it)
+            found["last_seen_at"] = utc_now_iso()
+            _replace_candidate(items_existing, found)
+            st["gate_candidates"] = items_existing
+            save_hierarchy_state(st, path=path)
+            return {
+                "ok": True,
+                "idempotent": True,
+                "action": "refreshed_existing_candidate",
+                "candidate_id": found.get("candidate_id"),
+                "canonical_fingerprint": fp,
+                "duplicate_of_candidate_id": None,
+                "honesty": "Same canonical fingerprint — refreshed last_seen_at; no duplicate active row appended.",
+            }
+
     cand_id = f"gc_{av}_{g}_{utc_now_iso().replace(':', '').replace('-', '')[:14]}"
     gm_id = f"gate_mgr_{av}_{g}"
     workers_default = list(recommended_worker_roles or ("scanner", "validation", "replay"))
+    prev_same = _same_avenue_gate_existing(items_existing, avenue_id=str(avenue_id).strip(), gate_id=str(gate_id).strip())
+    supersedes: Optional[str] = None
+    if prev_same:
+        supersedes = str(max(prev_same, key=lambda x: str(x.get("updated_at") or "")).get("candidate_id") or "")
+
+    now = utc_now_iso()
     cand = GateCandidateRecord(
         candidate_id=cand_id,
         avenue_id=str(avenue_id).strip(),
@@ -75,8 +134,13 @@ def discover_gate_candidate(
         stage=GateCandidateStage.DISCOVERED,
         gate_manager_bot_id=gm_id,
         recommended_worker_roles=list(workers_default),
-        created_at=utc_now_iso(),
-        updated_at=utc_now_iso(),
+        created_at=now,
+        updated_at=now,
+        canonical_fingerprint=fp,
+        supersedes_candidate_id=supersedes or None,
+        duplicate_of_candidate_id=None,
+        first_seen_at=now,
+        last_seen_at=now,
     )
     am = ensure_avenue_master(avenue_id, path=path)
     gm = new_hierarchy_bot(
@@ -126,12 +190,24 @@ def discover_gate_candidate(
     save_hierarchy_state(st, path=path)
     return {
         "ok": True,
+        "idempotent": False,
+        "action": "created_new_candidate",
         "candidate_id": cand_id,
+        "canonical_fingerprint": fp,
+        "supersedes_candidate_id": supersedes,
         "gate_manager_bot_id": gm_id,
         "worker_bot_ids": workers_created,
         "stage": GateCandidateStage.DISCOVERED.value,
         "honesty": "Research object only — promotion requires existing proof ladder + orchestration contracts.",
     }
+
+
+def _replace_candidate(items: List[Any], updated: Dict[str, Any]) -> None:
+    cid = str(updated.get("candidate_id") or "")
+    for i, it in enumerate(items):
+        if isinstance(it, dict) and str(it.get("candidate_id")) == cid:
+            items[i] = updated
+            return
 
 
 def advance_gate_candidate_stage(

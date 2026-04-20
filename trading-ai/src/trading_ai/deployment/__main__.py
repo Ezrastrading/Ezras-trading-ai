@@ -388,6 +388,14 @@ def main() -> int:
             "(writes data/control/controlled_live_readiness.json)"
         ),
     )
+    sub.add_parser(
+        "final-live-readiness",
+        help="Alias for controlled-live-readiness (same JSON + human summary artifact).",
+    )
+    sub.add_parser(
+        "registry-cross-link",
+        help="Advisory: execution vs hierarchy registry links (writes data/control/registry_cross_link_truth.json).",
+    )
 
     p_lbh = sub.add_parser(
         "list-bot-hierarchy",
@@ -1363,7 +1371,7 @@ def main() -> int:
         out = write_full_organism_bundle(runtime_root=_cli_runtime_root(), registry_path=path)
         print(json.dumps({"ok": out.get("ok"), "runtime_root": out.get("runtime_root")}, indent=2, default=str))
         return 0
-    if args.cmd == "controlled-live-readiness":
+    if args.cmd in ("controlled-live-readiness", "final-live-readiness"):
         from trading_ai.deployment.controlled_live_readiness import build_controlled_live_readiness_report
 
         out = build_controlled_live_readiness_report(runtime_root=_cli_runtime_root(), write_artifact=True)
@@ -1372,6 +1380,14 @@ def main() -> int:
         if not out.get("rollup_answers", {}).get("are_env_ssl_coinbase_commands_clean"):
             rc = 12
         return rc
+    if args.cmd == "registry-cross-link":
+        from trading_ai.global_layer.registry_cross_link import build_registry_cross_link_report
+
+        rp = getattr(args, "registry_path", None)
+        path = Path(str(rp)).expanduser().resolve() if rp else None
+        out = build_registry_cross_link_report(runtime_root=_cli_runtime_root(), registry_path=path)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
     if args.cmd == "kill-switch-status":
         from trading_ai.safety.kill_switch_engine import (
             current_halt_state,

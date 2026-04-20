@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from trading_ai.governance.storage_architecture import shark_state_path
+from trading_ai.runtime_paths import ezras_runtime_root
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +27,12 @@ DEFAULT_LATENCY_WINDOW = 32
 DEFAULT_API_WINDOW = 64
 
 
-def trading_halt_path() -> Path:
-    return shark_state_path(HALT_FILENAME)
+def trading_halt_path(*, runtime_root: Optional[Path] = None) -> Path:
+    return shark_state_path(HALT_FILENAME, runtime_root=runtime_root)
 
 
-def system_guard_state_path() -> Path:
-    return shark_state_path(STATE_FILENAME)
+def system_guard_state_path(*, runtime_root: Optional[Path] = None) -> Path:
+    return shark_state_path(STATE_FILENAME, runtime_root=runtime_root)
 
 
 @dataclass
@@ -86,11 +87,12 @@ class SystemGuardState:
 
 
 class SystemGuard:
-    """Singleton-style guard; use :func:`get_system_guard` in the trading loop."""
+    """Per-runtime-root guard; use :func:`get_system_guard` in the trading loop."""
 
-    def __init__(self) -> None:
-        self._halt_path = trading_halt_path()
-        self._state_path = system_guard_state_path()
+    def __init__(self, *, runtime_root: Optional[Path] = None) -> None:
+        self._runtime_root = Path(runtime_root).resolve() if runtime_root is not None else None
+        self._halt_path = trading_halt_path(runtime_root=self._runtime_root)
+        self._state_path = system_guard_state_path(runtime_root=self._runtime_root)
         self._state = self._load_state()
 
     def _load_state(self) -> SystemGuardState:
@@ -122,6 +124,12 @@ class SystemGuard:
         self._halt_path.parent.mkdir(parents=True, exist_ok=True)
         self._halt_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         logger.critical("SYSTEM GUARD HALT — %s — manual reset required", reason)
+        try:
+            from trading_ai.control.alerts import emit_alert
+
+            emit_alert("CRITICAL", f"system_halt: {reason}")
+        except Exception:
+            pass
 
     def is_trading_halted(self) -> bool:
         return self._halt_path.is_file()
@@ -164,6 +172,16 @@ class SystemGuard:
         self._state.supabase_failure_streak += 1
         self._state.supabase_success_streak = 0
         self._persist()
+        if self._state.supabase_failure_streak in (1, 4, 8):
+            try:
+                from trading_ai.control.alerts import emit_alert
+
+                emit_alert(
+                    "WARNING",
+                    f"supabase_failure streak={self._state.supabase_failure_streak}",
+                )
+            except Exception:
+                pass
 
     def record_scan_latency_ms(self, ms: float) -> None:
         try:
@@ -264,19 +282,27 @@ class SystemGuard:
             self.record_supabase_failure()
 
 
-_guard: Optional[SystemGuard] = None
+_guard_by_root: Dict[str, SystemGuard] = {}
 
 
-def get_system_guard() -> SystemGuard:
-    global _guard
-    if _guard is None:
-        _guard = SystemGuard()
-    return _guard
+def get_system_guard(*, runtime_root: Optional[Path] = None) -> SystemGuard:
+    """Return the guard for the resolved runtime root (isolated per ``EZRAS_RUNTIME_ROOT``)."""
+    key = str(Path(runtime_root).resolve() if runtime_root is not None else ezras_runtime_root().resolve())
+    g = _guard_by_root.get(key)
+    if g is None:
+        g = SystemGuard(runtime_root=Path(key))
+        _guard_by_root[key] = g
+    return g
 
 
-def clear_trading_halt() -> bool:
+def reset_system_guard_singletons_for_tests() -> None:
+    """Test-only: clear cached guards (does not delete on-disk halt files)."""
+    _guard_by_root.clear()
+
+
+def clear_trading_halt(*, runtime_root: Optional[Path] = None) -> bool:
     """Operator reset after incident review. Returns True if a halt file was removed."""
-    p = trading_halt_path()
+    p = trading_halt_path(runtime_root=runtime_root)
     if not p.is_file():
         return False
     try:
@@ -284,7 +310,7 @@ def clear_trading_halt() -> bool:
     except OSError as exc:
         logger.warning("clear_trading_halt failed: %s", exc)
         return False
-    g = get_system_guard()
+    g = get_system_guard(runtime_root=runtime_root)
     g._state.consecutive_losses = 0
     g._state.supabase_failure_streak = 0
     g._state.execution_anomaly_count = 0

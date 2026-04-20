@@ -143,8 +143,36 @@ def build_controlled_live_readiness_report(*, runtime_root: Path, write_artifact
         "python -m trading_ai.deployment autonomous-proof-report",
     ]
 
+    def _src(blocker: str, category: str) -> Dict[str, str]:
+        return {"blocker": blocker, "category": category, "source_artifacts": [], "proof_fields_missing": []}
+
+    blocker_lineage = {
+        "avenue_a_supervised": [_src(b, "avenue_a_supervised") for b in sup_blockers],
+        "avenue_a_autonomous": [
+            {**_src(str(b), "avenue_a_autonomous"), "source_artifacts": list((ap.get("current_authority_sources") or {}).values())[:12]}
+            for b in (ap.get("active_blockers") or [])[:40]
+            if b
+        ],
+        "gate_a": [_src(b, "gate_a") for b in gate_a_blockers],
+        "gate_b": [_src(b, "gate_b") for b in gate_b_blockers],
+        "shared_infra": [_src(b, "shared_infra") for b in shared_infra],
+    }
+
+    human_summary_lines = [
+        "Controlled live readiness (conjunctive; advisory-only).",
+        f"Runtime root: {root}",
+        f"Avenue A supervised blockers ({len(sup_blockers)}): " + ("; ".join(sup_blockers) if sup_blockers else "none"),
+        f"Avenue A autonomous blockers ({len(ap.get('active_blockers') or [])}): see JSON for deduped list.",
+        f"Gate A blockers ({len(gate_a_blockers)}): " + ("; ".join(gate_a_blockers[:8]) if gate_a_blockers else "none"),
+        f"Gate B blockers ({len(gate_b_blockers)}): " + ("; ".join(gate_b_blockers[:8]) if gate_b_blockers else "none"),
+        f"Shared infra: " + ("; ".join(shared_infra) if shared_infra else "none"),
+        "Historical notes are kept separate under avenue_a_autonomous.historical_notes_separate — never treated as active blockers.",
+        "Next: run ordered_commands_to_verify from JSON.",
+    ]
+    human_summary = "\n".join(human_summary_lines)
+
     payload: Dict[str, Any] = {
-        "truth_version": "controlled_live_readiness_v1",
+        "truth_version": "controlled_live_readiness_v2",
         "runtime_root": str(root),
         "env_ssl_coinbase": {
             "coinbase_credentials_ok": env_structured.get("coinbase_credentials_ok"),
@@ -191,6 +219,8 @@ def build_controlled_live_readiness_report(*, runtime_root: Path, write_artifact
             "error_classification": schema.get("error_classification"),
         },
         "proof_bundle_alignment": proof_alignment,
+        "human_summary": human_summary,
+        "blocker_lineage": blocker_lineage,
         "rollup_answers": {
             "is_avenue_a_supervised_live_ready": bool(auth.get("avenue_a_can_run_supervised_live_now"))
             and len(sup_blockers) == 0,
@@ -214,6 +244,10 @@ def build_controlled_live_readiness_report(*, runtime_root: Path, write_artifact
             outp.parent.mkdir(parents=True, exist_ok=True)
             outp.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
             payload["written_artifact_path"] = str(outp)
+            summary_path = root / "data" / "control" / "controlled_live_readiness_summary.txt"
+            summary_path.write_text(human_summary + "\n", encoding="utf-8")
+            payload["written_summary_path"] = str(summary_path)
         except OSError:
             payload["written_artifact_path"] = None
+            payload["written_summary_path"] = None
     return payload

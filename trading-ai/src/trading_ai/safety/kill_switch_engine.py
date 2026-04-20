@@ -182,7 +182,7 @@ def evaluate_execution_block(*, runtime_root: Optional[Path] = None) -> Tuple[bo
     try:
         from trading_ai.core.system_guard import get_system_guard
 
-        g = get_system_guard()
+        g = get_system_guard(runtime_root=root)
         if g.is_trading_halted():
             return True, f"halt_active_reason:SYSTEM_GUARD:{g.halt_reason_from_file() or 'halt_file_present'}"
     except Exception:
@@ -210,6 +210,51 @@ def _merge_explanation(event_id: str, explanation: Dict[str, Any], *, runtime_ro
     cur["last_event_id"] = event_id
     cur["updated_at"] = _iso()
     p.write_text(json.dumps(cur, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _resolve_orchestration_freeze_policy(
+    *,
+    severity: str,
+    freeze_orchestration_on_critical: bool,
+    orchestration_freeze_scope: Optional[str],
+    avenue_id: Optional[str],
+) -> Tuple[str, bool, Dict[str, Any]]:
+    """
+    Returns ``(freeze_scope_label, should_apply_orchestration_freeze, meta)``.
+
+    Scopes:
+    - ``global`` — freeze entire orchestration (legacy default for CRITICAL when enabled).
+    - ``none`` / ``local_only`` — no orchestration freeze (kill-switch + system_guard still apply).
+    - ``avenue`` — freeze only the given ``avenue_id`` bucket in orchestration_kill_switch.
+    - ``venue_family`` — currently coerced to ``global`` with explicit note (extend when venue families are modeled).
+    """
+    overrides: List[str] = []
+    if not freeze_orchestration_on_critical or severity.upper() != "CRITICAL":
+        scope = (orchestration_freeze_scope or os.environ.get("EZRAS_KILL_SWITCH_ORCHESTRATION_FREEZE_SCOPE") or "global").strip().lower() or "global"
+        return scope, False, {"overrides_applied": overrides, "inheritance": "policy_non_critical_or_freeze_disabled"}
+
+    if orchestration_freeze_scope:
+        scope = orchestration_freeze_scope.strip().lower()
+        overrides.append("param:orchestration_freeze_scope")
+    else:
+        env_s = (os.environ.get("EZRAS_KILL_SWITCH_ORCHESTRATION_FREEZE_SCOPE") or "").strip().lower()
+        if env_s:
+            scope = env_s
+            overrides.append("env:EZRAS_KILL_SWITCH_ORCHESTRATION_FREEZE_SCOPE")
+        else:
+            scope = "global"
+            overrides.append("default:global_critical_halt")
+
+    if scope in ("none", "local", "local_only"):
+        return scope, False, {"overrides_applied": overrides, "inheritance": "direct"}
+    if scope == "avenue":
+        if not avenue_id:
+            return scope, False, {"overrides_applied": overrides + ["missing_avenue_id"], "inheritance": "direct"}
+        return scope, True, {"overrides_applied": overrides, "inheritance": "direct"}
+    if scope == "venue_family":
+        overrides.append("venue_family_maps_to_global_until_modeled")
+        return "global", True, {"overrides_applied": overrides, "inheritance": "coerced"}
+    return "global", True, {"overrides_applied": overrides, "inheritance": "direct"}
 
 
 def build_explanation(
@@ -253,6 +298,7 @@ def activate_halt(
     runtime_root: Optional[Path] = None,
     broadcast_system_guard: bool = True,
     freeze_orchestration_on_critical: bool = True,
+    orchestration_freeze_scope: Optional[str] = None,
     rehearsal_mode: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -266,6 +312,20 @@ def activate_halt(
     root = Path(runtime_root or os.environ.get("EZRAS_RUNTIME_ROOT") or ezras_runtime_root()).resolve()
     event_id = str(uuid.uuid4())
     ts = _iso()
+    merged_detail = dict(detail or {})
+    freeze_scope, freeze_applied, freeze_meta = _resolve_orchestration_freeze_policy(
+        severity=severity,
+        freeze_orchestration_on_critical=freeze_orchestration_on_critical,
+        orchestration_freeze_scope=orchestration_freeze_scope,
+        avenue_id=avenue_id,
+    )
+    merged_detail.setdefault("freeze_scope", freeze_scope)
+    merged_detail.setdefault("freeze_source", "kill_switch_engine.activate_halt")
+    merged_detail.setdefault("freeze_reason_code", kill_switch_reason_code)
+    merged_detail.setdefault("freeze_overrides_applied", freeze_meta.get("overrides_applied"))
+    merged_detail.setdefault("freeze_inherited_or_direct", freeze_meta.get("inheritance", "direct"))
+    merged_detail.setdefault("orchestration_freeze_executed", False)
+
     truth = _default_truth()
     truth.update(
         {
@@ -277,13 +337,12 @@ def activate_halt(
             "halt_timestamp": ts,
             "avenue_id": avenue_id,
             "gate": gate,
-            "detail": dict(detail or {}),
+            "detail": merged_detail,
             "last_event_id": event_id,
             "updated_at": ts,
         }
     )
     ad = _adapter(root)
-    ad.write_json(_TRUTH_REL, truth)
 
     note = json.dumps(
         {"kill_switch_reason_code": kill_switch_reason_code, "event_id": event_id, "source_component": source_component},
@@ -297,22 +356,31 @@ def activate_halt(
         try:
             from trading_ai.core.system_guard import get_system_guard
 
-            get_system_guard().halt_now(f"kill_switch_engine:{kill_switch_reason_code}")
+            get_system_guard(runtime_root=root).halt_now(f"kill_switch_engine:{kill_switch_reason_code}")
         except Exception:
             pass
 
-    if freeze_orchestration_on_critical and severity.upper() == "CRITICAL" and not rehearsal_mode:
+    orch_frozen = False
+    if freeze_applied and not rehearsal_mode:
         if (os.environ.get("EZRAS_KILL_SWITCH_FREEZE_ORCHESTRATION") or "1").strip().lower() not in (
             "0",
             "false",
             "no",
         ):
             try:
-                from trading_ai.global_layer.orchestration_kill_switch import freeze_orchestration
+                from trading_ai.global_layer.orchestration_kill_switch import freeze_avenue, freeze_orchestration
 
-                freeze_orchestration(True)
+                if freeze_scope == "global":
+                    freeze_orchestration(True)
+                    orch_frozen = True
+                elif freeze_scope == "avenue" and avenue_id:
+                    freeze_avenue(str(avenue_id), True)
+                    orch_frozen = True
             except Exception:
                 pass
+    merged_detail["orchestration_freeze_executed"] = orch_frozen
+    truth["detail"] = merged_detail
+    ad.write_json(_TRUTH_REL, truth)
 
     row = {
         "event_id": event_id,
@@ -324,7 +392,7 @@ def activate_halt(
         "immediate_action_required": immediate_action_required,
         "avenue_id": avenue_id,
         "gate": gate,
-        "detail": detail or {},
+        "detail": merged_detail,
         "rehearsal_mode": rehearsal_mode,
     }
     _append_jsonl(_EVENTS_REL, row, runtime_root=root)
@@ -333,7 +401,7 @@ def activate_halt(
         reason_code=kill_switch_reason_code,
         source_component=source_component,
         severity=severity,
-        detail=detail,
+        detail=merged_detail,
         immediate_action_required=immediate_action_required,
         event_id=event_id,
     )

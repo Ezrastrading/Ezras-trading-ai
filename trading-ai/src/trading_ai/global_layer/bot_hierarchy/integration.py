@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from trading_ai.global_layer.budget_governor import load_budget_state
 from trading_ai.global_layer.bot_hierarchy.knowledge import load_knowledge_snapshot
 from trading_ai.global_layer.bot_hierarchy.models import GateCandidateStage, HierarchyBotStatus, HierarchyBotType
 from trading_ai.global_layer.bot_hierarchy.paths import default_bot_hierarchy_root
@@ -72,7 +73,22 @@ def build_ceo_hierarchy_attachment(*, registry_path: Optional[Path] = None, root
     ``registry_path`` is accepted for API symmetry with orchestration; hierarchy uses ``EZRAS_BOT_HIERARCHY_ROOT``.
     """
     _ = registry_path
+    bud = load_budget_state()
+    glob_cap = int(bud.get("global_daily_token_budget") or 0)
+    glob_used = int(bud.get("global_token_used") or 0)
+    attach_attempted = True
+    attach_outcome = "attached"
+    attach_reason = "budget_allows_hierarchy_snapshot"
+    if glob_cap and glob_used >= glob_cap:
+        attach_outcome = "skipped_by_budget"
+        attach_reason = "global_token_budget_exhausted"
     sec = build_review_packet_hierarchy_section(root=root)
+    if attach_outcome == "skipped_by_budget":
+        sec = {
+            "truth_version": "bot_hierarchy_review_section_v1",
+            "hierarchy_summary_withheld": True,
+            "reason": attach_reason,
+        }
     bots = list_bots(path=root or default_bot_hierarchy_root())
     ezra_children = children_of(EZRA_GOVERNOR_BOT_ID, path=root or default_bot_hierarchy_root())
     promising = []
@@ -99,6 +115,12 @@ def build_ceo_hierarchy_attachment(*, registry_path: Optional[Path] = None, root
     tomorrow = [f"replay_review:{b.bot_id}" for b in bots if b.bot_type == HierarchyBotType.AVENUE_MASTER][:5]
     return {
         "truth_version": "bot_hierarchy_ceo_attachment_v1",
+        "token_budget_source": "global_layer.budget_governor.load_budget_state",
+        "token_budget_limit": glob_cap,
+        "token_budget_used": glob_used,
+        "hierarchy_attach_attempted": attach_attempted,
+        "hierarchy_attach_outcome": attach_outcome,
+        "hierarchy_attach_reason": attach_reason,
         "registry_path_note": str(registry_path) if registry_path else "orchestration_registry_independent",
         "hierarchy_summary": sec,
         "ezra_child_avenue_masters": [b.bot_id for b in ezra_children],

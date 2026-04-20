@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from trading_ai.runtime_paths import ezras_runtime_root
 
@@ -14,13 +14,14 @@ def runtime_root() -> Path:
     return ezras_runtime_root()
 
 
-def shark_data_dir() -> Path:
-    """Canonical: ~/ezras-runtime/shark (Section 11)."""
-    return runtime_root() / "shark"
+def shark_data_dir(*, runtime_root: Optional[Path] = None) -> Path:
+    """Canonical: ``<EZRAS_RUNTIME_ROOT>/shark`` (Section 11)."""
+    base = Path(runtime_root).resolve() if runtime_root is not None else ezras_runtime_root()
+    return base / "shark"
 
 
-def shark_state_path(name: str) -> Path:
-    d = shark_data_dir() / "state"
+def shark_state_path(name: str, *, runtime_root: Optional[Path] = None) -> Path:
+    d = shark_data_dir(runtime_root=runtime_root) / "state"
     d.mkdir(parents=True, exist_ok=True)
     return d / name
 

@@ -62,6 +62,11 @@ def _score_bot_row(bot: Dict[str, Any]) -> Dict[str, Any]:
         "operational_discipline": round(discipline, 3),
         "advisory_only": True,
         "scores_are_heuristic": True,
+        "score_source": "registry_heuristic_v1",
+        "telemetry_backed": False,
+        "registry_derived": True,
+        "empirical_sample_size": 0,
+        "confidence_band": "low",
     }
 
 
@@ -80,6 +85,15 @@ def build_bot_scorecard_bundle(*, runtime_root: Optional[Path] = None, registry_
         "generated_at": _now_iso(),
         "advisory_only": True,
         "no_automatic_permission_changes": True,
+        "score_provenance": {
+            "score_source": "registry_heuristic_v1",
+            "telemetry_backed": False,
+            "registry_derived": True,
+            "empirical_sample_size": 0,
+            "confidence_band": "low",
+            "mission_stage_label_source": "not_applicable_in_bot_scorecard",
+            "honesty": "Dimensional scores are heuristic composites from registry flags — not empirical PnL intelligence.",
+        },
         "bots": rows,
     }
     write_json_atomic(bot_scorecard_path(root), bundle)

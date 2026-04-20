@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
+from trading_ai.nte.databank.supabase_error_classify import classify_postgrest_exception
 from trading_ai.global_layer.supabase_env_keys import resolve_supabase_jwt_key
 from trading_ai.governance.storage_architecture import shark_state_path
+from trading_ai.nte.databank.databank_write_halt import record_databank_trade_write_outcome
 from trading_ai.nte.paths import nte_memory_dir
+from trading_ai.runtime_paths import ezras_runtime_root
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,15 @@ def _client():
     return c
 
 
+def _supabase_url_runtime_block() -> Dict[str, Any]:
+    try:
+        from trading_ai.deployment.supabase_url_diagnostics import build_supabase_runtime_diagnostics
+
+        return build_supabase_runtime_diagnostics()
+    except Exception:
+        return {"supabase_url_runtime": "unavailable"}
+
+
 def report_supabase_trade_sync_diagnostics() -> Dict[str, Any]:
     """
     Small operator report for live validation (no secrets).
@@ -162,18 +174,25 @@ def report_supabase_trade_sync_diagnostics() -> Dict[str, Any]:
 
     Returns keys: ``supabase_url_present``, ``key_source_used``, ``client_init_ok``,
     ``insert_probe_ok`` (minimal upsert to ``trade_events`` + delete when possible).
-    On failure, ``client_init_error`` / ``insert_probe_error`` / ``insert_probe_cleanup_error``
-    contain exception type names only.
+    On failure, ``insert_probe_classification`` explains likely cause (wrong project, missing table, RLS, …).
     """
     url = (os.environ.get("SUPABASE_URL") or "").strip()
     key, key_src = resolve_supabase_jwt_key()
+    host = urlparse(url).netloc if url else None
     out: Dict[str, Any] = {
         "supabase_url_present": bool(url),
+        "supabase_url_host": host,
         "key_source_used": key_src,
         "client_init_ok": False,
         "insert_probe_ok": False,
+        "supabase_url_runtime": _supabase_url_runtime_block(),
     }
     if not url or not key:
+        out["insert_probe_classification"] = {
+            "category": "missing_url_or_key",
+            "fix_scope": "runtime_env",
+            "operator_hint": "MANUAL: Set SUPABASE_URL and SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY for this project.",
+        }
         return out
     try:
         from supabase import create_client
@@ -207,8 +226,26 @@ def report_supabase_trade_sync_diagnostics() -> Dict[str, Any]:
             client.table("trade_events").delete().eq("trade_id", _DIAG_PROBE_TRADE_ID).execute()
         except Exception as exc_d:
             out["insert_probe_cleanup_error"] = type(exc_d).__name__
+            cls = classify_postgrest_exception(exc_d)
+            out["insert_probe_cleanup_classification"] = {
+                "category": cls["category"],
+                "fix_scope": cls["fix_scope"],
+                "operator_hint": cls["operator_hint"],
+            }
     except Exception as exc:
         out["insert_probe_error"] = type(exc).__name__
+        cls = classify_postgrest_exception(exc)
+        out["insert_probe_classification"] = cls
+        try:
+            from trading_ai.deployment.supabase_url_diagnostics import hypothesis_for_schema_failure
+
+            out["insert_probe_failure_hypothesis"] = hypothesis_for_schema_failure(
+                remote_ok=False,
+                category=str(cls.get("category") or ""),
+                message_excerpt=str(exc),
+            )
+        except Exception:
+            pass
     return out
 
 
@@ -269,6 +306,7 @@ def upsert_trade_event(
             queue_locally(row)
             out["queued_locally"] = True
         record_sync_attempt_outcome(False)
+        record_databank_trade_write_outcome(False, err, runtime_root=ezras_runtime_root())
         return out
 
     payload = _sanitize_row(dict(row))
@@ -296,8 +334,12 @@ def upsert_trade_event(
                     queue_locally(row)
                     out["queued_locally"] = True
                     record_sync_attempt_outcome(False)
+                    record_databank_trade_write_outcome(
+                        False, str(out.get("error") or "verify_failed"), runtime_root=ezras_runtime_root()
+                    )
                     return out
             record_sync_attempt_outcome(True)
+            record_databank_trade_write_outcome(True, None, runtime_root=ezras_runtime_root())
             return out
         except Exception as exc:
             last_exc = exc
@@ -326,6 +368,9 @@ def upsert_trade_event(
         queue_locally(row)
         out["queued_locally"] = True
     record_sync_attempt_outcome(False)
+    record_databank_trade_write_outcome(
+        False, str(out.get("error") or "failed"), runtime_root=ezras_runtime_root()
+    )
     return out
 
 
@@ -382,19 +427,40 @@ def verify_trade_exists(trade_id: str) -> bool:
 
 def select_trade_event_exists(trade_id: str) -> bool:
     """True if a row with ``trade_id`` exists (PostgREST SELECT)."""
+    return bool(select_trade_event_exists_detail(trade_id).get("exists"))
+
+
+def select_trade_event_exists_detail(trade_id: str) -> Dict[str, Any]:
+    """
+    SELECT probe with stable diagnostics for proof code (distinguish missing row vs client/query errors).
+
+    ``verify_query`` describes the PostgREST filter (no secrets).
+    """
+    tid = (trade_id or "").strip()
+    out: Dict[str, Any] = {
+        "exists": False,
+        "trade_id": tid,
+        "table": "trade_events",
+        "verify_query": "select(trade_id).eq(trade_id, <id>).limit(1)",
+        "error": None,
+    }
+    if not tid:
+        out["error"] = "empty_trade_id"
+        return out
     client = _client()
     if not client:
-        return False
-    tid = (trade_id or "").strip()
-    if not tid:
-        return False
+        out["error"] = "no_supabase_client"
+        return out
     try:
         r = client.table("trade_events").select("trade_id").eq("trade_id", tid).limit(1).execute()
         data = getattr(r, "data", None)
-        return isinstance(data, list) and len(data) > 0
+        out["exists"] = isinstance(data, list) and len(data) > 0
+        return out
     except Exception as exc:
-        logger.warning("select_trade_event_exists failed: %s", _format_response_error(exc))
-        return False
+        err = _format_response_error(exc)
+        logger.warning("select_trade_event_exists failed: %s", err)
+        out["error"] = err
+        return out
 
 
 def upsert_rows(table: str, rows: List[Mapping[str, Any]], on_conflict: str) -> bool:

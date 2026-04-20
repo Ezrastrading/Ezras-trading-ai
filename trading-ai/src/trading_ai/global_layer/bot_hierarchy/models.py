@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -157,6 +159,25 @@ class GateCandidateRecord(BaseModel):
     updated_at: str = ""
     evidence_refs: List[str] = Field(default_factory=list)
     blocked_reasons: List[str] = Field(default_factory=list)
+    canonical_fingerprint: str = ""
+    supersedes_candidate_id: Optional[str] = None
+    duplicate_of_candidate_id: Optional[str] = None
+    first_seen_at: str = ""
+    last_seen_at: str = ""
+
+    def compute_fingerprint(self) -> str:
+        """Stable idempotency key for discovery (avenue + gate + hypothesis + execution path + limits)."""
+        payload = {
+            "avenue_id": str(self.avenue_id).strip(),
+            "gate_id": str(self.gate_id).strip(),
+            "strategy_thesis": str(self.strategy_thesis or "").strip(),
+            "edge_hypothesis": str(self.edge_hypothesis or "").strip(),
+            "execution_path": str(self.execution_path or "").strip(),
+            "limits": self.limits,
+            "constraints": list(self.constraints or []),
+        }
+        raw = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
 def utc_now_iso() -> str:
