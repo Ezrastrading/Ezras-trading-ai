@@ -10,15 +10,17 @@ This system is **fully independent** from Nexplora. It does not read, write, imp
 
 ## Setup
 
-1. **Python 3.9+** (3.11+ recommended)
+1. **Python 3.11** — use the version in `.python-version` (e.g. via **pyenv**). On macOS, avoid the system Python for this repo: it is often linked to **LibreSSL**, which breaks **urllib3 v2**. Build Python against **Homebrew OpenSSL 3** and verify `ssl.OPENSSL_VERSION` shows **OpenSSL**, not LibreSSL. See **[docs/SSL_RUNTIME.md](docs/SSL_RUNTIME.md)**.
 
 2. **Create a virtual environment** (recommended):
 
    ```bash
    cd trading-ai
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -e .
+   eval "$(pyenv init -)"   # if using pyenv
+   python -m venv venv
+   source venv/bin/activate
+   pip install -U pip setuptools wheel
+   pip install -e ".[dev]"
    ```
 
 3. **Configure environment**:

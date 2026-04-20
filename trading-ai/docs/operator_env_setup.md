@@ -25,6 +25,14 @@ export COINBASE_API_PRIVATE_KEY="$(cat /secure/path/ec_private.pem)"
 
 **Python/dotenv pattern:** single line with `\n` escapes for PEM inside `.env` — load with `load_dotenv`, **not** `source` in bash.
 
+**Verify without heredocs or inline Python** (zsh/bash/CI-safe; prints `MISSING` / `SET (len=…)` only):
+
+```bash
+PYTHONPATH=src python3 -m trading_ai.deployment check-env
+```
+
+The same command includes a short **Python / SSL** block (`ssl.OPENSSL_VERSION`, `ssl_guard_would_pass`). Use a Python built against **OpenSSL** (not macOS **LibreSSL**); see `docs/SSL_RUNTIME.md`.
+
 ## 3. Remote sync (preferred when Supabase exists)
 
 ```bash
