@@ -445,6 +445,51 @@ def main() -> int:
     p_bhh = sub.add_parser("bot-hierarchy-health-report", help="Health/issues checklist for hierarchy store (JSON)")
     p_bhh.add_argument("--hierarchy-root", default=None)
 
+    sub.add_parser(
+        "mission-execution-status",
+        help="Mission stage, goals, actions (writes data/control/organism/* mission artifacts)",
+    )
+    sub.add_parser("opportunity-pressure-report", help="Attention ranking: avenues, gates, experiments, blockers")
+    sub.add_parser("experiment-status-report", help="Experiment registry + summaries (research-only registry)")
+    p_bsr = sub.add_parser("bot-scorecard-report", help="Bot usefulness / discipline scorecards (advisory)")
+    p_bsr.add_argument("--registry-path", default=None, help="Override EZRAS_BOT_REGISTRY_PATH")
+    sub.add_parser("waste-detector-report", help="Drag / waste snapshot + advisory queue hook")
+    sub.add_parser(
+        "supervised-readiness-closer",
+        help="End-to-end supervised checklist + exact blockers/commands (writes supervised_readiness_closer.json)",
+    )
+    sub.add_parser(
+        "supervised-sequence-plan",
+        help="Small supervised sequence plan when evidence allows (writes supervised_sequence_plan.json)",
+    )
+    sub.add_parser(
+        "autonomous-gap-closer",
+        help="Honest autonomous gap + delta vs previous snapshot (writes autonomous_gap_closer.json)",
+    )
+    sub.add_parser("daily-marchboard", help="Rollup marchboard for operator / CEO (writes daily_marchboard.json)")
+    sub.add_parser("weekly-marchboard", help="Weekly marchboard artifact (writes weekly_marchboard.json)")
+    sub.add_parser(
+        "gate-b-readiness-report",
+        help="Gate B structural readiness: tuning, snapshots, blockers, paths (writes gate_b_readiness_report.json)",
+    )
+    sub.add_parser(
+        "first-supervised-command-center",
+        help="Avenue A / Gate B supervised command center + runbook.md",
+    )
+    p_ocb = sub.add_parser(
+        "organism-coordination-bundle",
+        help="Write all organism artifacts (mission, opportunity, waste, scorecards, readiness, marchboards)",
+    )
+    p_ocb.add_argument("--registry-path", default=None, help="Override EZRAS_BOT_REGISTRY_PATH for scorecard")
+
+    sub.add_parser("kill-switch-status", help="Canonical kill-switch + halt layers (JSON; EZRAS_RUNTIME_ROOT)")
+    sub.add_parser("kill-switch-history", help="Recent kill_switch_events.jsonl + current truth (JSON)")
+    sub.add_parser("run-kill-switch-rehearsals", help="Isolated temp-root kill-switch scenario matrix (JSON)")
+    sub.add_parser("recovery-status", help="Recovery validation snapshot + recent recovery_attempts (JSON)")
+    sub.add_parser("run-recovery-rehearsals", help="Isolated recovery scenario matrix (JSON)")
+    sub.add_parser("explain-last-halt", help="Structured explanation for last halt event (JSON)")
+    sub.add_parser("explain-recovery-path", help="What must pass before recovery clears halt (JSON)")
+
     args = p.parse_args()
     if "EZRAS_BOT_REGISTRY_PATH" not in os.environ:
         pass  # optional; orchestration CLIs use default path or --registry-path
@@ -1228,6 +1273,96 @@ def main() -> int:
 
         print(json.dumps(cmd_bot_hierarchy_health_report(root=_hierarchy_root_cli()), indent=2, default=str, ensure_ascii=False))
         return 0
+    if args.cmd == "mission-execution-status":
+        from trading_ai.org_organism.experiment_os import load_experiment_registry
+        from trading_ai.org_organism.mission_execution_layer import build_mission_execution_bundle
+
+        rt = _cli_runtime_root()
+        reg = load_experiment_registry(rt)
+        open_exp = sum(
+            1
+            for e in (reg.get("experiments") or {}).values()
+            if isinstance(e, dict) and str(e.get("status") or "") not in ("passed", "superseded", "")
+        )
+        out = build_mission_execution_bundle(runtime_root=rt, experiment_open_count=open_exp)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "opportunity-pressure-report":
+        from trading_ai.org_organism.opportunity_pressure import build_opportunity_pressure_bundle
+
+        out = build_opportunity_pressure_bundle(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "experiment-status-report":
+        from trading_ai.org_organism.experiment_os import build_experiment_status_report
+
+        out = build_experiment_status_report(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "bot-scorecard-report":
+        from trading_ai.org_organism.bot_scorecard import build_bot_scorecard_bundle
+
+        rp = getattr(args, "registry_path", None)
+        path = Path(str(rp)).expanduser().resolve() if rp else None
+        out = build_bot_scorecard_bundle(runtime_root=_cli_runtime_root(), registry_path=path)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "waste-detector-report":
+        from trading_ai.org_organism.waste_detector import build_waste_detector_bundle
+
+        out = build_waste_detector_bundle(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "supervised-readiness-closer":
+        from trading_ai.org_organism.supervised_readiness import build_supervised_readiness_closer
+
+        out = build_supervised_readiness_closer(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "supervised-sequence-plan":
+        from trading_ai.org_organism.supervised_readiness import build_supervised_sequence_plan
+
+        out = build_supervised_sequence_plan(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "autonomous-gap-closer":
+        from trading_ai.org_organism.autonomous_gap_closer import build_autonomous_gap_bundle
+
+        out = build_autonomous_gap_bundle(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "daily-marchboard":
+        from trading_ai.org_organism.marchboard import build_marchboard
+
+        out = build_marchboard(runtime_root=_cli_runtime_root(), weekly=False)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "weekly-marchboard":
+        from trading_ai.org_organism.marchboard import build_marchboard
+
+        out = build_marchboard(runtime_root=_cli_runtime_root(), weekly=True)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "gate-b-readiness-report":
+        from trading_ai.org_organism.gate_b_readiness import build_gate_b_readiness_report
+
+        out = build_gate_b_readiness_report(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "first-supervised-command-center":
+        from trading_ai.org_organism.first_supervised_cc import build_first_supervised_command_center
+
+        out = build_first_supervised_command_center(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "organism-coordination-bundle":
+        from trading_ai.org_organism.bundle import write_full_organism_bundle
+
+        rp = getattr(args, "registry_path", None)
+        path = Path(str(rp)).expanduser().resolve() if rp else None
+        out = write_full_organism_bundle(runtime_root=_cli_runtime_root(), registry_path=path)
+        print(json.dumps({"ok": out.get("ok"), "runtime_root": out.get("runtime_root")}, indent=2, default=str))
+        return 0
     if args.cmd == "controlled-live-readiness":
         from trading_ai.deployment.controlled_live_readiness import build_controlled_live_readiness_report
 
@@ -1237,6 +1372,67 @@ def main() -> int:
         if not out.get("rollup_answers", {}).get("are_env_ssl_coinbase_commands_clean"):
             rc = 12
         return rc
+    if args.cmd == "kill-switch-status":
+        from trading_ai.safety.kill_switch_engine import (
+            current_halt_state,
+            evaluate_execution_block,
+            is_trading_allowed,
+            last_halt_reason,
+        )
+
+        rt = _cli_runtime_root()
+        blocked, hr = evaluate_execution_block(runtime_root=rt)
+        out = {
+            "runtime_root": str(rt),
+            "trading_allowed": is_trading_allowed(runtime_root=rt),
+            "execution_blocked": blocked,
+            "halt_active_reason": hr,
+            "current_halt_state": current_halt_state(runtime_root=rt),
+            "last_halt_reason": last_halt_reason(runtime_root=rt),
+            "next_steps_if_blocked": [
+                "Inspect data/control/kill_switch_truth.json and kill_switch_events.jsonl",
+                "Run: python -m trading_ai.deployment explain-last-halt",
+                "Clear only via recovery_engine after validation + operator confirm when required",
+            ],
+        }
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "kill-switch-history":
+        from trading_ai.safety.kill_switch_engine import kill_switch_history
+
+        out = kill_switch_history(runtime_root=_cli_runtime_root(), max_lines=200)
+        print(json.dumps(out, indent=2, default=str)[:400_000])
+        return 0
+    if args.cmd == "run-kill-switch-rehearsals":
+        from trading_ai.safety.kill_switch_rehearsal_runner import run_kill_switch_rehearsals
+
+        out = run_kill_switch_rehearsals()
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 17
+    if args.cmd == "recovery-status":
+        from trading_ai.safety.recovery_engine import recovery_status
+
+        out = recovery_status(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "run-recovery-rehearsals":
+        from trading_ai.safety.kill_switch_rehearsal_runner import run_recovery_rehearsals
+
+        out = run_recovery_rehearsals()
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 18
+    if args.cmd == "explain-last-halt":
+        from trading_ai.safety.kill_switch_engine import explain_last_halt
+
+        out = explain_last_halt(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "explain-recovery-path":
+        from trading_ai.safety.kill_switch_engine import explain_recovery_path
+
+        out = explain_recovery_path(runtime_root=_cli_runtime_root())
+        print(json.dumps(out, indent=2, default=str))
+        return 0
     return 1
 
 
