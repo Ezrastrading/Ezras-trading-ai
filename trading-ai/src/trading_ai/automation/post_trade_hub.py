@@ -203,8 +203,22 @@ def execute_post_trade_placed(
 
     out["telegram"] = {k: tg.get(k) for k in ("sent", "skipped_duplicate", "ok", "error") if k in tg}
     out["vault"] = vault
+    if not dup:
+        try:
+            from trading_ai.multi_avenue.lifecycle_hooks import on_trade_open
+
+            out["multi_avenue_lifecycle"] = on_trade_open(trade)
+        except Exception as exc:
+            logger.warning("multi_avenue on_trade_open failed (non-fatal): %s", exc)
+            out["multi_avenue_lifecycle"] = {"status": "error", "error": str(exc)}
     _append_post_trade_log(out)
     _merge_manifest("placed", tid, tg, vault)
+    try:
+        from trading_ai.intelligence.integration.live_hooks import record_post_trade_hub_event
+
+        record_post_trade_hub_event("placed", trade if isinstance(trade, dict) else {}, out)
+    except Exception:
+        logger.debug("intelligence post_trade placed hook skipped", exc_info=True)
     return out
 
 
@@ -271,6 +285,15 @@ def execute_post_trade_closed(
     except Exception as exc:
         logger.warning("score_closed_trade failed (non-fatal): %s", exc)
     try:
+        from trading_ai.first_20.integration import maybe_process_first_20_closed_trade
+
+        out["first_20_monitor"] = maybe_process_first_20_closed_trade(
+            trade, out, runtime_root=Path(str(out.get("runtime_root") or runtime_root()))
+        )
+    except Exception as exc:
+        logger.warning("first_20_monitor failed (non-fatal): %s", exc)
+        out["first_20_monitor"] = {"status": "error", "error": str(exc)}
+    try:
         from trading_ai.automation.risk_bucket import get_account_risk_bucket
 
         out["risk_mode_after_close"] = get_account_risk_bucket({"phase": "closed", "trade": trade})
@@ -321,6 +344,27 @@ def execute_post_trade_closed(
 
     out["telegram"] = {k: tg.get(k) for k in ("sent", "skipped_duplicate", "ok", "error") if k in tg}
     out["vault"] = vault
+    if not dup:
+        try:
+            from trading_ai.multi_avenue.lifecycle_hooks import on_trade_close
+
+            out["multi_avenue_lifecycle"] = on_trade_close(trade)
+        except Exception as exc:
+            logger.warning("multi_avenue on_trade_close failed (non-fatal): %s", exc)
+            out["multi_avenue_lifecycle"] = {"status": "error", "error": str(exc)}
     _append_post_trade_log(out)
     _merge_manifest("closed", tid, tg, vault)
+    try:
+        from trading_ai.intelligence.integration.live_hooks import record_post_trade_hub_event
+
+        record_post_trade_hub_event("closed", trade if isinstance(trade, dict) else {}, out)
+    except Exception:
+        logger.debug("intelligence post_trade closed hook skipped", exc_info=True)
+    try:
+        from trading_ai.intelligence.execution_intelligence.persistence import refresh_execution_intelligence
+
+        out["execution_intelligence"] = refresh_execution_intelligence(persist=True)
+    except Exception as exc:
+        logger.debug("execution_intelligence refresh after close: %s", exc)
+        out["execution_intelligence"] = {"error": str(exc)}
     return out

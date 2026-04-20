@@ -53,6 +53,13 @@ def _default_research_memory() -> Dict[str, Any]:
 
 def _default_goals_state() -> Dict[str, Any]:
     return {
+        "schema_version": 2,
+        "active_goal": "GOAL_A",
+        "progress_history": [],
+        "last_update": None,
+        "daily_plan_history": [],
+        "latest_snapshot": {},
+        # Legacy keys (still present for older readers / migration)
         "start_ts": None,
         "start_equity": None,
         "last_equity": None,

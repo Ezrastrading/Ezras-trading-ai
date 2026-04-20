@@ -223,9 +223,30 @@ def build_live_monitoring_dashboard(
         "rolling_net_last10_usd": roll_net,
     }
 
+    eie_block: Dict[str, Any] = {}
+    try:
+        from trading_ai.intelligence.execution_intelligence.persistence import refresh_execution_intelligence
+
+        snap = refresh_execution_intelligence(store, persist=False)
+        prog = snap.get("progress") or {}
+        plan = snap.get("daily_plan") or {}
+        eie_block = {
+            "active_goal": snap.get("active_goal"),
+            "mode": plan.get("mode"),
+            "progress_pct": prog.get("progress_pct"),
+            "trajectory_status": prog.get("trajectory_status"),
+            "today_focus": plan.get("today_focus") or [],
+            "tomorrow_focus": plan.get("tomorrow_focus") or [],
+            "priority_actions": plan.get("priority_actions") or [],
+            "disclaimer": plan.get("disclaimer"),
+        }
+    except Exception as exc:
+        eie_block = {"error": str(exc), "disclaimer": "EIE unavailable — governance and risk systems unchanged."}
+
     out = {
         "schema_version": 1,
         "generated_at_ts": now,
+        "L_execution_intelligence": eie_block,
         "A_system_health": section_a,
         "B_order_flow_quality": section_b_order_flow,
         "C_spread_and_regime": section_c_spread,
