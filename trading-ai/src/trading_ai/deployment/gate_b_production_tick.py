@@ -88,8 +88,10 @@ def run_gate_b_production_tick(
         },
         "engine_evaluation": {
             "candidate_count": len(engine_out.get("candidates") or []),
+            "pre_rank_rejection_count": engine_out.get("pre_rank_rejection_count"),
             "gate_b_disabled": engine_out.get("gate_b_disabled"),
             "regime": engine_out.get("regime"),
+            "gate_b_truth_version": engine_out.get("gate_b_truth_version"),
         },
         "scan_rows_used": len(rows),
         "honesty": (

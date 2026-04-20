@@ -92,7 +92,7 @@ Artifact: `data/control/gate_b_selection_snapshot.json` (from deployment / selec
 
 - **`measured_spread_bps` is `null`** when the quote was missing, stale, or could not be parsed — this is **not** a claim that the market had a 9999 bps spread.
 - Use **`selection_summary.counts_by_rejection_category`** and **`selection_summary.no_selection_reason`** to see whether failures were feed errors, stale quotes, spread policy, or structural no-candidate state.
-- Version **`gate_b_selection_snapshot_v2`** adds explicit fields: `spread_measurement_status`, `spread_source`, `spread_unavailable_reason`, `price_freshness_status`, `candidate_excluded_due_to_missing_market_data`, `selection_rejection_category`.
+- Version **`gate_b_selection_snapshot_v3`** adds capital split truth, tuning snapshot, failure taxonomy (`failure_codes`, `rejection_kind`), supervised-operator blockers, and market-data quality summaries. See **`docs/GATE_B_OPERATOR_TRUTH_MODEL.md`**.
 
 ## 7. What not to do
 

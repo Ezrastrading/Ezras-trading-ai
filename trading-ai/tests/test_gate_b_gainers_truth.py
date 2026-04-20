@@ -69,8 +69,29 @@ def test_run_gate_b_gainers_selection_mocked_ticker(tmp_path: Path) -> None:
         side_effect=fake_req,
     ):
         out = run_gate_b_gainers_selection(runtime_root=tmp_path, client=None)
-    assert out["truth_version"] == "gate_b_selection_snapshot_v2"
+    assert out["truth_version"] == "gate_b_selection_snapshot_v3"
+    assert out.get("gate_b_truth_version")
     assert out["selected_symbols"] == ["BTC-USD"]
     row = out["ranked_gainer_candidates"][0]
     assert row["spread_measurement_status"] == "measured"
     assert row["measured_spread_bps"] is not None
+
+
+def test_gate_b_gainers_capital_split_fail_closed_empty_selection(tmp_path: Path) -> None:
+    (tmp_path / "data" / "control").mkdir(parents=True)
+    fake_split = {"ok": False, "failure_reason": "deployable_usd_not_computable_or_fractions_invalid"}
+    with patch(
+        "trading_ai.orchestration.coinbase_gate_selection.gate_b_gainers_selection.compute_coinbase_gate_capital_split",
+        return_value=fake_split,
+    ), patch(
+        "trading_ai.orchestration.coinbase_gate_selection.gate_b_gainers_selection.ordered_validation_candidates",
+        return_value=[],
+    ):
+        out = run_gate_b_gainers_selection(
+            runtime_root=tmp_path,
+            client=None,
+            deployable_quote_usd=float("nan"),
+        )
+    assert out["selected_symbols"] == []
+    assert out["selection_summary"]["gate_b_selection_state"] == "empty_capital_gate"
+    assert out["capital_budget_allocated_usd"] is None

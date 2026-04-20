@@ -365,9 +365,15 @@ def main() -> int:
         "gate-a-selection-smoke",
         help="Deterministic Gate A selection snapshot (public tickers; writes gate_a_selection_snapshot.json)",
     )
-    sub.add_parser(
+    p_gbs = sub.add_parser(
         "gate-b-selection-smoke",
         help="Deterministic Gate B gainers ranking snapshot (writes gate_b_selection_snapshot.json)",
+    )
+    p_gbs.add_argument(
+        "--deployable-usd",
+        type=float,
+        default=None,
+        help="Optional deployable USD for 50/50 split truth; omit uses $100 literal demo budget label",
     )
     p_csr = sub.add_parser(
         "coinbase-selection-report",
@@ -1015,7 +1021,13 @@ def main() -> int:
         from trading_ai.shark.outlets.coinbase import CoinbaseClient
 
         rt = _cli_runtime_root()
-        out = run_gate_b_gainers_selection(runtime_root=rt, client=CoinbaseClient(), capital_budget_usd=100.0)
+        dep_gb = getattr(args, "deployable_usd", None)
+        out = run_gate_b_gainers_selection(
+            runtime_root=rt,
+            client=CoinbaseClient(),
+            deployable_quote_usd=float(dep_gb) if dep_gb is not None else None,
+            capital_budget_usd=None if dep_gb is not None else 100.0,
+        )
         print(json.dumps(out, indent=2, default=str))
         return 0
     if args.cmd == "coinbase-selection-report":
@@ -1028,7 +1040,12 @@ def main() -> int:
         dep = getattr(args, "deployable_usd", None)
         split = compute_coinbase_gate_capital_split(dep, runtime_root=rt)
         ga = run_gate_a_product_selection(runtime_root=rt, client=CoinbaseClient(), quote_usd=10.0, explicit_product_id=None)
-        gb = run_gate_b_gainers_selection(runtime_root=rt, client=CoinbaseClient(), capital_budget_usd=100.0)
+        gb = run_gate_b_gainers_selection(
+            runtime_root=rt,
+            client=CoinbaseClient(),
+            deployable_quote_usd=float(dep) if dep is not None else None,
+            capital_budget_usd=None if dep is not None else 100.0,
+        )
         print(
             json.dumps(
                 {"capital_split": split, "gate_a_selection": ga, "gate_b_selection": gb},

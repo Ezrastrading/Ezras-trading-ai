@@ -14,11 +14,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from trading_ai.nte.hardening.coinbase_product_policy import ordered_validation_candidates
+from trading_ai.orchestration.coinbase_gate_selection.coinbase_capital_split import compute_coinbase_gate_capital_split
 from trading_ai.runtime_paths import resolve_ezras_runtime_root_for_daemon_authority
+from trading_ai.shark.coinbase_spot.gate_b_config import load_gate_b_config_from_env
+from trading_ai.shark.coinbase_spot.gate_b_truth import (
+    GATE_B_TRUTH_MODEL_VERSION,
+    classify_rejection_kind,
+    gainer_row_failure_codes,
+    market_data_quality_summary_from_gainer_rows,
+)
+from trading_ai.shark.coinbase_spot.gate_b_tuning_resolver import resolve_gate_b_tuning_artifact
 from trading_ai.storage.storage_adapter import LocalStorageAdapter
 
 _DEFAULT_REL = "data/control/gate_b_product_selection_policy.json"
 _SNAPSHOT = "data/control/gate_b_selection_snapshot.json"
+_SELECTION_SNAPSHOT_VERSION = "gate_b_selection_snapshot_v3"
 
 
 def _default_policy() -> Dict[str, Any]:
@@ -180,11 +190,37 @@ def _analyze_ticker_for_spread(
     }
 
 
+def _annotate_gainer_candidate_row(
+    base: Dict[str, Any],
+    *,
+    meta: Dict[str, Any],
+    cat: str,
+    passed: bool,
+    failed: List[str],
+) -> Dict[str, Any]:
+    fc = gainer_row_failure_codes(
+        passed=passed,
+        category=cat,
+        spread_meta=meta,
+        filters_failed=failed,
+    )
+    evaluable = cat != "feed_error"
+    return {
+        **base,
+        "candidate_seen": True,
+        "candidate_evaluable": evaluable,
+        "candidate_passed": passed,
+        "failure_codes": fc,
+        "rejection_kind": classify_rejection_kind(fc),
+    }
+
+
 def run_gate_b_gainers_selection(
     *,
     runtime_root: Path,
     client: Any,
-    capital_budget_usd: float = 100.0,
+    capital_budget_usd: Optional[float] = None,
+    deployable_quote_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     from trading_ai.shark.outlets.coinbase import _brokerage_public_request
 
@@ -192,6 +228,43 @@ def run_gate_b_gainers_selection(
     policy = load_gate_b_policy(runtime_root=root)
     max_spread = float(policy.get("max_spread_bps") or 80)
     max_quote_age = float(policy.get("max_ticker_age_sec") or 120.0)
+
+    capital_split: Dict[str, Any]
+    capital_gate_blocked = False
+    if deployable_quote_usd is not None:
+        capital_split = compute_coinbase_gate_capital_split(deployable_quote_usd, runtime_root=root)
+        if not capital_split.get("ok"):
+            capital_gate_blocked = True
+            effective_budget: Optional[float] = None
+        else:
+            effective_budget = float(capital_split["gate_b_usd"])
+    elif capital_budget_usd is not None:
+        capital_split = {
+            "truth_version": "literal_budget_only_v1",
+            "ok": True,
+            "mode": "caller_literal_not_split",
+            "gate_b_usd": float(capital_budget_usd),
+        }
+        effective_budget = float(capital_budget_usd)
+    else:
+        capital_split = {
+            "truth_version": "demo_default_budget_v1",
+            "ok": True,
+            "mode": "unspecified_demo_default_100",
+            "gate_b_usd": 100.0,
+        }
+        effective_budget = 100.0
+
+    tune_dep: Optional[float] = None
+    if capital_split.get("ok") and capital_split.get("deployable_usd") is not None:
+        tune_dep = float(capital_split["deployable_usd"])
+    gb_cfg = load_gate_b_config_from_env()
+    tuning = resolve_gate_b_tuning_artifact(
+        deployable_quote_usd=tune_dep,
+        measured_slippage_bps=None,
+        baseline_config=gb_cfg,
+        assumed_slippage_bps=None,
+    )
 
     cands = ordered_validation_candidates()[:24]
     rows: List[Dict[str, Any]] = []
@@ -207,40 +280,65 @@ def run_gate_b_gainers_selection(
             j = _brokerage_public_request(f"/market/products/{pid}/ticker")
         except Exception as exc:
             summary_counts["feed_error"] += 1
+            meta = {
+                "spread_unavailable_reason": f"ticker_http_error:{type(exc).__name__}",
+                "candidate_excluded_due_to_missing_market_data": True,
+            }
+            row = {
+                "product_id": pid,
+                "score": -1e6,
+                "passed": False,
+                "spread_measurement_status": "unavailable",
+                "spread_source": "none",
+                "measured_spread_bps": None,
+                "spread_unavailable_reason": meta["spread_unavailable_reason"],
+                "price_freshness_status": "unknown",
+                "quote_age_sec": None,
+                "candidate_excluded_due_to_missing_market_data": True,
+                "selection_rejection_category": "feed_error",
+                "filters_failed": [f"ticker:{type(exc).__name__}"],
+                "filters_passed": False,
+                "momentum_proxy": None,
+                "momentum_proxy_status": "not_applicable_feed_error",
+            }
             rows.append(
-                {
-                    "product_id": pid,
-                    "passed": False,
-                    "spread_measurement_status": "unavailable",
-                    "spread_source": "none",
-                    "measured_spread_bps": None,
-                    "spread_unavailable_reason": f"ticker_http_error:{type(exc).__name__}",
-                    "price_freshness_status": "unknown",
-                    "quote_age_sec": None,
-                    "candidate_excluded_due_to_missing_market_data": True,
-                    "selection_rejection_category": "feed_error",
-                    "filters_failed": [f"ticker:{type(exc).__name__}"],
-                    "filters_passed": False,
-                }
+                _annotate_gainer_candidate_row(
+                    row,
+                    meta=meta,
+                    cat="feed_error",
+                    passed=False,
+                    failed=row["filters_failed"],
+                )
             )
             continue
         if not isinstance(j, dict):
             summary_counts["feed_error"] += 1
+            meta = {"spread_unavailable_reason": "bad_ticker_json", "candidate_excluded_due_to_missing_market_data": True}
+            row = {
+                "product_id": pid,
+                "score": -1e6,
+                "passed": False,
+                "spread_measurement_status": "unavailable",
+                "spread_source": "none",
+                "measured_spread_bps": None,
+                "spread_unavailable_reason": "bad_ticker_json",
+                "price_freshness_status": "unknown",
+                "quote_age_sec": None,
+                "candidate_excluded_due_to_missing_market_data": True,
+                "selection_rejection_category": "feed_error",
+                "filters_failed": ["bad_ticker_json"],
+                "filters_passed": False,
+                "momentum_proxy": None,
+                "momentum_proxy_status": "not_applicable_feed_error",
+            }
             rows.append(
-                {
-                    "product_id": pid,
-                    "passed": False,
-                    "spread_measurement_status": "unavailable",
-                    "spread_source": "none",
-                    "measured_spread_bps": None,
-                    "spread_unavailable_reason": "bad_ticker_json",
-                    "price_freshness_status": "unknown",
-                    "quote_age_sec": None,
-                    "candidate_excluded_due_to_missing_market_data": True,
-                    "selection_rejection_category": "feed_error",
-                    "filters_failed": ["bad_ticker_json"],
-                    "filters_passed": False,
-                }
+                _annotate_gainer_candidate_row(
+                    row,
+                    meta=meta,
+                    cat="feed_error",
+                    passed=False,
+                    failed=row["filters_failed"],
+                )
             )
             continue
 
@@ -271,32 +369,42 @@ def run_gate_b_gainers_selection(
             summary_counts["missing_or_stale_quote"] += 1
             failed.append("selection_state_unexpected")
 
-        momentum_proxy = (
-            abs(float(j.get("ask") or 0) - float(j.get("bid") or 0)) / float(meta["mid"] or 1.0)
-            if meta.get("mid")
-            else 0.0
-        )
+        if passed and meta.get("mid"):
+            momentum_proxy = abs(float(j.get("ask") or 0) - float(j.get("bid") or 0)) / float(meta["mid"] or 1.0)
+            mom_status = "derived_bid_ask_width_over_mid"
+        else:
+            momentum_proxy = None
+            mom_status = "not_computable_quote_failed_or_policy"
 
+        row = {
+            "product_id": pid,
+            "score": float(momentum_proxy) if passed and momentum_proxy is not None else -1e6,
+            "passed": passed,
+            "spread_measurement_status": spread_measurement_status,
+            "spread_source": meta["spread_source"],
+            "measured_spread_bps": measured,
+            "spread_unavailable_reason": meta.get("spread_unavailable_reason"),
+            "price_freshness_status": meta.get("price_freshness_status"),
+            "quote_freshness_sec": meta.get("quote_age_sec"),
+            "quote_age_sec": meta.get("quote_age_sec"),
+            "candidate_excluded_due_to_missing_market_data": bool(
+                meta.get("candidate_excluded_due_to_missing_market_data")
+            ),
+            "selection_rejection_category": cat,
+            "momentum_proxy": momentum_proxy,
+            "momentum_proxy_status": mom_status,
+            "momentum_proxy_provenance": "derived_from_public_ticker_bid_ask_when_quote_ok",
+            "filters_passed": passed,
+            "filters_failed": failed,
+        }
         rows.append(
-            {
-                "product_id": pid,
-                "score": momentum_proxy if passed else -1e6,
-                "passed": passed,
-                "spread_measurement_status": spread_measurement_status,
-                "spread_source": meta["spread_source"],
-                "measured_spread_bps": measured,
-                "spread_bps": measured,
-                "spread_unavailable_reason": meta.get("spread_unavailable_reason"),
-                "price_freshness_status": meta.get("price_freshness_status"),
-                "quote_age_sec": meta.get("quote_age_sec"),
-                "candidate_excluded_due_to_missing_market_data": bool(
-                    meta.get("candidate_excluded_due_to_missing_market_data")
-                ),
-                "selection_rejection_category": cat,
-                "momentum_proxy": momentum_proxy,
-                "filters_passed": passed,
-                "filters_failed": failed,
-            }
+            _annotate_gainer_candidate_row(
+                row,
+                meta=meta,
+                cat=cat,
+                passed=passed,
+                failed=failed,
+            )
         )
 
     viable = [r for r in rows if r.get("passed")]
@@ -304,7 +412,10 @@ def run_gate_b_gainers_selection(
     selected = [r["product_id"] for r in viable[:8]]
 
     no_selection_reason: Optional[str] = None
-    if not selected:
+    if capital_gate_blocked:
+        no_selection_reason = str(capital_split.get("failure_reason") or "capital_split_not_ok")
+        selected = []
+    elif not selected:
         if summary_counts["feed_error"] == len(cands):
             no_selection_reason = "all_candidates_feed_error"
         elif summary_counts["missing_or_stale_quote"] == len(cands):
@@ -314,21 +425,83 @@ def run_gate_b_gainers_selection(
         else:
             no_selection_reason = "no_eligible_candidates_under_policy"
 
+    rejected_data = sum(
+        1
+        for r in rows
+        if not r.get("passed")
+        and r.get("rejection_kind") == "data_quality"
+    )
+    rejected_policy = sum(
+        1 for r in rows if not r.get("passed") and r.get("rejection_kind") == "market_policy"
+    )
+    evaluable_n = sum(1 for r in rows if r.get("candidate_evaluable"))
+    passed_n = sum(1 for r in rows if r.get("candidate_passed"))
+
+    if capital_gate_blocked:
+        gate_b_selection_state = "empty_capital_gate"
+    elif selected:
+        gate_b_selection_state = "selected"
+    elif len(cands) and summary_counts["feed_error"] == len(cands):
+        gate_b_selection_state = "empty_all_feed_error"
+    else:
+        gate_b_selection_state = "empty_no_passing_candidates"
+
+    mdq = market_data_quality_summary_from_gainer_rows(rows)
+    sup_blockers: List[str] = []
+    if capital_gate_blocked:
+        sup_blockers.append("capital_split_invalid_or_uncomputable")
+    if len(cands) and summary_counts["feed_error"] == len(cands):
+        sup_blockers.append("all_products_ticker_feed_error")
+    supervised_ready = len(sup_blockers) == 0
+
+    policy_summary = {
+        "max_spread_bps": max_spread,
+        "max_ticker_age_sec": max_quote_age,
+        "max_concurrent_gainer_pursuit_per_symbol": policy.get("max_concurrent_gainer_pursuit_per_symbol"),
+        "cooldown_sec_after_failed_chase": policy.get("cooldown_sec_after_failed_chase"),
+    }
+
     snap = {
-        "truth_version": "gate_b_selection_snapshot_v2",
+        "truth_version": _SELECTION_SNAPSHOT_VERSION,
+        "gate_b_truth_version": GATE_B_TRUTH_MODEL_VERSION,
         "selection_summary": {
+            "universe_size": len(cands),
+            "evaluable_candidates_count": evaluable_n,
+            "rejected_for_data_quality_count": rejected_data,
+            "rejected_for_policy_count": rejected_policy,
+            "passed_candidates_count": passed_n,
             "counts_by_rejection_category": summary_counts,
             "no_selection_reason": no_selection_reason,
+            "gate_b_selection_state": gate_b_selection_state,
             "operator_note": (
-                "measured_spread_bps is None when quote was missing, stale, or unparseable — "
-                "not a real market spread of 9999 bps."
+                "measured_spread_bps is set only from a fresh bid/ask over mid — never a synthetic sentinel. "
+                "When unavailable, spread_measurement_status is unavailable and spread_unavailable_reason is explicit."
             ),
         },
         "ranked_gainer_candidates": rows,
         "selected_symbols": selected,
-        "capital_budget_allocated_usd": float(capital_budget_usd),
+        "capital_budget_allocated_usd": effective_budget,
+        "capital_allocation_truth": capital_split,
+        "capital_budget_mode": (
+            "split_from_deployable"
+            if deployable_quote_usd is not None and not capital_gate_blocked
+            else str(capital_split.get("mode") or "unknown")
+        ),
+        "gate_b_market_data_quality": mdq,
+        "tuning_resolution": tuning,
         "policy": policy,
-        "honesty": "Gate B gainers ranking uses spread + bid/ask momentum proxy only — not forward returns.",
+        "policy_summary": policy_summary,
+        "gate_b_calibration_level": tuning.get("calibration_level"),
+        "gate_b_ready_for_supervised_use": supervised_ready,
+        "gate_b_supervised_operator_ready": supervised_ready,
+        "gate_b_supervised_operator_blockers": sup_blockers,
+        "gate_b_data_quality_summary": mdq,
+        "gate_b_policy_summary": policy_summary,
+        "gate_b_operator_honesty_note": (
+            "Gate B gainers snapshot ranks by measured spread and a bid/ask width proxy when quotes are valid — "
+            "not forward returns. This artifact is not permission to trade autonomously."
+        ),
+        "honesty": "Gate B gainers ranking uses measured spread + bid/ask momentum proxy only — not forward returns.",
     }
     ad = LocalStorageAdapter(runtime_root=root)
     ad.write_json(_SNAPSHOT, snap)
