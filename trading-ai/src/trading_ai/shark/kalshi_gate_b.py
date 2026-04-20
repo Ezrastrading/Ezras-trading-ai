@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from trading_ai.governance.storage_architecture import shark_state_path
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ Rules: approve=true only if confidence=high; if doubt → approve=false."""
 
             client = anthropic.Anthropic()
             resp = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=DEFAULT_ANTHROPIC_MESSAGES_MODEL,
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}],
             )

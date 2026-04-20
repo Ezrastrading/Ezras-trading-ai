@@ -1,5 +1,31 @@
 # Operator environment setup (no secrets in this file)
 
+## 0. Python / OpenSSL / venv (read this first)
+
+- Supported Python: **3.11+** (repo standard **3.11.8**, see `.python-version` and `pyproject.toml`).
+- **OpenSSL-backed** interpreter required for HTTPS (not macOS **LibreSSL**). See `docs/SSL_RUNTIME.md`.
+- From a clean checkout on macOS with Homebrew + pyenv:
+
+  ```bash
+  cd trading-ai
+  bash scripts/bootstrap_runtime.sh
+  source venv/bin/activate
+  ```
+
+- Smaller step (if Python 3.11.8 is already correct):
+
+  ```bash
+  bash scripts/create_venv.sh
+  source venv/bin/activate
+  ```
+
+- Verify SSL and env:
+
+  ```bash
+  PYTHONPATH=src python -m trading_ai.deployment check-env
+  PYTHONPATH=src python -m trading_ai validate-env
+  ```
+
 ## 1. Runtime root
 
 ```bash
@@ -60,7 +86,15 @@ export GOVERNANCE_JOINT_STALE_HOURS=48
 
 After env is set, run `scripts/live_coinbase_first_twenty.py --preflight` with `--runtime-root` and `--simulated-judge`. Do not use `/tmp` for production roots.
 
-## 6. What not to do
+## 6. Gate B selection snapshot — reading `selected_symbols = []`
+
+Artifact: `data/control/gate_b_selection_snapshot.json` (from deployment / selection runner).
+
+- **`measured_spread_bps` is `null`** when the quote was missing, stale, or could not be parsed — this is **not** a claim that the market had a 9999 bps spread.
+- Use **`selection_summary.counts_by_rejection_category`** and **`selection_summary.no_selection_reason`** to see whether failures were feed errors, stale quotes, spread policy, or structural no-candidate state.
+- Version **`gate_b_selection_snapshot_v2`** adds explicit fields: `spread_measurement_status`, `spread_source`, `spread_unavailable_reason`, `price_freshness_status`, `candidate_excluded_due_to_missing_market_data`, `selection_rejection_category`.
+
+## 7. What not to do
 
 - Do not `source .env` in bash if the file contains raw multiline PEM.
 - Do not commit real `.env` files.

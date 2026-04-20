@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from trading_ai.governance.storage_architecture import shark_state_path
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
 from trading_ai.shark.dotenv_load import load_shark_dotenv
 
 load_shark_dotenv()
@@ -615,7 +616,7 @@ def run_ceo_session(session_type: str) -> Dict[str, Any]:
         history,
     )
 
-    model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    model = (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MESSAGES_MODEL).strip()
     client = _get_anthropic_client()
     response = client.messages.create(
         model=model,

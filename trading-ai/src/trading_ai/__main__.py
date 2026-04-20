@@ -438,6 +438,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from trading_ai.runtime_checks.cli_ssl_policy import enforce_ssl_for_primary_cli_command
+
+    enforce_ssl_for_primary_cli_command(getattr(args, "cmd", None))
+
     if args.cmd == "telegram":
         from trading_ai.automation.telegram_cli import main_telegram
 

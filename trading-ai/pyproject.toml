@@ -7,7 +7,7 @@ name = "trading-ai"
 version = "0.1.0"
 description = "AI trading partner for prediction markets (Phase 1 foundation)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
   "cryptography>=42",
   "openpyxl>=3.1.0",
@@ -34,4 +34,4 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"

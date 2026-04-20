@@ -11,6 +11,8 @@ import os
 import time
 from typing import Any, Dict, List, Tuple
 
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +77,7 @@ OUTPUT JSON only, no explanation:
 ]}}"""
 
         response = client.messages.create(
-            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            model=os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MESSAGES_MODEL),
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -243,7 +245,7 @@ def confirm_kalshi_trade_dual_llm(
 
         c = anthropic.Anthropic()
         resp = c.messages.create(
-            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            model=os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MESSAGES_MODEL),
             max_tokens=150,
             messages=[{"role": "user", "content": prompt}],
         )

@@ -60,9 +60,13 @@ Look for `# ssl_guard_would_pass = True` and an `OpenSSL` line (not `LibreSSL`).
 
 ## Regression protection
 
-`trading_ai.runtime_checks.ssl_guard.enforce_ssl()` runs at startup of `python -m trading_ai.deployment`. It **raises** if:
+`trading_ai.runtime_checks.ssl_guard.enforce_ssl()` runs at startup of `python -m trading_ai.deployment`. The same guard runs for **network-capable** subcommands of `python -m trading_ai` (see `trading_ai.runtime_checks.cli_ssl_policy`). It **raises** if:
 
 - `ssl.OPENSSL_VERSION` indicates **LibreSSL**, or  
 - OpenSSL is present but **older than 1.1.1** (parsed from the version string).
 
 This fails fast before network-heavy deployment work runs.
+
+**Exempt (no guard):** a small set of local-only commands such as `validate-env` and `audit-env`, so you can inspect env vars before fixing the interpreter.
+
+**Not exempt:** anything that can perform outbound HTTPS (pipeline `run`, Kalshi/Coinbase/API bridges, phase CLIs that may call remote services, etc.).

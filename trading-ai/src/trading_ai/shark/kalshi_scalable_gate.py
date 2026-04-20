@@ -16,6 +16,8 @@ import time
 import urllib.request
 from typing import Any, Dict, List, Tuple
 
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
+
 logger = logging.getLogger(__name__)
 
 MIN_NO_PROBABILITY = float(os.environ.get("KALSHI_SG_MIN_PROB", "0.90"))
@@ -257,7 +259,7 @@ If ANY doubt → approve_no_bet = false."""
 
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=DEFAULT_ANTHROPIC_MESSAGES_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )

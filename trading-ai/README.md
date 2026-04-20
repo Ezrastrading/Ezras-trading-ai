@@ -10,18 +10,17 @@ This system is **fully independent** from Nexplora. It does not read, write, imp
 
 ## Setup
 
-1. **Python 3.11** — use the version in `.python-version` (e.g. via **pyenv**). On macOS, avoid the system Python for this repo: it is often linked to **LibreSSL**, which breaks **urllib3 v2**. Build Python against **Homebrew OpenSSL 3** and verify `ssl.OPENSSL_VERSION` shows **OpenSSL**, not LibreSSL. See **[docs/SSL_RUNTIME.md](docs/SSL_RUNTIME.md)**.
+1. **Python 3.11.8** — `requires-python >=3.11` in `pyproject.toml`; the repo pins **3.11.8** in `.python-version`. On macOS, avoid the system Python: it is often linked to **LibreSSL**, which breaks **urllib3 v2**. Build Python against **Homebrew OpenSSL 3** and verify `ssl.OPENSSL_VERSION` shows **OpenSSL**, not LibreSSL. See **[docs/SSL_RUNTIME.md](docs/SSL_RUNTIME.md)**.
 
-2. **Create a virtual environment** (recommended):
+2. **Bootstrap (recommended on macOS)** — one path from blank machine → correct interpreter → venv:
 
    ```bash
    cd trading-ai
-   eval "$(pyenv init -)"   # if using pyenv
-   python -m venv venv
+   bash scripts/bootstrap_runtime.sh
    source venv/bin/activate
-   pip install -U pip setuptools wheel
-   pip install -e ".[dev]"
    ```
+
+   Or manually: `bash scripts/create_venv.sh` after installing Python **3.11.8** with OpenSSL-backed `ssl`.
 
 3. **Configure environment**:
 

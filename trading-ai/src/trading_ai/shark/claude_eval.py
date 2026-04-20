@@ -13,6 +13,8 @@ from trading_ai.shark.dotenv_load import load_shark_dotenv
 if TYPE_CHECKING:
     from trading_ai.shark.models import ExecutionIntent, ScoredOpportunity
 
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
+
 load_shark_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def claude_evaluate_trade(
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         return None
-    model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    model = (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MESSAGES_MODEL).strip()
     client = anthropic.Anthropic(api_key=api_key)
     btc_line = f"BTC price: ${btc_price:.2f}\n" if btc_price is not None else ""
     res_line = (
@@ -148,7 +150,7 @@ def claude_analyze_losses(postmortem: Dict[str, Any]) -> Dict[str, Any]:
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         return _default_loss_analysis()
-    model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    model = (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MESSAGES_MODEL).strip()
     client = anthropic.Anthropic(api_key=api_key)
     raw_losses = postmortem.get("losses") or []
     raw_json = json.dumps(raw_losses, indent=2, default=str)[:2000]
@@ -226,7 +228,7 @@ def claude_analyze_journal_losses(postmortem: Dict[str, Any]) -> Dict[str, Any]:
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         return _default_loss_analysis()
-    model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    model = (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MESSAGES_MODEL).strip()
     client = anthropic.Anthropic(api_key=api_key)
     raw_losses = postmortem.get("losses") or []
     raw_json = json.dumps(raw_losses, indent=2, default=str)[:3500]

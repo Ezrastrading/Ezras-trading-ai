@@ -53,7 +53,8 @@ def enforce_ssl() -> None:
     """
     Production guard: urllib3 v2 expects OpenSSL 1.1.1+; LibreSSL and legacy OpenSSL are rejected.
 
-    Call once at process entry (e.g. ``python -m trading_ai.deployment``) after selecting a Python
+    Call once at process entry (e.g. ``python -m trading_ai.deployment`` or network-capable
+    ``python -m trading_ai`` subcommands via ``cli_ssl_policy``) after selecting a Python
     built against Homebrew OpenSSL (see docs/SSL_RUNTIME.md).
     """
     ver = ssl.OPENSSL_VERSION

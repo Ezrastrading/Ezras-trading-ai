@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from trading_ai.llm.anthropic_defaults import DEFAULT_STRATEGY_RESEARCH_HAIKU_MODEL
 from trading_ai.market_intelligence.market_intelligence_engine import active_markets_snapshot_path, get_active_markets
 from trading_ai.runtime_paths import ezras_runtime_root
 from trading_ai.strategy_research.research_execution_guard import assert_strategy_research_read_allowed
@@ -132,7 +133,7 @@ def _claude_research(prompt_block: str, *, stub: bool) -> str:
         return "[stub] ANTHROPIC_API_KEY unset — offline hypothesis placeholder. Confidence: LOW."
     import anthropic
 
-    model = (os.environ.get("STRATEGY_RESEARCH_CLAUDE_MODEL") or "claude-3-5-haiku-20241022").strip()
+    model = (os.environ.get("STRATEGY_RESEARCH_CLAUDE_MODEL") or DEFAULT_STRATEGY_RESEARCH_HAIKU_MODEL).strip()
     client = anthropic.Anthropic(api_key=key)
     kwargs: Dict[str, Any] = {
         "model": model,

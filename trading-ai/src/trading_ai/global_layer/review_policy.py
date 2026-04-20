@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
+
 
 @dataclass
 class ReviewPolicy:
@@ -28,7 +30,9 @@ class ReviewPolicy:
     allow_safe_action_router: bool = True
     require_joint_review_for_action: bool = False
 
-    claude_model: str = field(default_factory=lambda: os.environ.get("AI_REVIEW_CLAUDE_MODEL", "claude-sonnet-4-20250514"))
+    claude_model: str = field(
+        default_factory=lambda: os.environ.get("AI_REVIEW_CLAUDE_MODEL", DEFAULT_ANTHROPIC_MESSAGES_MODEL)
+    )
     gpt_model: str = field(default_factory=lambda: os.environ.get("AI_REVIEW_GPT_MODEL", "gpt-4o-mini"))
 
     max_packet_chars: int = 24_000
