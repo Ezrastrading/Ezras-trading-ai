@@ -1,0 +1,1 @@
+../trading-ai/docs/MICRO_TRADE_READINESS_CHECKLIST.md

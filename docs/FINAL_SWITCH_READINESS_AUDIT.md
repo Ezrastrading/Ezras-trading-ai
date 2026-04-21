@@ -1,0 +1,1 @@
+../trading-ai/docs/FINAL_SWITCH_READINESS_AUDIT.md
