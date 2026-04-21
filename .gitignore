@@ -3,6 +3,13 @@
 venv/
 .DS_Store
 
+# Private repo (do not commit to public)
+/trading-ai/
+
+# Local Cursor/agent settings (never commit)
+/.claude/settings.local.json
+/.claude/settings*.local.json
+
 # Legacy flat layout / local runtime at repo root only (not trading-ai/src)
 /src/
 /tests/
@@ -15,3 +22,11 @@ connectivity.txt
 /logs/
 repo_readiness.txt
 smoke_results.txt
+
+# Local sibling junk accidentally inside repo root
+AVENUE_A_FULL_AUDIT_REPORT.md
+Ezras-Trading-AI-trading-ai/
+ezras-vault/
+ezras trading vault.sparsebundle/
+polymarket-mcp-server/
+tracking/
