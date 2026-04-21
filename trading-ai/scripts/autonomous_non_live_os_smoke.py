@@ -52,6 +52,18 @@ def main() -> None:
     _pp(res)
     print()
 
+    print("2b) OPS SUPERVISOR PROOF (2 cycles, forced all loops)")
+    from trading_ai.runtime.operating_system import run_role_supervisor_once
+
+    _pp(run_role_supervisor_once(role="ops", runtime_root=root, force_all_due=True))
+    _pp(run_role_supervisor_once(role="ops", runtime_root=root, force_all_due=True))
+    print()
+
+    print("2c) RESEARCH SUPERVISOR PROOF (2 cycles, forced all loops)")
+    _pp(run_role_supervisor_once(role="research", runtime_root=root, skip_models=True, force_all_due=True))
+    _pp(run_role_supervisor_once(role="research", runtime_root=root, skip_models=True, force_all_due=True))
+    print()
+
     print("3) ROLE LOCK PROOF (same role collision prevented)")
     ok1, why1, _ = try_acquire_role_lock(role="ops", holder_id="smoke_holder_1", runtime_root=root, ttl_seconds=30)
     ok2, why2, _ = try_acquire_role_lock(role="ops", holder_id="smoke_holder_2", runtime_root=root, ttl_seconds=30)

@@ -27,6 +27,15 @@ def test_ops_and_research_ticks_run_and_live_disabled(monkeypatch: pytest.Monkey
     blob = json.loads(p.read_text(encoding="utf-8"))
     assert blob.get("truth_version") == "ops_outcome_ingestion_snapshot_v1"
 
+    # Supervisor writes loop status artifacts.
+    from trading_ai.runtime.operating_system import run_role_supervisor_once
+
+    s1 = run_role_supervisor_once(role="ops", runtime_root=tmp_path, force_all_due=True)
+    s2 = run_role_supervisor_once(role="ops", runtime_root=tmp_path, force_all_due=True)
+    assert s1.get("ok") is True and s2.get("ok") is True
+    st = tmp_path / "data" / "control" / "operating_system" / "loop_status_ops.json"
+    assert st.is_file()
+
 
 def test_role_lock_prevents_two_ops_daemons(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))

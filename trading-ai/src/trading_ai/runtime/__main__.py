@@ -10,6 +10,7 @@ from typing import Any, Dict
 from trading_ai.runtime.operating_system import (
     enforce_non_live_env_defaults,
     release_role_lock,
+    run_role_supervisor_once,
     tick_ops_once,
     tick_research_once,
     try_acquire_role_lock,
@@ -42,6 +43,8 @@ def main() -> int:
     d.add_argument("--interval-sec", type=float, default=60.0, help="Sleep between ticks (default 60)")
     d.add_argument("--holder-id", default=None, help="Lock holder id (default pid-based)")
     d.add_argument("--skip-models", action="store_true", help="Research daemon: force stubbed reviews (default true)")
+    d.add_argument("--cycles", type=int, default=0, help="Stop after N cycles (0=forever)")
+    d.add_argument("--force-all-due", action="store_true", help="Supervisor: run all loops each cycle (for tests/smoke)")
 
     args = p.parse_args()
     enforce_non_live_env_defaults()
@@ -61,13 +64,19 @@ def main() -> int:
         _print_json({"ok": False, "blocked": True, "reason": why})
         return 2
     try:
+        n = 0
         while True:
-            if args.role == "ops":
-                out = tick_ops_once(runtime_root=rt)
-            else:
-                out = tick_research_once(runtime_root=rt, skip_models=True if args.skip_models else True)
+            out = run_role_supervisor_once(
+                role=args.role,
+                runtime_root=rt,
+                skip_models=True if args.skip_models else True,
+                force_all_due=bool(args.force_all_due),
+            )
             _print_json(out)
-            time.sleep(max(1.0, float(args.interval_sec)))
+            n += 1
+            if int(args.cycles or 0) > 0 and n >= int(args.cycles):
+                return 0
+            time.sleep(max(0.1, float(args.interval_sec)))
     except KeyboardInterrupt:
         return 0
     finally:
