@@ -1,0 +1,21 @@
+[Unit]
+Description=Ezra Trading AI — research role supervised autonomy (reviews, CEO, PnL, comparisons; no live orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ezras
+Group=ezras
+WorkingDirectory=/opt/trading-ai
+EnvironmentFile=-/etc/ezras/trading-ai.env
+Environment=EZRAS_RUNTIME_ROOT=/var/lib/ezras-runtime
+Environment=NTE_EXECUTION_MODE=paper
+Environment=NTE_LIVE_TRADING_ENABLED=false
+Environment=COINBASE_EXECUTION_ENABLED=false
+ExecStart=/opt/trading-ai/.venv/bin/python -m trading_ai.runtime daemon --role research --sleep-sec 3
+Restart=always
+RestartSec=8
+
+[Install]
+WantedBy=multi-user.target
