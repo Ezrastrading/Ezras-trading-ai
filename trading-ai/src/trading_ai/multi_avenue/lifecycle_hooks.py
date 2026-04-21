@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -205,6 +206,28 @@ def on_scanner_cycle(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
     _log_hook("on_scanner_cycle")
     out = write_multi_avenue_control_bundle(runtime_root=root)
     return {"status": "ok", "bundle_keys": list(out.keys())}
+
+
+def on_scanner_cycle_export(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Scanner cycle + durable ``scanner_autonomy_snapshot.json`` for autonomy proofs.
+
+    No live venue calls; refreshes control scaffolds only.
+    """
+    root = _root(runtime_root)
+    inner = on_scanner_cycle(runtime_root=root)
+    seq = int(datetime.now(timezone.utc).timestamp() * 1000) % (10**9)
+    snap = {
+        "truth_version": "scanner_autonomy_snapshot_v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scan_seq": seq,
+        "hook_status": inner.get("status"),
+        "honesty": "Control scaffold refresh only; no live venue scanner calls.",
+    }
+    p = root / "data" / "control" / "scanner_autonomy_snapshot.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(snap, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return {**inner, "scan_seq": seq}
 
 
 def on_avenue_registered(avenue_id: str, *, runtime_root: Optional[Path] = None) -> Dict[str, Any]:

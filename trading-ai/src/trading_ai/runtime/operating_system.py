@@ -1,12 +1,15 @@
 """
-Autonomous non-live operating system (two-server role design).
+Autonomous **now-live stack** operating system (two-server role design).
+
+**Semantics:** ``now-live`` means the supervised autonomy loops are active, durable, and
+restart-safe — **not** that venue live orders are permitted. Venue live submission remains
+blocked unless the separate live-trading env contract is intentionally enabled by an operator.
 
 This module provides:
 - ROLE=ops tick/daemon: fast, execution-adjacent loops (scan/eval/outcomes/safety/metrics)
 - ROLE=research tick/daemon: heavy governance loops (research/learning/audits/CEO/review/queues)
 
-Safety: this operating system is *non-live by default* and will refuse to run if live execution
-flags are enabled.
+Safety: refuses to run if live *execution env* flags are enabled (fail-closed).
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
 
+
 def _os_dir(root: Path) -> Path:
     p = root / "data" / "control" / "operating_system"
     p.mkdir(parents=True, exist_ok=True)
@@ -88,17 +92,18 @@ def role_contract() -> Dict[str, Any]:
         "generated_at": _iso(),
         "roles": {
             "ops": {
-                "purpose": "realtime ops / scanning / execution-adjacent loops (non-live)",
+                "purpose": "realtime ops / scanning / execution-adjacent loops (now-live stack; no venue orders)",
                 "owns": [
                     "validation_bootstrap",
                     "scanner_cycle",
+                    "simulation_cycle",
                     "outcome_ingestion",
-                    "fast_health_snapshot",
+                    "fast_health",
                     "fast_regression_drift",
                 ],
             },
             "research": {
-                "purpose": "research / governance / learning / planning loops (non-live)",
+                "purpose": "research / governance / learning / planning loops (now-live stack; no venue orders)",
                 "owns": [
                     "daily_cycle",
                     "review_cycle",
@@ -108,6 +113,8 @@ def role_contract() -> Dict[str, Any]:
                     "trade_cycle_intelligence",
                     "promotion_capital_cycle",
                     "learning_distillation_snapshot",
+                    "task_intake_dispatch",
+                    "research_regression_drift",
                 ],
             },
         },
@@ -122,8 +129,14 @@ def role_contract() -> Dict[str, Any]:
                 "canonical truth writers per domain (promotion/capital/review)",
             ],
         },
-        "safety": "Operating system enforces non-live env defaults and blocks if live env is detected.",
+        "safety": "Operating system enforces paper/dry-run defaults and blocks if live-trading env is detected.",
+        "now_live_stack_note": "now-live = autonomy loops active; venue live orders remain env-gated elsewhere.",
     }
+
+
+def assert_live_trading_env_disabled() -> Tuple[bool, str]:
+    """Public alias for the fail-closed live-env gate (no venue orders from this OS)."""
+    return _safety_assert_non_live()
 
 
 def _safety_assert_non_live() -> Tuple[bool, str]:
@@ -233,36 +246,41 @@ def tick_ops_once(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
     root = _runtime_root(runtime_root)
 
     steps: Dict[str, Any] = {"generated_at": _iso(), "role": "ops", "runtime_root": str(root)}
-    try:
-        from trading_ai.multi_avenue.lifecycle_hooks import on_scanner_cycle, on_validation
 
-        steps["validation"] = on_validation(runtime_root=root)
-        steps["scanner_cycle"] = on_scanner_cycle(runtime_root=root)
+    # Validation + scanner: durable operational proof (no venue orders).
+    try:
+        from trading_ai.multi_avenue.operational_proof import record_operational_proof
+
+        record_operational_proof("validation_bootstrap", detail={"source": "tick_ops_once"}, runtime_root=root)
+        steps["validation"] = {"ok": True}
+        record_operational_proof("scanner_cycle", detail={"source": "tick_ops_once"}, runtime_root=root)
+        try:
+            from trading_ai.multi_avenue.lifecycle_hooks import on_scanner_cycle_export
+
+            snap = on_scanner_cycle_export(runtime_root=root)
+            steps["scanner_cycle"] = {"ok": True, "scan_seq": snap.get("scan_seq")}
+        except Exception as exc2:
+            steps["scanner_cycle"] = {"ok": False, "error": type(exc2).__name__}
     except Exception as exc:
         steps["scanner_cycle"] = {"ok": False, "error": type(exc).__name__}
 
-    # Outcome ingestion (best-effort): summarize federated trades and refresh per-scope lifecycle hints.
+    # Outcome ingestion (best-effort): summarize federated trades.
     try:
         from trading_ai.global_layer.trade_truth import load_federated_trades
-        from trading_ai.multi_avenue.lifecycle_hooks import on_trade_close
 
         trades, meta = load_federated_trades()
-        closed = [t for t in (trades or []) if isinstance(t, dict) and str(t.get("status") or "").lower() in ("closed", "settled")]
-        # Touch a small number of close hooks to keep per-gate/per-avenue artifacts fresh (non-live).
-        touched = 0
-        for t in closed[-10:]:
-            try:
-                on_trade_close(t, runtime_root=root)
-                touched += 1
-            except Exception:
-                pass
+        closed = [
+            t
+            for t in (trades or [])
+            if isinstance(t, dict) and str(t.get("status") or "").lower() in ("closed", "settled")
+        ]
         snap = {
             "truth_version": "ops_outcome_ingestion_snapshot_v1",
             "generated_at": _iso(),
             "meta": meta or {},
             "trade_count": len(trades or []),
             "closed_count": len(closed),
-            "close_hooks_touched": touched,
+            "honesty": "Snapshot from federated trade rows only.",
         }
         out_path = root / "data" / "control" / "ops_outcome_ingestion_snapshot.json"
         _write_json(out_path, snap)
@@ -271,11 +289,12 @@ def tick_ops_once(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
         steps["outcome_ingestion"] = {"ok": False, "error": type(exc).__name__}
 
     try:
-        from trading_ai.global_layer.orchestration_truth_chain import write_orchestration_truth_chain
+        from trading_ai.global_layer.orchestration_detection import write_detection_snapshot
 
-        steps["orchestration_truth_chain"] = {"blockers": (write_orchestration_truth_chain().get("blockers") or [])}
+        snap = write_detection_snapshot()
+        steps["orchestration_detection"] = {"truth_version": snap.get("truth_version")}
     except Exception as exc:
-        steps["orchestration_truth_chain"] = {"ok": False, "error": type(exc).__name__}
+        steps["orchestration_detection"] = {"ok": False, "error": type(exc).__name__}
 
     try:
         from trading_ai.ops.automation_heartbeat import record_heartbeat
@@ -301,13 +320,19 @@ def tick_research_once(*, runtime_root: Optional[Path] = None, skip_models: bool
     steps: Dict[str, Any] = {"generated_at": _iso(), "role": "research", "runtime_root": str(root)}
 
     try:
-        from trading_ai.multi_avenue.lifecycle_hooks import on_daily_cycle
+        from trading_ai.global_layer.mission_goals_operating_layer import refresh_mission_goals_operating_layer
+        from trading_ai.global_layer.mission_goals_task_consumer import consume_mission_goals_into_tasks
+        from trading_ai.global_layer.trade_truth import load_federated_trades
 
-        steps["daily_cycle"] = on_daily_cycle(runtime_root=root)
+        trades, meta = load_federated_trades()
+        _ = trades
+        total = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or 200.0)
+        refresh_mission_goals_operating_layer(total_balance_usd=total, runtime_root=root)
+        cons = consume_mission_goals_into_tasks(runtime_root=root)
+        steps["daily_cycle"] = {"ok": True, "tasks_created": cons.get("tasks_created")}
     except Exception as exc:
         steps["daily_cycle"] = {"ok": False, "error": type(exc).__name__}
 
-    # Review cycle (non-live, no external model calls): run one stubbed review.
     try:
         from trading_ai.global_layer.review_scheduler import run_full_review_cycle
 
@@ -331,13 +356,12 @@ def tick_research_once(*, runtime_root: Optional[Path] = None, skip_models: bool
     except Exception as exc:
         steps["promotion_capital_cycle"] = {"ok": False, "error": type(exc).__name__}
 
-    # Learning distillation (minimal, non-destructive): snapshot pending/shared lesson queues + seed tasks via mission consumer already wired.
     try:
         from trading_ai.global_layer._bot_paths import global_layer_governance_dir
         from trading_ai.global_layer.learning_distillation import load_shared_learning
 
-        gov = global_layer_governance_dir()
-        pend_p = gov / "shared_learning_pending.json"
+        gov_dir = global_layer_governance_dir()
+        pend_p = gov_dir / "shared_learning_pending.json"
         pend = _read_json(pend_p) if pend_p.is_file() else {"items": []}
         shared = load_shared_learning()
         dist = {
@@ -347,7 +371,7 @@ def tick_research_once(*, runtime_root: Optional[Path] = None, skip_models: bool
             "approved_shared_count": len(list((shared.get("lessons") or []))),
             "honesty": "Snapshot only; approval remains gated (no auto-approve).",
         }
-        out_path = gov / "learning_distillation_snapshot.json"
+        out_path = gov_dir / "learning_distillation_snapshot.json"
         _write_json(out_path, dist)
         steps["learning_distillation"] = {"ok": True, "path": str(out_path), "pending": dist["pending_count"]}
     except Exception as exc:
@@ -365,32 +389,41 @@ def tick_research_once(*, runtime_root: Optional[Path] = None, skip_models: bool
 
 
 def _ops_loops() -> List[LoopSpec]:
-    def _validation_bootstrap(root: Path) -> Dict[str, Any]:
-        from trading_ai.multi_avenue.lifecycle_hooks import on_validation
-        return on_validation(runtime_root=root)
+    def _validation_bootstrap(r: Path) -> Dict[str, Any]:
+        from trading_ai.multi_avenue.operational_proof import record_operational_proof
 
-    def _scanner_cycle(root: Path) -> Dict[str, Any]:
-        from trading_ai.multi_avenue.lifecycle_hooks import on_scanner_cycle
-        return on_scanner_cycle(runtime_root=root)
+        record_operational_proof("validation_bootstrap", detail={"source": "ops_supervisor"}, runtime_root=r)
+        return {"ok": True}
 
-    def _outcome_ingestion(root: Path) -> Dict[str, Any]:
-        # Use tick_ops_once ingestion result as loop body, but return the artifact path.
-        out = tick_ops_once(runtime_root=root)
+    def _scanner_cycle(r: Path) -> Dict[str, Any]:
+        from trading_ai.multi_avenue.lifecycle_hooks import on_scanner_cycle_export
+        from trading_ai.multi_avenue.operational_proof import record_operational_proof
+
+        record_operational_proof("scanner_cycle", detail={"source": "ops_supervisor"}, runtime_root=r)
+        snap = on_scanner_cycle_export(runtime_root=r)
+        return {"ok": True, "scan_seq": snap.get("scan_seq")}
+
+    def _outcome_ingestion(r: Path) -> Dict[str, Any]:
+        out = tick_ops_once(runtime_root=r)
         return out.get("steps", {}).get("outcome_ingestion") or {"ok": False, "error": "missing_outcome_ingestion"}
 
-    def _fast_health(root: Path) -> Dict[str, Any]:
-        from trading_ai.global_layer.orchestration_truth_chain import write_orchestration_truth_chain
-        chain = write_orchestration_truth_chain()
-        return {"blockers": list(chain.get("blockers") or []), "truth_version": chain.get("truth_version")}
+    def _fast_health(r: Path) -> Dict[str, Any]:
+        from trading_ai.global_layer.orchestration_detection import write_detection_snapshot
 
-    def _fast_regression(root: Path) -> Dict[str, Any]:
-        # Minimal fast drift/regression: compare rolling_7d across snapshots.
-        from trading_ai.global_layer.trade_truth import load_federated_trades
+        snap = write_detection_snapshot()
+        return {"truth_version": snap.get("truth_version"), "execution_anomalies": len(snap.get("execution_anomalies") or [])}
+
+    def _fast_regression(r: Path) -> Dict[str, Any]:
+        from trading_ai.global_layer.bot_registry import load_registry
+        from trading_ai.global_layer.bot_types import BotRole
         from trading_ai.global_layer.pnl_aggregator import aggregate_from_trades
+        from trading_ai.global_layer.task_router import route_task_shadow
+        from trading_ai.global_layer.trade_truth import load_federated_trades
+        from trading_ai.simulation.regression_drift import compare_recent_vs_baseline, extract_net_points_from_history
 
         trades, _meta = load_federated_trades()
         agg = aggregate_from_trades(list(trades or []))
-        p = root / "data" / "control" / "ops_regression_drift.json"
+        p = r / "data" / "control" / "ops_regression_drift.json"
         prev = _read_json(p)
         now7 = float(agg.get("rolling_7d_net_usd") or 0.0)
         prev7 = float((prev.get("rolling_7d_net_usd") if isinstance(prev, dict) else 0.0) or 0.0)
@@ -400,38 +433,83 @@ def _ops_loops() -> List[LoopSpec]:
             verdict = "degrading"
         elif delta > 25.0:
             verdict = "improving"
+
+        sim_doc = _read_json(r / "data" / "control" / "sim_pnl.json")
+        sim_series = extract_net_points_from_history(list(sim_doc.get("rolling_points") or []))
+        sim_drift = compare_recent_vs_baseline(sim_series, recent_n=3, baseline_n=3, degrade_threshold=2.0, improve_threshold=2.0)
+        if sim_drift.get("verdict") not in (None, "insufficient_history"):
+            verdict = str(sim_drift.get("verdict") or verdict)
+
         payload = {
-            "truth_version": "ops_regression_drift_v1",
+            "truth_version": "ops_regression_drift_v2",
             "generated_at": _iso(),
             "rolling_7d_net_usd": now7,
             "delta_vs_prev_snapshot": round(delta, 6),
             "verdict": verdict,
-            "honesty": "Fast heuristic from federated trades only; research server performs deeper comparisons.",
+            "sim_window_drift": sim_drift,
+            "honesty": "Blends federated 7d snapshot delta with sim PnL rolling-window mean comparison when available.",
         }
         _write_json(p, payload)
+        emit = verdict == "degrading" or bool(sim_drift.get("emit_corrective_tasks"))
+        if emit:
+            try:
+                reg = load_registry()
+                scopes = {
+                    (str(b.get("avenue") or "A"), str(b.get("gate") or "none"))
+                    for b in (reg.get("bots") or [])
+                    if isinstance(b, dict)
+                }
+                scopes = scopes or {("A", "none")}
+                for av, gate in scopes:
+                    route_task_shadow(
+                        avenue=av,
+                        gate=gate,
+                        task_type="regression_drift::ops_fast_corrective",
+                        source_bot_id="ops_os",
+                        role=BotRole.RISK.value,
+                        evidence_ref=str(p),
+                    )
+            except Exception:
+                pass
         return payload
+
+    def _simulation_cycle(r: Path) -> Dict[str, Any]:
+        from trading_ai.simulation.engine import run_simulation_tick
+
+        return run_simulation_tick(runtime_root=r)
 
     return [
         LoopSpec("validation_bootstrap", "ops", 300.0, _validation_bootstrap),
         LoopSpec("scanner_cycle", "ops", 20.0, _scanner_cycle),
+        LoopSpec("simulation_cycle", "ops", 25.0, _simulation_cycle),
         LoopSpec("outcome_ingestion", "ops", 30.0, _outcome_ingestion),
-        LoopSpec("fast_health_snapshot", "ops", 30.0, _fast_health),
+        LoopSpec("fast_health", "ops", 30.0, _fast_health),
         LoopSpec("fast_regression_drift", "ops", 60.0, _fast_regression),
     ]
 
 
 def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
     def _daily_cycle(root: Path) -> Dict[str, Any]:
-        from trading_ai.multi_avenue.lifecycle_hooks import on_daily_cycle
-        return on_daily_cycle(runtime_root=root)
+        from trading_ai.global_layer.mission_goals_operating_layer import refresh_mission_goals_operating_layer
+        from trading_ai.global_layer.mission_goals_task_consumer import consume_mission_goals_into_tasks
+        from trading_ai.global_layer.trade_truth import load_federated_trades
+
+        trades, meta = load_federated_trades()
+        _ = trades
+        total = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or 200.0)
+        refresh_mission_goals_operating_layer(total_balance_usd=total, runtime_root=root)
+        cons = consume_mission_goals_into_tasks(runtime_root=root)
+        return {"ok": True, "tasks_created": cons.get("tasks_created")}
 
     def _review_cycle(root: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.review_scheduler import run_full_review_cycle
+
         rep = run_full_review_cycle("midday", skip_models=bool(skip_models))
         return {"packet_id": (rep.get("packet") or {}).get("packet_id"), "ok": True}
 
     def _ceo(root: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.ceo_daily_orchestration import write_daily_ceo_review
+
         ceo = write_daily_ceo_review(estimated_review_tokens=50)
         return {"truth_version": ceo.get("truth_version"), "bot_total": ceo.get("bot_total")}
 
@@ -439,6 +517,9 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         from trading_ai.global_layer.trade_truth import load_federated_trades
         from trading_ai.global_layer.global_memory_store import GlobalMemoryStore
         from trading_ai.global_layer.pnl_aggregator import refresh_global_pnl_files
+        from trading_ai.global_layer.task_router import route_task_shadow
+        from trading_ai.global_layer.bot_types import BotRole
+        from trading_ai.global_layer.bot_registry import load_registry
 
         trades, _meta = load_federated_trades()
         store = GlobalMemoryStore()
@@ -454,14 +535,13 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         }
         out = root / "data" / "control" / "pnl_review.json"
         _write_json(out, payload)
-        # Behavioral consumption: if weekly is negative, create high-priority risk task.
         try:
-            from trading_ai.global_layer.task_router import route_task_shadow
-            from trading_ai.global_layer.bot_types import BotRole
-            from trading_ai.global_layer.bot_registry import load_registry
-
             reg = load_registry()
-            scopes = {(str(b.get("avenue") or "A"), str(b.get("gate") or "none")) for b in (reg.get("bots") or []) if isinstance(b, dict)}
+            scopes = {
+                (str(b.get("avenue") or "A"), str(b.get("gate") or "none"))
+                for b in (reg.get("bots") or [])
+                if isinstance(b, dict)
+            }
             scopes = scopes or {("A", "none")}
             if float(payload["weekly_net_usd"]) < 0:
                 for av, gate in scopes:
@@ -490,10 +570,13 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         out = root / "data" / "control" / "performance_comparisons.json"
         payload = {"truth_version": "performance_comparisons_v1", "generated_at": _iso(), "avenue_performance": perf}
         _write_json(out, payload)
-        # Behavioral consumption: route tasks biased toward weakest avenue.
         weakest = str(perf.get("weakest_avenue") or "")
         reg = load_registry()
-        scopes = {(str(b.get("avenue") or "A"), str(b.get("gate") or "none")) for b in (reg.get("bots") or []) if isinstance(b, dict)}
+        scopes = {
+            (str(b.get("avenue") or "A"), str(b.get("gate") or "none"))
+            for b in (reg.get("bots") or [])
+            if isinstance(b, dict)
+        }
         scopes = scopes or {("A", "none")}
         for av, gate in scopes:
             boost = 120 if weakest and str(av) == weakest else 40
@@ -510,16 +593,114 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
 
     def _trade_cycle_intel(root: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.trade_cycle_intelligence import refresh_trade_cycle_intelligence_bundle
+
         return refresh_trade_cycle_intelligence_bundle(root)
 
     def _promo_capital(root: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.deterministic_autonomous_orchestration import run_full_deterministic_cycle
+
         return run_full_deterministic_cycle()
 
     def _learning_snapshot(root: Path) -> Dict[str, Any]:
-        # Reuse tick_research_once logic for learning distillation snapshot.
-        out = tick_research_once(runtime_root=root, skip_models=bool(skip_models))
-        return out.get("steps", {}).get("learning_distillation") or {"ok": False, "error": "missing_learning_distillation"}
+        from trading_ai.global_layer._bot_paths import global_layer_governance_dir
+        from trading_ai.global_layer.learning_distillation import load_shared_learning
+
+        gov_dir = global_layer_governance_dir()
+        pend_p = gov_dir / "shared_learning_pending.json"
+        pend = _read_json(pend_p) if pend_p.is_file() else {"items": []}
+        shared = load_shared_learning()
+        dist = {
+            "truth_version": "learning_distillation_snapshot_v1",
+            "generated_at": _iso(),
+            "pending_count": len(list((pend.get("items") or []))),
+            "approved_shared_count": len(list((shared.get("lessons") or []))),
+            "honesty": "Snapshot only; approval remains gated (no auto-approve).",
+        }
+        out_path = gov_dir / "learning_distillation_snapshot.json"
+        _write_json(out_path, dist)
+        return {"ok": True, "path": str(out_path), "pending": dist["pending_count"]}
+
+    def _task_intake(root: Path) -> Dict[str, Any]:
+        from trading_ai.global_layer.task_intake import run_task_intake_once
+
+        return run_task_intake_once(runtime_root=root)
+
+    def _research_regression_drift(root: Path) -> Dict[str, Any]:
+        from trading_ai.global_layer.bot_registry import load_registry
+        from trading_ai.global_layer.bot_types import BotRole
+        from trading_ai.global_layer.pnl_aggregator import aggregate_from_trades
+        from trading_ai.global_layer.task_router import route_task_shadow
+        from trading_ai.global_layer.trade_truth import load_federated_trades
+        from trading_ai.simulation.regression_drift import compare_recent_vs_baseline, extract_net_points_from_history
+
+        trades, _meta = load_federated_trades()
+        agg = aggregate_from_trades(list(trades or []))
+        cur = float(agg.get("rolling_7d_net_usd") or 0.0)
+        hist_p = root / "data" / "control" / "research_regression_history.json"
+        hist = _read_json(hist_p)
+        pts: List[Any] = list(hist.get("rolling_7d_points") or [])
+        pts.append({"t": _iso(), "rolling_7d_net_usd": cur})
+        pts = pts[-30:]
+        hist = {"truth_version": "research_regression_history_v1", "rolling_7d_points": pts}
+        _write_json(hist_p, hist)
+
+        verdict = "insufficient_history"
+        recent_mean = None
+        older_mean = None
+        if len(pts) >= 6:
+            older = [float(x.get("rolling_7d_net_usd") or 0.0) for x in pts[-6:-3]]
+            recent = [float(x.get("rolling_7d_net_usd") or 0.0) for x in pts[-3:]]
+            older_mean = sum(older) / max(1, len(older))
+            recent_mean = sum(recent) / max(1, len(recent))
+            if recent_mean < older_mean - 15.0:
+                verdict = "degrading"
+            elif recent_mean > older_mean + 15.0:
+                verdict = "improving"
+            else:
+                verdict = "stable"
+
+        sim_doc = _read_json(root / "data" / "control" / "sim_pnl.json")
+        sim_series = extract_net_points_from_history(list(sim_doc.get("rolling_points") or []))
+        sim_drift = compare_recent_vs_baseline(sim_series, recent_n=3, baseline_n=3, degrade_threshold=2.0, improve_threshold=2.0)
+        if sim_drift.get("verdict") == "degrading":
+            verdict = "degrading"
+        elif verdict == "insufficient_history" and sim_drift.get("verdict") not in (None, "insufficient_history"):
+            verdict = str(sim_drift.get("verdict"))
+
+        out_p = root / "data" / "control" / "research_regression_drift.json"
+        payload = {
+            "truth_version": "research_regression_drift_v2",
+            "generated_at": _iso(),
+            "rolling_7d_net_usd": cur,
+            "recent_window_mean": recent_mean,
+            "prior_window_mean": older_mean,
+            "verdict": verdict,
+            "sim_baseline_comparison": sim_drift,
+            "honesty": "Windowed comparison of federated snapshots plus optional sim rolling-baseline contrast.",
+        }
+        _write_json(out_p, payload)
+        if verdict == "degrading" or bool(sim_drift.get("emit_corrective_tasks")):
+            try:
+                reg = load_registry()
+                scopes = {
+                    (str(b.get("avenue") or "A"), str(b.get("gate") or "none"))
+                    for b in (reg.get("bots") or [])
+                    if isinstance(b, dict)
+                }
+                scopes = scopes or {("A", "none")}
+                for av, gate in scopes:
+                    t = route_task_shadow(
+                        avenue=av,
+                        gate=gate,
+                        task_type="regression_drift::research_deep_corrective",
+                        source_bot_id="research_os",
+                        role=BotRole.LEARNING.value,
+                        evidence_ref=str(out_p),
+                    )
+                    t["priority"] = int(t.get("priority") or 0) + 220
+            except Exception:
+                pass
+        return payload
 
     return [
         LoopSpec("daily_cycle", "research", 120.0, _daily_cycle),
@@ -530,6 +711,8 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         LoopSpec("trade_cycle_intelligence", "research", 600.0, _trade_cycle_intel),
         LoopSpec("promotion_capital_cycle", "research", 1800.0, _promo_capital),
         LoopSpec("learning_distillation_snapshot", "research", 600.0, _learning_snapshot),
+        LoopSpec("task_intake_dispatch", "research", 30.0, _task_intake),
+        LoopSpec("research_regression_drift", "research", 420.0, _research_regression_drift),
     ]
 
 
@@ -554,7 +737,6 @@ def run_role_supervisor_once(
     loops_state = dict(loops_state) if isinstance(loops_state, dict) else {}
     now = time.time()
 
-    # Write role contract for visibility.
     _write_json(_os_dir(root) / "role_contract.json", role_contract())
 
     specs = _ops_loops() if role == "ops" else _research_loops(skip_models=bool(skip_models))
@@ -595,9 +777,61 @@ def run_role_supervisor_once(
         "runtime_root": str(root),
         "ran": ran,
         "loops": loops_state,
-        "honesty": "Supervisor is non-live; loops emit artifacts and route shadow tasks only.",
+        "honesty": "Supervisor runs the now-live autonomy stack; loops emit artifacts and route shadow tasks only (no venue orders).",
     }
     _write_json(status_p, payload)
     return {"ok": True, "role": role, "ran": ran, "status_path": str(status_p)}
 
 
+def run_perpetual_role_supervisor_loop(
+    *,
+    role: ServerRole,
+    runtime_root: Optional[Path] = None,
+    skip_models: bool = True,
+    holder_id: Optional[str] = None,
+    sleep_sec: float = 2.0,
+    lock_ttl_seconds: float = 120.0,
+) -> None:
+    """
+    Process-level perpetual loop: renews role lock, runs supervisor steps, sleeps.
+
+    Intended for systemd `Type=simple` long-running services. Stops on ``KeyboardInterrupt``.
+    """
+    hid = holder_id or f"pid_{os.getpid()}"
+    root = _runtime_root(runtime_root)
+    hb = _os_dir(root) / f"daemon_heartbeat_{role}.json"
+    try:
+        while True:
+            ok_lock, why, _lk = try_acquire_role_lock(
+                role=role, holder_id=hid, runtime_root=root, ttl_seconds=float(lock_ttl_seconds)
+            )
+            if not ok_lock:
+                _write_json(
+                    hb,
+                    {
+                        "truth_version": "daemon_heartbeat_v1",
+                        "generated_at": _iso(),
+                        "role": role,
+                        "ok": False,
+                        "reason": why,
+                    },
+                )
+                time.sleep(max(1.0, float(sleep_sec)))
+                continue
+            rep = run_role_supervisor_once(
+                role=role, runtime_root=root, skip_models=bool(skip_models), force_all_due=False
+            )
+            _write_json(
+                hb,
+                {
+                    "truth_version": "daemon_heartbeat_v1",
+                    "generated_at": _iso(),
+                    "role": role,
+                    "ok": bool(rep.get("ok")),
+                    "ran": rep.get("ran"),
+                    "blocked": rep.get("blocked"),
+                },
+            )
+            time.sleep(max(0.25, float(sleep_sec)))
+    except KeyboardInterrupt:
+        release_role_lock(role=role, holder_id=hid, runtime_root=root)

@@ -166,7 +166,13 @@ def consume_mission_goals_into_tasks(
                 created.append(row)
 
     # Deterministic ordering for callers that print proofs.
-    created_sorted = sorted(created, key=lambda r: int(r.get("priority") or 0), reverse=True)
+    created_sorted = sorted(
+        created,
+        key=lambda r: (
+            -int(r.get("priority") or 0),
+            str((r.get("mission_goals") or {}).get("active_goal_id") or ""),
+        ),
+    )
     return {
         "truth_version": "mission_goals_task_consumer_v1",
         "generated_at": _iso(),
