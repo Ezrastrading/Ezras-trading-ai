@@ -1,0 +1,1433 @@
+{
+  "bots": [
+    {
+      "authority_level": "governance_root",
+      "avenue_id": "system",
+      "bot_id": "ezras_governor",
+      "bot_name": "Ezra Governor",
+      "bot_role": null,
+      "bot_type": "ezra_governor",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T07:57:51.814940+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "global_mission",
+        "risk_constitution",
+        "promotion_policy"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": null,
+      "reporting_scope": [
+        "ceo_review",
+        "orchestration_truth_chain"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [
+        "no_automatic_live_permission",
+        "fail_closed_on_ambiguous_truth"
+      ],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T07:57:51.814940+00:00"
+    },
+    {
+      "authority_level": "avenue_intelligence",
+      "avenue_id": "Z",
+      "bot_id": "avenue_master_Z",
+      "bot_name": "Avenue Master Z",
+      "bot_role": null,
+      "bot_type": "avenue_master",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": true,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T07:57:51.815860+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "venue_mechanics",
+        "strategy_classes",
+        "gate_behavior"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "ezras_governor",
+      "reporting_scope": [
+        "avenue_master_reports.jsonl",
+        "ceo_daily_orchestration"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T07:57:51.815860+00:00"
+    },
+    {
+      "authority_level": "gate_intelligence",
+      "avenue_id": "Z",
+      "bot_id": "gate_manager_Z_gate_z1",
+      "bot_name": "Gate Manager Z/gate_z1",
+      "bot_role": "gate_manager",
+      "bot_type": "gate_manager",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T07:57:51.819859+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "gate_truth",
+        "edge_assumptions",
+        "execution_constraints"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_Z",
+      "reporting_scope": [
+        "gate_manager_state",
+        "promotion_ladder"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T07:57:51.819859+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_scanner_bot",
+      "bot_name": "Worker scanner_bot Z/gate_z1",
+      "bot_role": "scanner_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.820751+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:scanner_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:scanner_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "scanner_framework",
+      "updated_at": "2026-04-21T07:57:51.820751+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_strategy_bot",
+      "bot_name": "Worker strategy_bot Z/gate_z1",
+      "bot_role": "strategy_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.821704+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:strategy_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:strategy_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "edge_registry",
+      "updated_at": "2026-04-21T07:57:51.821704+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_risk_bot",
+      "bot_name": "Worker risk_bot Z/gate_z1",
+      "bot_role": "risk_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.822935+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:risk_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:risk_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "risk_truth",
+      "updated_at": "2026-04-21T07:57:51.822935+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_execution_validation_bot",
+      "bot_name": "Worker execution_validation_bot Z/gate_z1",
+      "bot_role": "execution_validation_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.824371+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:execution_validation_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:execution_validation_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "execution_proof",
+      "updated_at": "2026-04-21T07:57:51.824371+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_exit_manager_bot",
+      "bot_name": "Worker exit_manager_bot Z/gate_z1",
+      "bot_role": "exit_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.825692+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:exit_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:exit_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "exit_truth",
+      "updated_at": "2026-04-21T07:57:51.825692+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_rebuy_manager_bot",
+      "bot_name": "Worker rebuy_manager_bot Z/gate_z1",
+      "bot_role": "rebuy_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.827023+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:rebuy_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:rebuy_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T07:57:51.827023+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_rebuy_decision_bot",
+      "bot_name": "Worker rebuy_decision_bot Z/gate_z1",
+      "bot_role": "rebuy_decision_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.828319+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:rebuy_decision_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:rebuy_decision_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T07:57:51.828319+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_profit_progression_bot",
+      "bot_name": "Worker profit_progression_bot Z/gate_z1",
+      "bot_role": "profit_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.829715+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:profit_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:profit_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "profit_truth",
+      "updated_at": "2026-04-21T07:57:51.829715+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "Z",
+      "bot_id": "gate_worker_Z_gate_z1_goal_progression_bot",
+      "bot_name": "Worker goal_progression_bot Z/gate_z1",
+      "bot_role": "goal_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T07:57:51.831067+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_z1",
+      "knowledge_scope": [
+        "role:goal_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "reporting_scope": [
+        "gate_worker:goal_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "progression_truth",
+      "updated_at": "2026-04-21T07:57:51.831067+00:00"
+    },
+    {
+      "authority_level": "avenue_intelligence",
+      "avenue_id": "C",
+      "bot_id": "avenue_master_C",
+      "bot_name": "Avenue Master C",
+      "bot_role": "avenue_master",
+      "bot_type": "avenue_master",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": true,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T08:12:45.554097+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "venue_mechanics",
+        "strategy_classes",
+        "gate_behavior"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "ezras_governor",
+      "reporting_scope": [
+        "avenue_master_reports.jsonl",
+        "ceo_daily_orchestration"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T08:12:45.554097+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "avenue_worker_C_research_bot",
+      "bot_name": "Avenue Worker research_bot C",
+      "bot_role": "research_bot",
+      "bot_type": "avenue_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.555679+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "role:research_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "avenue_worker:research_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "edge_research",
+      "updated_at": "2026-04-21T08:12:45.555679+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "avenue_worker_C_opportunity_ranking_bot",
+      "bot_name": "Avenue Worker opportunity_ranking_bot C",
+      "bot_role": "opportunity_ranking_bot",
+      "bot_type": "avenue_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.557272+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "role:opportunity_ranking_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "avenue_worker:opportunity_ranking_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "opportunity_ranking",
+      "updated_at": "2026-04-21T08:12:45.557272+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "avenue_worker_C_capital_allocation_bot",
+      "bot_name": "Avenue Worker capital_allocation_bot C",
+      "bot_role": "capital_allocation_bot",
+      "bot_type": "avenue_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.558940+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "role:capital_allocation_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "avenue_worker:capital_allocation_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "capital_ledger",
+      "updated_at": "2026-04-21T08:12:45.558940+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "avenue_worker_C_alerting_bot",
+      "bot_name": "Avenue Worker alerting_bot C",
+      "bot_role": "alerting_bot",
+      "bot_type": "avenue_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.560715+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "role:alerting_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "avenue_worker:alerting_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "alerts",
+      "updated_at": "2026-04-21T08:12:45.560715+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "avenue_worker_C_review_bot",
+      "bot_name": "Avenue Worker review_bot C",
+      "bot_role": "review_bot",
+      "bot_type": "avenue_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.562335+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": null,
+      "knowledge_scope": [
+        "role:review_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "avenue_worker:review_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "ceo_review",
+      "updated_at": "2026-04-21T08:12:45.562335+00:00"
+    },
+    {
+      "authority_level": "gate_intelligence",
+      "avenue_id": "C",
+      "bot_id": "gate_manager_C_gate_c1",
+      "bot_name": "Gate Manager C/gate_c1",
+      "bot_role": "gate_manager",
+      "bot_type": "gate_manager",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T08:12:45.567587+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "gate_truth",
+        "edge_assumptions",
+        "execution_constraints"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "gate_manager_state",
+        "promotion_ladder"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T08:12:45.567587+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_scanner_bot",
+      "bot_name": "Worker scanner_bot C/gate_c1",
+      "bot_role": "scanner_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.569068+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:scanner_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:scanner_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "scanner_framework",
+      "updated_at": "2026-04-21T08:12:45.569068+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_strategy_bot",
+      "bot_name": "Worker strategy_bot C/gate_c1",
+      "bot_role": "strategy_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.571547+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:strategy_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:strategy_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "edge_registry",
+      "updated_at": "2026-04-21T08:12:45.571547+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_risk_bot",
+      "bot_name": "Worker risk_bot C/gate_c1",
+      "bot_role": "risk_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.573632+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:risk_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:risk_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "risk_truth",
+      "updated_at": "2026-04-21T08:12:45.573632+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_execution_validation_bot",
+      "bot_name": "Worker execution_validation_bot C/gate_c1",
+      "bot_role": "execution_validation_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.575814+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:execution_validation_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:execution_validation_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "execution_proof",
+      "updated_at": "2026-04-21T08:12:45.575814+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_exit_manager_bot",
+      "bot_name": "Worker exit_manager_bot C/gate_c1",
+      "bot_role": "exit_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.578390+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:exit_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:exit_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "exit_truth",
+      "updated_at": "2026-04-21T08:12:45.578390+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_rebuy_manager_bot",
+      "bot_name": "Worker rebuy_manager_bot C/gate_c1",
+      "bot_role": "rebuy_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.580867+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:rebuy_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:rebuy_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T08:12:45.580867+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_rebuy_decision_bot",
+      "bot_name": "Worker rebuy_decision_bot C/gate_c1",
+      "bot_role": "rebuy_decision_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.583385+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:rebuy_decision_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:rebuy_decision_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T08:12:45.583385+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_profit_progression_bot",
+      "bot_name": "Worker profit_progression_bot C/gate_c1",
+      "bot_role": "profit_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.585942+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:profit_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:profit_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "profit_truth",
+      "updated_at": "2026-04-21T08:12:45.585942+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c1_goal_progression_bot",
+      "bot_name": "Worker goal_progression_bot C/gate_c1",
+      "bot_role": "goal_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.588496+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c1",
+      "knowledge_scope": [
+        "role:goal_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "reporting_scope": [
+        "gate_worker:goal_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "progression_truth",
+      "updated_at": "2026-04-21T08:12:45.588496+00:00"
+    },
+    {
+      "authority_level": "gate_intelligence",
+      "avenue_id": "C",
+      "bot_id": "gate_manager_C_gate_c2",
+      "bot_name": "Gate Manager C/gate_c2",
+      "bot_role": "gate_manager",
+      "bot_type": "gate_manager",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": true,
+      "created_at": "2026-04-21T08:12:45.593762+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "gate_truth",
+        "edge_assumptions",
+        "execution_constraints"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "avenue_master_C",
+      "reporting_scope": [
+        "gate_manager_state",
+        "promotion_ladder"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "",
+      "updated_at": "2026-04-21T08:12:45.593762+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_scanner_bot",
+      "bot_name": "Worker scanner_bot C/gate_c2",
+      "bot_role": "scanner_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.595655+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:scanner_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:scanner_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "scanner_framework",
+      "updated_at": "2026-04-21T08:12:45.595655+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_strategy_bot",
+      "bot_name": "Worker strategy_bot C/gate_c2",
+      "bot_role": "strategy_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.598727+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:strategy_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:strategy_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "edge_registry",
+      "updated_at": "2026-04-21T08:12:45.598727+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_risk_bot",
+      "bot_name": "Worker risk_bot C/gate_c2",
+      "bot_role": "risk_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.601595+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:risk_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:risk_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "risk_truth",
+      "updated_at": "2026-04-21T08:12:45.601595+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_execution_validation_bot",
+      "bot_name": "Worker execution_validation_bot C/gate_c2",
+      "bot_role": "execution_validation_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.604564+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:execution_validation_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:execution_validation_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "execution_proof",
+      "updated_at": "2026-04-21T08:12:45.604564+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_exit_manager_bot",
+      "bot_name": "Worker exit_manager_bot C/gate_c2",
+      "bot_role": "exit_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.607709+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:exit_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:exit_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "exit_truth",
+      "updated_at": "2026-04-21T08:12:45.607709+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_rebuy_manager_bot",
+      "bot_name": "Worker rebuy_manager_bot C/gate_c2",
+      "bot_role": "rebuy_manager_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.610617+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:rebuy_manager_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:rebuy_manager_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T08:12:45.610617+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_rebuy_decision_bot",
+      "bot_name": "Worker rebuy_decision_bot C/gate_c2",
+      "bot_role": "rebuy_decision_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.614083+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:rebuy_decision_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:rebuy_decision_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "rebuy_truth",
+      "updated_at": "2026-04-21T08:12:45.614083+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_profit_progression_bot",
+      "bot_name": "Worker profit_progression_bot C/gate_c2",
+      "bot_role": "profit_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.617268+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:profit_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:profit_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "profit_truth",
+      "updated_at": "2026-04-21T08:12:45.617268+00:00"
+    },
+    {
+      "authority_level": "worker_narrow",
+      "avenue_id": "C",
+      "bot_id": "gate_worker_C_gate_c2_goal_progression_bot",
+      "bot_name": "Worker goal_progression_bot C/gate_c2",
+      "bot_role": "goal_progression_bot",
+      "bot_type": "gate_worker",
+      "can_modify_live_logic": false,
+      "can_propose_new_gate": false,
+      "can_spawn_child_bots": false,
+      "created_at": "2026-04-21T08:12:45.622815+00:00",
+      "current_objectives": [],
+      "evidence_contract": {},
+      "execution_scope": [],
+      "failure_conditions": [],
+      "gate_id": "gate_c2",
+      "knowledge_scope": [
+        "role:goal_progression_bot"
+      ],
+      "lifecycle_stage": "observing",
+      "linked_orchestration_bot_id": null,
+      "live_permissions": {
+        "capital_allocation_mutate": false,
+        "runtime_switch": false,
+        "venue_orders": false
+      },
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "reporting_scope": [
+        "gate_worker:goal_progression_bot"
+      ],
+      "research_permissions": true,
+      "safety_constraints": [],
+      "status": "active",
+      "success_metrics": {},
+      "truth_source": "progression_truth",
+      "updated_at": "2026-04-21T08:12:45.622815+00:00"
+    }
+  ],
+  "truth_version": "hierarchy_registry_v1",
+  "updated_at": "2026-04-21T08:12:45.622997+00:00"
+}

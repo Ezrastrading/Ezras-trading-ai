@@ -88,6 +88,63 @@ def _poll_until_buy_filled(
     return fills, last_order
 
 
+def _poll_until_order_fill_rows(
+    client: Any,
+    order_id: str,
+    *,
+    product_id: str,
+    side: str,
+    timeout_sec: float = 120.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str, List[str]]:
+    """Prefer REST fills; fall back to a synthetic row from ``get_order`` when status is FILLED."""
+    _ = product_id
+    deadline = time.monotonic() + timeout_sec
+    diag: List[str] = []
+    last_snap: Dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        try:
+            fills = client.get_fills(order_id)
+        except Exception as exc:  # pragma: no cover
+            fills = []
+            diag.append(f"get_fills_error:{exc}")
+        if fills:
+            try:
+                last_snap = client.get_order(order_id)
+            except Exception:
+                last_snap = {}
+            return fills, last_snap, "fills_api", diag
+        try:
+            last_snap = client.get_order(order_id)
+        except Exception as exc:  # pragma: no cover
+            diag.append(f"get_order_error:{exc}")
+            last_snap = {}
+        st = str(last_snap.get("status") or "").upper()
+        if st == "FILLED":
+            synth = [
+                {
+                    "price": last_snap.get("average_filled_price"),
+                    "size": last_snap.get("filled_size"),
+                    "filled_value": last_snap.get("filled_value"),
+                    "commission": last_snap.get("total_fees"),
+                    "side": side,
+                    "synthetic_order_snapshot": True,
+                }
+            ]
+            diag.append("synthetic_from_order_snapshot")
+            return synth, last_snap, "order_snapshot", diag
+        sleep_fn(0.05)
+    try:
+        last_snap = client.get_order(order_id)
+    except Exception:
+        last_snap = {}
+    try:
+        fills = client.get_fills(order_id)
+    except Exception:
+        fills = []
+    return fills, last_snap, "timeout", diag + ["timeout"]
+
+
 def verify_data_pipeline_after_trade(
     runtime_root: Path,
     trade_id: str,
@@ -656,3 +713,8 @@ def run_single_live_execution_validation(
 
     write_execution_proof_json(root, proof)
     return base_out
+
+
+def _supabase_row_exists_with_retry(*_args: Any, **_kwargs: Any) -> bool:
+    """Test seam for Supabase existence checks (patched in unit tests)."""
+    return False

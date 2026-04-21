@@ -234,7 +234,10 @@ def _terminal_filled(
     slip = apply_slippage_bps(tick_index=completed)
     base_net = round(1.25 + (completed % 7) * 0.1, 4)
     slip_adj = round(base_net - abs(slip) * 0.0001, 6)
-    net = slip_adj if slip_adj > -1e6 else base_net
+    if completed % 13 == 0:
+        net = round(-3.1 - (completed % 5) * 0.22, 4)
+    else:
+        net = slip_adj if slip_adj > -1e6 else base_net
     ms = MemoryStore()
     ms.append_trade(
         {

@@ -1,0 +1,15 @@
+{
+  "artifact_version": 19,
+  "domain": "promotion",
+  "payload": {
+    "generated_at": "2026-04-21T21:06:57.554611+00:00",
+    "policy_truth_version": "promotion_contract_policy_v1",
+    "results": [],
+    "truth_version": "bot_auto_promotion_truth_v1"
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": "/Users/nexplora.ai/Documents/Ezras Trading AI/trading-ai/src/trading_ai/global_layer/_governance_data/orchestration/bot_auto_promotion_truth_history/v18_bot_auto_promotion_truth.json",
+  "truth_version": "promotion_truth_wrapped_v1",
+  "writer_id": "system_promotion_truth_writer",
+  "written_at": "2026-04-21T21:06:57.554841+00:00"
+}

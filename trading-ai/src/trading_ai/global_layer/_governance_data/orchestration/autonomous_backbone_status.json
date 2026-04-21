@@ -1,0 +1,74 @@
+{
+  "automatic_ceo_enabled": true,
+  "automatic_progression_enabled": true,
+  "automatic_research_enabled": true,
+  "automatic_review_enabled": true,
+  "automatic_spawn_enabled": true,
+  "autonomous_ready": true,
+  "best_bots_by_profitability_signal": [],
+  "best_bots_by_usefulness": [],
+  "conflicting_bots": [],
+  "exact_blockers": [],
+  "honesty": "Flags reflect policy/env + truth chain — not a promise of profitability.",
+  "live_authority_green": true,
+  "most_wasteful_paths": [],
+  "next_best_actions": [
+    "python -m trading_ai.deployment orchestration-status",
+    "python -m trading_ai.deployment refresh-orchestration-truth-chain",
+    "python -m trading_ai.deployment orchestration-daily-ceo"
+  ],
+  "orchestration_live_gate_env": true,
+  "orchestration_ready": true,
+  "registry_anomalies": [],
+  "shadow_execution_bot_count": 0,
+  "stale_bots": [],
+  "supervised_daemon_ready": true,
+  "supervised_live_ready": true,
+  "system_convergence_mission_active": true,
+  "system_mission": {
+    "aspirational_trajectory_note": "The system scores all strategies and edges by how quickly measured results could compound capital toward aggressive upside targets (e.g. high daily ROI as a horizon). This is an optimization pressure toward evidence-backed repeatability — it does not promise any fixed rate of return.",
+    "automation_principle": "Automatically research, rank candidates, spawn scoped bots within caps, review, audit, queue implementation, promote or demote paths, run CEO sessions, and maintain cumulative memory — operator enables supervised live and only promotes autonomous paths through objective contracts.",
+    "behavior": [
+      "adaptive",
+      "aggressive_but_risk_gated",
+      "continuously_optimizing",
+      "avoid_idle_research_loops_when_budgets_allow_actionable_queue_items",
+      "keep_capital_working_when_safe_per_governor_and_truth"
+    ],
+    "learning_mandate": "Every completed trade is data: what worked, what failed, why, and what to try next — stored structurally.",
+    "learning_phases": {
+      "phase_1": "Days 1–3: exploration, data gathering, edge discovery (shadow / supervised as allowed).",
+      "phase_2": "After ~100–150 trades: emphasize convergence and ranking from measured outcomes.",
+      "phase_3": "Days 4–6 onward: prioritize execution of highest-scoring strategies **only** when gates and truth allow."
+    },
+    "mission_stage_labeling": {
+      "honesty": "Learning phases and mission labels are policy text — not a learned stage classifier.",
+      "label_kind": "rule_based_phase_metadata",
+      "not_ml": true
+    },
+    "operating_philosophy": "Discover, validate, and exploit the fastest repeatable paths to extreme upside through autonomous research, testing, review, implementation, and adaptation — while preserving truthfulness, capital discipline, and strict fail-closed safety.",
+    "primary_objective": "Find and scale the fastest repeatable profitable edges across avenues, gates, strategies, latency patterns, entry/exit methods, timing patterns, and execution improvements — using only measured evidence.",
+    "secondary_objectives": [
+      "compress_learning_time",
+      "compress_time_to_edge",
+      "compress_time_to_promotion",
+      "compress_time_to_capital_readiness",
+      "compress_time_to_repeatable_profitable_deployment",
+      "reduce_wasteful_research_and_token_burn",
+      "reduce_slow_or_non_productive_strategies",
+      "aggressively_reallocate_effort_toward_what_is_working",
+      "minimize_losses_and_drawdowns_subject_to_safety_gates",
+      "maximize_trade_efficiency_profit_per_unit_time_where_measured",
+      "reduce_latency_between_opportunity_detection_and_execution_where_safe",
+      "eliminate_unproductive_strategies_quickly_via_demotion_disable"
+    ],
+    "truth_principle": "Never hallucinate edge, profitability, or readiness. Ground decisions in measured evidence: artifacts, replay results, smoke results, real ledger results, or explicit truth files.",
+    "truth_version": "system_mission_v2"
+  },
+  "system_mission_version": "system_mission_v2",
+  "system_profitability_mission_active": true,
+  "token_budget_pressure": false,
+  "top_current_convergence_paths": [],
+  "top_current_profitability_paths": [],
+  "truth_version": "autonomous_backbone_status_v1"
+}

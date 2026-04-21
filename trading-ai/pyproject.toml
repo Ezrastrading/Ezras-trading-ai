@@ -32,6 +32,10 @@ trading-ai = "trading_ai.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+norecursedirs = [".git", ".tox", "dist", "build", "scripts"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

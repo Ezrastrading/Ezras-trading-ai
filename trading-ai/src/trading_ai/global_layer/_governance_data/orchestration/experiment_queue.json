@@ -1,0 +1,40 @@
+{
+  "experiments": [
+    {
+      "action": "run harness/replay on top candidate strategy changes before live",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.625412+00:00",
+      "id": "mission_goals::experiment::2026-04-21::2",
+      "kind": "experiment",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "run smoke suite for gating + execution policy invariants",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.625411+00:00",
+      "id": "mission_goals::experiment::2026-04-21::1",
+      "kind": "experiment",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "stress-test edge stability under slippage/latency perturbations",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.625408+00:00",
+      "id": "mission_goals::experiment::2026-04-21::0",
+      "kind": "experiment",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "experiment_a",
+      "id": "experiment1"
+    }
+  ],
+  "generated_at": "2026-04-21T21:20:08.099977+00:00",
+  "truth_version": "experiment_queue_v1"
+}

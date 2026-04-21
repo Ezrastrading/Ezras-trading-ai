@@ -1,0 +1,29 @@
+{
+  "by_avenue": {
+    "C": {
+      "avenue_id": "C",
+      "avenue_master": "avenue_master_C",
+      "avenue_workers": [
+        "avenue_worker_C_research_bot",
+        "avenue_worker_C_opportunity_ranking_bot",
+        "avenue_worker_C_capital_allocation_bot",
+        "avenue_worker_C_alerting_bot",
+        "avenue_worker_C_review_bot"
+      ],
+      "gate_managers": []
+    },
+    "Z": {
+      "avenue_id": "Z",
+      "avenue_master": "avenue_master_Z",
+      "avenue_workers": [],
+      "gate_managers": []
+    },
+    "system": {
+      "avenue_id": "system",
+      "avenue_master": null,
+      "avenue_workers": [],
+      "gate_managers": []
+    }
+  },
+  "truth_version": "hierarchy_registry_v1"
+}

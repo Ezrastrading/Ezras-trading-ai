@@ -81,7 +81,9 @@ def record_trade(
         "exit_price": exit_price,
         "size_usd": size_usd,
         "pnl_usd": pnl_usd,
-        "pnl_pct": ((exit_price - entry_price) / entry_price * 100 if entry_price else 0),
+        "pnl_pct": (
+            (exit_price - entry_price) / entry_price * 100 if entry_price else 0
+        ),
         "exit_reason": exit_reason,
         "hold_seconds": hold_seconds,
         "hold_min": round(hold_seconds / 60, 1),
@@ -283,4 +285,3 @@ def export_to_excel_data() -> dict:
             "month": get_combined_report("month"),
         },
     }
-

@@ -23,3 +23,21 @@ def ezras_runtime_root() -> Path:
     if os.path.exists("/app"):
         return Path("/app/ezras-runtime").resolve()
     return (Path.home() / "ezras-runtime").resolve()
+
+
+def ezras_runtime_root_fingerprint_component() -> str:
+    """Stable string for hashing into daemon env fingerprints (matches ``ezras_runtime_root()``)."""
+    return str(ezras_runtime_root())
+
+
+def resolve_ezras_runtime_root_for_daemon_authority(
+    explicit: str | os.PathLike[str] | None = None,
+) -> Path:
+    """
+    Resolve the organism runtime root for supervised daemons and deployment CLIs.
+
+    Expands ``~`` in ``EZRAS_RUNTIME_ROOT`` and optional ``explicit`` override.
+    """
+    if explicit is not None and str(explicit).strip():
+        return Path(str(explicit)).expanduser().resolve()
+    return ezras_runtime_root()

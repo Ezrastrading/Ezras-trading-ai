@@ -6,6 +6,7 @@ Uses :meth:`trading_ai.shark.outlets.coinbase.CoinbaseClient.list_all_accounts`.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -92,3 +93,45 @@ def resolve_validation_market_product(
         {**diag, "chosen_reason": "insufficient_quote"},
         "insufficient_USD_or_USDC_for_notional",
     )
+
+
+def get_quote_balances_by_currency(client: CoinbaseClient) -> Dict[str, float]:
+    """Alias for paginated quote balance extraction (USD + USDC)."""
+    return get_available_quote_balances(client)
+
+
+def preflight_exact_spot_product(
+    client: CoinbaseClient,
+    *,
+    product_id: str,
+    quote_notional: float,
+    runtime_root: Path,
+) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+    """
+    Validate venue min-notional + local order-size rules before placing a live order.
+
+    Returns ``(ok, diagnostics, error_message)``.
+    """
+    from trading_ai.nte.execution.product_rules import validate_order_size, venue_min_notional_usd
+
+    _ = runtime_root
+    pid = (product_id or "").strip().upper()
+    diag: Dict[str, Any] = {"product_id": pid, "quote_notional": float(quote_notional)}
+    try:
+        bal = get_available_quote_balances(client)
+        diag["quote_balances"] = bal
+        vmin = float(venue_min_notional_usd(pid))
+        need = max(float(quote_notional), vmin)
+        usd = float(bal.get("USD") or 0.0)
+        usdc = float(bal.get("USDC") or 0.0)
+        spendable = usd if pid.endswith("-USD") else usdc if pid.endswith("-USDC") else usd + usdc
+        diag["spendable_quote_assessed"] = spendable
+        if spendable + 1e-9 < need:
+            return False, diag, "insufficient_quote_balance"
+        ok, reason = validate_order_size(pid, quote_notional_usd=float(quote_notional))
+        if not ok:
+            return False, diag, reason or "size_invalid"
+        diag["has_credentials"] = bool(getattr(client, "has_credentials", lambda: False)())
+        return True, diag, None
+    except Exception as exc:
+        return False, diag, f"{type(exc).__name__}:{exc}"

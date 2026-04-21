@@ -1,0 +1,47 @@
+{
+  "by_parent": {
+    "gate_manager_C_gate_c1": {
+      "parent_bot_id": "gate_manager_C_gate_c1",
+      "workers": [
+        "gate_worker_C_gate_c1_scanner_bot",
+        "gate_worker_C_gate_c1_strategy_bot",
+        "gate_worker_C_gate_c1_risk_bot",
+        "gate_worker_C_gate_c1_execution_validation_bot",
+        "gate_worker_C_gate_c1_exit_manager_bot",
+        "gate_worker_C_gate_c1_rebuy_manager_bot",
+        "gate_worker_C_gate_c1_rebuy_decision_bot",
+        "gate_worker_C_gate_c1_profit_progression_bot",
+        "gate_worker_C_gate_c1_goal_progression_bot"
+      ]
+    },
+    "gate_manager_C_gate_c2": {
+      "parent_bot_id": "gate_manager_C_gate_c2",
+      "workers": [
+        "gate_worker_C_gate_c2_scanner_bot",
+        "gate_worker_C_gate_c2_strategy_bot",
+        "gate_worker_C_gate_c2_risk_bot",
+        "gate_worker_C_gate_c2_execution_validation_bot",
+        "gate_worker_C_gate_c2_exit_manager_bot",
+        "gate_worker_C_gate_c2_rebuy_manager_bot",
+        "gate_worker_C_gate_c2_rebuy_decision_bot",
+        "gate_worker_C_gate_c2_profit_progression_bot",
+        "gate_worker_C_gate_c2_goal_progression_bot"
+      ]
+    },
+    "gate_manager_Z_gate_z1": {
+      "parent_bot_id": "gate_manager_Z_gate_z1",
+      "workers": [
+        "gate_worker_Z_gate_z1_scanner_bot",
+        "gate_worker_Z_gate_z1_strategy_bot",
+        "gate_worker_Z_gate_z1_risk_bot",
+        "gate_worker_Z_gate_z1_execution_validation_bot",
+        "gate_worker_Z_gate_z1_exit_manager_bot",
+        "gate_worker_Z_gate_z1_rebuy_manager_bot",
+        "gate_worker_Z_gate_z1_rebuy_decision_bot",
+        "gate_worker_Z_gate_z1_profit_progression_bot",
+        "gate_worker_Z_gate_z1_goal_progression_bot"
+      ]
+    }
+  },
+  "truth_version": "hierarchy_registry_v1"
+}

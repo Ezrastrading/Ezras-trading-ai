@@ -450,6 +450,12 @@ def _ops_loops() -> List[LoopSpec]:
             "honesty": "Blends federated 7d snapshot delta with sim PnL rolling-window mean comparison when available.",
         }
         _write_json(p, payload)
+        try:
+            from trading_ai.runtime.regression_drift import analyze_and_write_regression_drift
+
+            analyze_and_write_regression_drift(runtime_root=r, trades=list(trades or []))
+        except Exception:
+            pass
         emit = verdict == "degrading" or bool(sim_drift.get("emit_corrective_tasks"))
         if emit:
             try:

@@ -1,0 +1,12 @@
+{
+  "artifact_version": 1,
+  "domain": "promotion",
+  "payload": {
+    "x": 1
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": null,
+  "truth_version": "promotion_truth_wrapped_v1",
+  "writer_id": "system_promotion_truth_writer",
+  "written_at": "2026-04-20T17:51:46.208168+00:00"
+}

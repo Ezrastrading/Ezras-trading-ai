@@ -1,0 +1,15 @@
+{
+  "artifact_version": 4,
+  "domain": "capital",
+  "payload": {
+    "applied": [],
+    "generated_at": "2026-04-21T21:06:57.555292+00:00",
+    "policy_loaded": true,
+    "truth_version": "capital_scale_up_cycle_v1"
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": "/Users/nexplora.ai/Documents/Ezras Trading AI/trading-ai/src/trading_ai/global_layer/_governance_data/orchestration/capital_governor_readiness_truth_history/v3_capital_governor_readiness_truth.json",
+  "truth_version": "capital_truth_wrapped_v1",
+  "writer_id": "system_capital_truth_writer",
+  "written_at": "2026-04-21T21:06:57.555509+00:00"
+}

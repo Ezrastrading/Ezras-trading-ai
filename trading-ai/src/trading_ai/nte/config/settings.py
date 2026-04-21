@@ -6,10 +6,29 @@ import os
 from dataclasses import dataclass
 from typing import Tuple
 
+_DEFAULT_NTE_PRODUCTS: Tuple[str, ...] = (
+    "BTC-USD",
+    "BTC-USDC",
+    "ETH-USD",
+    "ETH-USDC",
+    "SOL-USD",
+    "SOL-USDC",
+    "AVAX-USD",
+    "LINK-USD",
+)
+
+
+def _nte_products_from_environ() -> Tuple[str, ...]:
+    raw = (os.environ.get("NTE_PRODUCTS") or os.environ.get("NTE_COINBASE_PRODUCTS") or "").strip()
+    if not raw:
+        return _DEFAULT_NTE_PRODUCTS
+    parts = tuple(p.strip().upper() for p in raw.split(",") if p.strip())
+    return parts if parts else _DEFAULT_NTE_PRODUCTS
+
 
 @dataclass(frozen=True)
 class NTECoinbaseSettings:
-    products: Tuple[str, ...] = ("BTC-USD", "ETH-USD")
+    products: Tuple[str, ...] = _DEFAULT_NTE_PRODUCTS
     # Position: 15–25% per trade, max 2 concurrent
     size_pct_min: float = 0.15
     size_pct_max: float = 0.25
@@ -44,6 +63,7 @@ class NTECoinbaseSettings:
 def load_nte_settings() -> NTECoinbaseSettings:
     dl = float(os.environ.get("NTE_DAILY_LOSS_CAP_PCT", os.environ.get("NTE_AVE1_DAILY_LOSS_PCT", "0.04")))
     return NTECoinbaseSettings(
+        products=_nte_products_from_environ(),
         size_pct_min=float(os.environ.get("NTE_SIZE_PCT_MIN", "0.15")),
         size_pct_max=float(os.environ.get("NTE_SIZE_PCT_MAX", "0.25")),
         max_spread_pct=float(os.environ.get("NTE_MAX_SPREAD_PCT", "0.0012")),
@@ -56,3 +76,8 @@ def load_nte_settings() -> NTECoinbaseSettings:
         daily_loss_min=dl,
         daily_loss_max=dl,
     )
+
+
+def _default_nte_coinbase_products() -> Tuple[str, ...]:
+    """Default Coinbase product universe for tests and bootstrap wiring."""
+    return load_nte_settings().products

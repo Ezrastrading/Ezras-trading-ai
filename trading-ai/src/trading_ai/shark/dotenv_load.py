@@ -33,4 +33,3 @@ def load_shark_dotenv() -> None:
             return
     load_dotenv()
     _LOADED = True
-

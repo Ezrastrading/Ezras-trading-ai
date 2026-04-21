@@ -11,6 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parents[2]
+_SRC = _ROOT / "src"
+if _SRC.is_dir():
+    sys.path.insert(0, str(_SRC))
+
 
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="ezras_live_guard_")).resolve()

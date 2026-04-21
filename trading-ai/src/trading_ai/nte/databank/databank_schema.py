@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-DATABANK_SCHEMA_VERSION = "1.2.0"
+DATABANK_SCHEMA_VERSION = "1.2.1"
 
 # Locked globally — do not alias elsewhere (Section 8).
 AVENUE_REGISTRY: Dict[str, str] = {
@@ -124,7 +124,22 @@ def merge_defaults(raw: Dict[str, Any]) -> Dict[str, Any]:
         base["created_at"] = _utc_now_iso()
     if not isinstance(base.get("anomaly_flags"), list):
         base["anomaly_flags"] = []
+    rc = base.get("ratio_context")
+    if rc is not None and base.get("market_snapshot_json") is None:
+        base["market_snapshot_json"] = {"ratio_context": rc}
     return base
+
+
+def fold_ratio_context_into_merged(merged: Mapping[str, Any], ratio_context: Mapping[str, Any]) -> Dict[str, Any]:
+    """Attach ``ratio_context`` under ``market_snapshot_json`` without dropping other snapshot keys."""
+    out: Dict[str, Any] = dict(merged)
+    msj = out.get("market_snapshot_json")
+    if not isinstance(msj, dict):
+        msj = {}
+    prev = msj.get("ratio_context") if isinstance(msj.get("ratio_context"), dict) else {}
+    msj = {**msj, "ratio_context": {**prev, **dict(ratio_context)}}
+    out["market_snapshot_json"] = msj
+    return out
 
 
 def _utc_now_iso() -> str:

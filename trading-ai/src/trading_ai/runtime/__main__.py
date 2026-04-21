@@ -1,41 +1,34 @@
+"""CLI: ``python -m trading_ai.runtime`` — supervised autonomy (no venue live orders).
+
+Heavy imports are deferred inside handlers to keep cold-start imports minimal.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import os
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-
-from trading_ai.runtime.now_live_proof import run_authoritative_live_guard_proof, write_now_live_autonomy_artifacts
-from trading_ai.runtime.operating_system import (
-    assert_live_trading_env_disabled,
-    enforce_non_live_env_defaults,
-    release_role_lock,
-    run_role_supervisor_once,
-    tick_ops_once,
-    tick_research_once,
-    try_acquire_role_lock,
-)
-from trading_ai.runtime.service_contract_verify import run_autonomy_deploy_preflight, verify_systemd_unit_contract_templates
-from trading_ai.simulation.nonlive import LiveTradingNotAllowedError, assert_nonlive_for_simulation
-from trading_ai.runtime_paths import ezras_runtime_root
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
-def _print_json(obj: Dict[str, Any]) -> None:
+def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, sort_keys=True, default=str))
 
 
 def _run_accelerated_sim(*, cycles: int, runtime_root: Path, skip_models: bool) -> Dict[str, Any]:
+    from trading_ai.runtime.now_live_proof import run_authoritative_live_guard_proof, write_now_live_autonomy_artifacts
+    from trading_ai.runtime.operating_system import assert_live_trading_env_disabled, enforce_non_live_env_defaults
+    from trading_ai.runtime.operating_system import run_role_supervisor_once
+    from trading_ai.simulation.nonlive import assert_nonlive_for_simulation
+
     enforce_non_live_env_defaults()
     ok, why = assert_live_trading_env_disabled()
     if not ok:
@@ -73,7 +66,7 @@ def _run_accelerated_sim(*, cycles: int, runtime_root: Path, skip_models: bool) 
     except Exception:
         pass
     fill_proof_ok = bool(chain_summary or sim_trade_count > 0 or terminal_fills > 0)
-    verdict = {
+    verdict: Dict[str, Any] = {
         "truth_version": "accelerated_autonomy_sim_verdict_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cycles": int(cycles),
@@ -85,6 +78,7 @@ def _run_accelerated_sim(*, cycles: int, runtime_root: Path, skip_models: bool) 
         "sim_trade_count": sim_trade_count,
         "terminal_fill_events": terminal_fills,
         "fill_proof_ok": fill_proof_ok,
+        "regression_drift_exists": (ctrl / "regression_drift.json").is_file(),
         "pnl_review_exists": (runtime_root / "data" / "control" / "pnl_review.json").is_file(),
         "comparisons_exists": (runtime_root / "data" / "control" / "performance_comparisons.json").is_file(),
         "research_regression_exists": (runtime_root / "data" / "control" / "research_regression_drift.json").is_file(),
@@ -105,6 +99,7 @@ def _run_accelerated_sim(*, cycles: int, runtime_root: Path, skip_models: bool) 
         and verdict["sim_tasks_exists"]
         and verdict["sim_lessons_exists"]
         and verdict["sim_24h_summary_exists"]
+        and verdict["regression_drift_exists"]
         and bool(lg_ok)
     )
     verdict["ok"] = bool(ok2)
@@ -168,6 +163,18 @@ def main() -> int:
     )
 
     args = p.parse_args()
+
+    from trading_ai.runtime.operating_system import (
+        enforce_non_live_env_defaults,
+        release_role_lock,
+        run_role_supervisor_once,
+        tick_ops_once,
+        tick_research_once,
+        try_acquire_role_lock,
+    )
+    from trading_ai.runtime_paths import ezras_runtime_root
+    from trading_ai.simulation.nonlive import LiveTradingNotAllowedError, assert_nonlive_for_simulation
+
     enforce_non_live_env_defaults()
 
     rt = Path(args.runtime_root).resolve() if getattr(args, "runtime_root", None) else ezras_runtime_root()
@@ -191,18 +198,22 @@ def main() -> int:
         out = run_role_supervisor_once(
             role=args.role,
             runtime_root=rt,
-            skip_models=bool(args.skip_models),
-            force_all_due=bool(args.force_all_due),
+            skip_models=bool(getattr(args, "skip_models", False)),
+            force_all_due=bool(getattr(args, "force_all_due", False)),
         )
         _print_json(out)
         return 0 if out.get("ok") else 1
 
     if args.cmd == "write-now-live-artifacts":
+        from trading_ai.runtime.now_live_proof import write_now_live_autonomy_artifacts
+
         out = write_now_live_autonomy_artifacts(runtime_root=rt)
         _print_json(out)
         return 0 if out.get("ok") else 2
 
     if args.cmd == "live-guard-proof":
+        from trading_ai.runtime.now_live_proof import run_authoritative_live_guard_proof
+
         ok, proof = run_authoritative_live_guard_proof(runtime_root=rt)
         _print_json(proof)
         return 0 if ok else 3
@@ -221,12 +232,17 @@ def main() -> int:
         return 0 if out["collision_prevented"] else 5
 
     if args.cmd == "autonomy-deploy-preflight":
+        from trading_ai.runtime.service_contract_verify import run_autonomy_deploy_preflight
+
         ok, out = run_autonomy_deploy_preflight(runtime_root=rt)
         _print_json(out)
         return 0 if ok else 6
 
     if args.cmd == "systemd-unit-contract-verify":
-        ok, out = verify_systemd_unit_contract_templates(repo_root=_REPO_ROOT)
+        from trading_ai.runtime.service_contract_verify import verify_systemd_unit_contract_templates
+
+        _repo_root = Path(__file__).resolve().parents[3]
+        ok, out = verify_systemd_unit_contract_templates(repo_root=_repo_root)
         _print_json(out)
         return 0 if ok else 7
 
@@ -235,7 +251,7 @@ def main() -> int:
         role=args.role,
         holder_id=holder,
         runtime_root=rt,
-        ttl_seconds=max(30.0, args.interval_sec * 3),
+        ttl_seconds=max(30.0, float(args.interval_sec) * 3),
     )
     if not ok:
         _print_json({"ok": False, "blocked": True, "reason": why})

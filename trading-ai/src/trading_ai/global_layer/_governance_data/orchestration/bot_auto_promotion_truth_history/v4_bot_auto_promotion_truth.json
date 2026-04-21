@@ -1,0 +1,916 @@
+{
+  "artifact_version": 4,
+  "domain": "promotion",
+  "payload": {
+    "generated_at": "2026-04-20T18:40:28.159817+00:00",
+    "policy_truth_version": "promotion_contract_policy_v1",
+    "results": [
+      {
+        "bot_id": "ezras_spec_A_gate_a_scanner",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_scanner",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159174+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_entry",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_entry",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159281+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_exit",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_exit",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159356+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_latency",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_latency",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159421+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_strategy",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_strategy",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159486+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_analysis",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_analysis",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159570+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_research",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_research",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159634+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_optimization",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_optimization",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159696+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      },
+      {
+        "bot_id": "ezras_spec_A_gate_a_audit",
+        "fast_track": false,
+        "last_evaluation": {
+          "blocker": "min_shadow_trade_count:need_100_have_0",
+          "bot_id": "ezras_spec_A_gate_a_audit",
+          "clauses": {
+            "ceo_review_pass": {
+              "ok": false,
+              "reason": "ceo_review_not_pass"
+            },
+            "duplicate_task_violations": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "external_eval_signals_required": {
+              "ok": true,
+              "reason": "policy_require_external_eval_signals_false"
+            },
+            "heartbeat_fresh": {
+              "ok": false,
+              "reason": "missing_heartbeat"
+            },
+            "kill_switch_open": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_latency_ms": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_avg_slippage_bps": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "max_drawdown_pct": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_evaluation_count": {
+              "ok": false,
+              "reason": "need_50_have_0"
+            },
+            "min_expectancy": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "min_profit_factor": {
+              "ok": false,
+              "reason": "profit_factor_too_low"
+            },
+            "min_promotion_readiness_score": {
+              "ok": false,
+              "reason": "readiness_score_too_low"
+            },
+            "min_sample_diversity_score": {
+              "ok": false,
+              "reason": "diversity_too_low"
+            },
+            "min_shadow_trade_count": {
+              "ok": false,
+              "reason": "need_100_have_0"
+            },
+            "not_demotion_risk": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "promotion_cooldown": {
+              "ok": true,
+              "reason": "no_prior_promotion"
+            },
+            "risk_review_pass": {
+              "ok": false,
+              "reason": "risk_review_not_pass"
+            },
+            "status_active_like": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "token_budget_non_negative": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "truth_conflicts": {
+              "ok": true,
+              "reason": "ok"
+            },
+            "unauthorized_writes": {
+              "ok": true,
+              "reason": "ok"
+            }
+          },
+          "current_tier": "T0",
+          "evaluated_at": "2026-04-20T18:40:28.159758+00:00",
+          "passed": false,
+          "target_tier": "T1",
+          "truth_version": "promotion_contract_evaluation_v1"
+        },
+        "promotion_steps": 0
+      }
+    ],
+    "truth_version": "bot_auto_promotion_truth_v1"
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": "/Users/nexplora.ai/Documents/Ezras Trading AI/trading-ai/src/trading_ai/global_layer/_governance_data/orchestration/bot_auto_promotion_truth_history/v3_bot_auto_promotion_truth.json",
+  "truth_version": "promotion_truth_wrapped_v1",
+  "writer_id": "system_promotion_truth_writer",
+  "written_at": "2026-04-20T18:40:28.160130+00:00"
+}

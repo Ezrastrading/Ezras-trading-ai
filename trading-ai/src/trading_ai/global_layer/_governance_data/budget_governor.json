@@ -1,0 +1,20 @@
+{
+  "ai_calls_this_hour": 0,
+  "ceo_review_tokens_used_today": 600,
+  "cooldown_until": null,
+  "global_daily_token_budget": 250000,
+  "hour_id": null,
+  "learning_trade_interval": 20,
+  "per_avenue_token_budget": {
+    "A": 80000,
+    "B": 80000,
+    "C": 80000
+  },
+  "per_bot_daily_token_budget": 40000,
+  "per_ceo_review_token_budget": 25000,
+  "review_budget_exhausted": false,
+  "review_day_id": "20260421",
+  "trades_since_learning": 0,
+  "truth_version": "budget_governor_v1",
+  "updated_at": "2026-04-21T21:20:08.150595+00:00"
+}

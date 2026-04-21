@@ -1,0 +1,15 @@
+{
+  "artifact_version": 1,
+  "domain": "capital",
+  "payload": {
+    "applied": [],
+    "generated_at": "2026-04-21T20:59:59.733738+00:00",
+    "policy_loaded": true,
+    "truth_version": "capital_scale_up_cycle_v1"
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": null,
+  "truth_version": "capital_truth_wrapped_v1",
+  "writer_id": "system_capital_truth_writer",
+  "written_at": "2026-04-21T20:59:59.733863+00:00"
+}

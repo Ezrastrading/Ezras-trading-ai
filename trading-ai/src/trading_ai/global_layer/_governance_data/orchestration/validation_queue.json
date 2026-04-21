@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-04-21T21:20:08.101067+00:00",
+  "truth_version": "validation_queue_v1",
+  "validations": [
+    {
+      "action": "identify top 3 loss clusters and top 3 win clusters",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.626058+00:00",
+      "id": "mission_goals::validation::2026-04-21::3",
+      "kind": "validation",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "compare gate-level fee-adjusted expectancy vs last 7d",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.626056+00:00",
+      "id": "mission_goals::validation::2026-04-21::2",
+      "kind": "validation",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "refresh truth artifacts and control dashboards",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.626055+00:00",
+      "id": "mission_goals::validation::2026-04-21::1",
+      "kind": "validation",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "lock in what worked: snapshot configs, write rollback-ready artifacts",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.626053+00:00",
+      "id": "mission_goals::validation::2026-04-21::0",
+      "kind": "validation",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "validation_a",
+      "id": "validation1"
+    }
+  ]
+}

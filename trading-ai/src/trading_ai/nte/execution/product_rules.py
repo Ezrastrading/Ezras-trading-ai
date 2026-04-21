@@ -79,3 +79,10 @@ def round_base_to_increment(product_id: str, base_float: float) -> str:
     if "BTC" in pid:
         return s.rstrip("0").rstrip(".") if "." in s else s
     return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def venue_min_notional_usd(product_id: str) -> float:
+    """Minimum quote notional (USD) for ``product_id`` using bundled defaults."""
+    pid = (product_id or "").strip().upper()
+    meta = _DEFAULTS.get(pid) or next(iter(_DEFAULTS.values()))
+    return float(meta.get("min_notional_usd", Decimal("10")))

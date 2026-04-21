@@ -1,0 +1,15 @@
+{
+  "truth_version": "gate_a_product_selection_policy_v1",
+  "anchor_reference_products": ["BTC-USD", "ETH-USD"],
+  "priority_products": ["BTC-USD", "ETH-USD", "BTC-USDC", "ETH-USDC"],
+  "approved_base_assets": ["BTC", "ETH", "SOL", "AVAX", "LINK"],
+  "deny_base_assets": [],
+  "max_candidate_count": 12,
+  "min_volume_usd_24h": 0,
+  "max_spread_bps": 50,
+  "fee_aware_min_edge_bps": 5,
+  "allow_products": [],
+  "deny_products": [],
+  "quote_currency_allow": ["USD", "USDC"],
+  "honesty": "Filters are conservative defaults; live validation still enforces NTE allowlist and runtime policy."
+}

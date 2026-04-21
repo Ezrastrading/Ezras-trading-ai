@@ -1,0 +1,12 @@
+{
+  "artifact_version": 14,
+  "domain": "promotion",
+  "payload": {
+    "x": 1
+  },
+  "previous_snapshot_hint": null,
+  "rollback_path": "/Users/nexplora.ai/Documents/Ezras Trading AI/trading-ai/src/trading_ai/global_layer/_governance_data/orchestration/bot_auto_promotion_truth_history/v13_bot_auto_promotion_truth.json",
+  "truth_version": "promotion_truth_wrapped_v1",
+  "writer_id": "system_promotion_truth_writer",
+  "written_at": "2026-04-20T21:31:01.504066+00:00"
+}

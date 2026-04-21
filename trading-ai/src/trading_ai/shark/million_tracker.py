@@ -105,12 +105,16 @@ def get_daily_briefing(
     days_elapsed = (time.time() - start_ts) / 86400
 
     days_left = max(1, 180 - days_elapsed)
-    required_daily = (((TARGET / total) ** (1 / days_left) - 1) * 100 if total > 0 else 0)
+    required_daily = (
+        ((TARGET / total) ** (1 / days_left) - 1) * 100 if total > 0 else 0
+    )
 
     snapshots = data.get("snapshots", [])
     recent = [s for s in snapshots if s["unix_ts"] > time.time() - 604800]
     if len(recent) >= 2 and recent[0].get("total", 0) > 0:
-        actual_daily = ((recent[-1]["total"] / recent[0]["total"]) ** (1 / max(1, len(recent) - 1)) - 1) * 100
+        actual_daily = (
+            (recent[-1]["total"] / recent[0]["total"]) ** (1 / max(1, len(recent) - 1)) - 1
+        ) * 100
     else:
         actual_daily = 0
 
@@ -130,7 +134,9 @@ MESSAGE 4 — NEXT MILESTONE:
     else:
         nm_amt = float(next_milestone["amount"])
         need_more = nm_amt - total
-        est_days = int(need_more / max(0.01, todays_pnl)) if todays_pnl > 0 else "?"
+        est_days = (
+            int(need_more / max(0.01, todays_pnl)) if todays_pnl > 0 else "?"
+        )
         msg4 = f"""
 MESSAGE 4 — NEXT MILESTONE:
 🎯 Target: ${nm_amt:,.0f}
@@ -180,4 +186,3 @@ def get_milestones_summary() -> str:
         else:
             lines.append(f"  ⬜ ${m['amount']:,}")
     return "\n".join(lines)
-

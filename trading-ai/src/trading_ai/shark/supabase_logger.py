@@ -195,4 +195,3 @@ def get_win_rate(platform: Optional[str] = None) -> dict:
         "losses": len(trades) - wins,
         "pnl": pnl,
     }
-

@@ -1,0 +1,8 @@
+{
+  "truth_version": "orchestration_risk_caps_v1",
+  "max_daily_loss_usd_global": 5000.0,
+  "current_daily_realized_loss_usd": 0.0,
+  "daily_loss_as_of": null,
+  "max_data_age_sec_for_trading": 120,
+  "comment": "current_daily_realized_loss_usd must be maintained by ledger/operator integration; gate blocks live intent when current >= max."
+}

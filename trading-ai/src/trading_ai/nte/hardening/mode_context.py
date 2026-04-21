@@ -67,10 +67,9 @@ def get_mode_context() -> ModeContext:
         "true",
         "yes",
     )
-    cb = (os.environ.get("COINBASE_ENABLED") or "false").strip().lower() in (
-        "1",
-        "true",
-        "yes",
+    cb = (
+        (os.environ.get("COINBASE_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+        or (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() in ("1", "true", "yes")
     )
     scope = (os.environ.get("NTE_EXECUTION_SCOPE") or "live").strip().lower()
     strat_live = (os.environ.get("NTE_STRATEGY_LIVE_ALLOW") or "true").strip().lower() in (
@@ -88,3 +87,21 @@ def get_mode_context() -> ModeContext:
         strategy_live_ok=strat_live,
         dry_run=dry,
     )
+
+
+def coinbase_avenue_execution_enabled() -> bool:
+    a = (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+    b = (os.environ.get("COINBASE_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+    return bool(a or b)
+
+
+def describe_coinbase_avenue_enablement() -> dict:
+    keys: list[str] = []
+    if (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip():
+        keys.append("COINBASE_EXECUTION_ENABLED")
+    if (os.environ.get("COINBASE_ENABLED") or "").strip():
+        keys.append("COINBASE_ENABLED")
+    return {
+        "coinbase_avenue_enabled": coinbase_avenue_execution_enabled(),
+        "decision_env_keys": keys or ["(none)"],
+    }

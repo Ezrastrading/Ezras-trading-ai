@@ -159,17 +159,18 @@ def run_simulation_tick(*, runtime_root: Optional[Path] = None) -> Dict[str, Any
     les["generated_at"] = _iso()
     items: List[Dict[str, Any]] = list(les.get("lessons") or [])
     term = str(fill_out.get("phase") or "")
+    row: Dict[str, Any] = {
+        "t": _iso(),
+        "seq": seq,
+        "trade_cycle": True,
+        "fill_phase": term,
+        "intent_id": fill_out.get("intent_id"),
+        "progression": f"cycle_{cycle_seq}",
+    }
     if term in ("filled", "canceled", "rejected"):
-        items.append(
-            {
-                "t": _iso(),
-                "seq": seq,
-                "terminal": term,
-                "intent_id": fill_out.get("intent_id"),
-                "net_pnl_usd": fill_out.get("net_pnl_usd"),
-                "progression": f"cycle_{cycle_seq}",
-            }
-        )
+        row["terminal"] = term
+        row["net_pnl_usd"] = fill_out.get("net_pnl_usd")
+    items.append(row)
     les["lessons"] = items[-500:]
     _write_json(lessons_p, les)
 

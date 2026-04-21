@@ -1,0 +1,307 @@
+{
+  "edges": [
+    {
+      "child": "avenue_master_Z",
+      "parent": "ezras_governor"
+    },
+    {
+      "child": "gate_manager_Z_gate_z1",
+      "parent": "avenue_master_Z"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_scanner_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_strategy_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_risk_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_execution_validation_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_exit_manager_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_rebuy_manager_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_rebuy_decision_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_profit_progression_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "gate_worker_Z_gate_z1_goal_progression_bot",
+      "parent": "gate_manager_Z_gate_z1"
+    },
+    {
+      "child": "avenue_master_C",
+      "parent": "ezras_governor"
+    },
+    {
+      "child": "avenue_worker_C_research_bot",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "avenue_worker_C_opportunity_ranking_bot",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "avenue_worker_C_capital_allocation_bot",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "avenue_worker_C_alerting_bot",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "avenue_worker_C_review_bot",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "gate_manager_C_gate_c1",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_scanner_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_strategy_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_risk_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_execution_validation_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_exit_manager_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_rebuy_manager_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_rebuy_decision_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_profit_progression_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_worker_C_gate_c1_goal_progression_bot",
+      "parent": "gate_manager_C_gate_c1"
+    },
+    {
+      "child": "gate_manager_C_gate_c2",
+      "parent": "avenue_master_C"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_scanner_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_strategy_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_risk_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_execution_validation_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_exit_manager_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_rebuy_manager_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_rebuy_decision_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_profit_progression_bot",
+      "parent": "gate_manager_C_gate_c2"
+    },
+    {
+      "child": "gate_worker_C_gate_c2_goal_progression_bot",
+      "parent": "gate_manager_C_gate_c2"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "ezras_governor",
+      "type": "ezra_governor"
+    },
+    {
+      "id": "avenue_master_Z",
+      "type": "avenue_master"
+    },
+    {
+      "id": "gate_manager_Z_gate_z1",
+      "type": "gate_manager"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_scanner_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_strategy_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_risk_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_execution_validation_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_exit_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_rebuy_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_rebuy_decision_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_profit_progression_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_Z_gate_z1_goal_progression_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "avenue_master_C",
+      "type": "avenue_master"
+    },
+    {
+      "id": "avenue_worker_C_research_bot",
+      "type": "avenue_worker"
+    },
+    {
+      "id": "avenue_worker_C_opportunity_ranking_bot",
+      "type": "avenue_worker"
+    },
+    {
+      "id": "avenue_worker_C_capital_allocation_bot",
+      "type": "avenue_worker"
+    },
+    {
+      "id": "avenue_worker_C_alerting_bot",
+      "type": "avenue_worker"
+    },
+    {
+      "id": "avenue_worker_C_review_bot",
+      "type": "avenue_worker"
+    },
+    {
+      "id": "gate_manager_C_gate_c1",
+      "type": "gate_manager"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_scanner_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_strategy_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_risk_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_execution_validation_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_exit_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_rebuy_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_rebuy_decision_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_profit_progression_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c1_goal_progression_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_manager_C_gate_c2",
+      "type": "gate_manager"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_scanner_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_strategy_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_risk_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_execution_validation_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_exit_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_rebuy_manager_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_rebuy_decision_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_profit_progression_bot",
+      "type": "gate_worker"
+    },
+    {
+      "id": "gate_worker_C_gate_c2_goal_progression_bot",
+      "type": "gate_worker"
+    }
+  ],
+  "truth_version": "hierarchy_registry_v1"
+}

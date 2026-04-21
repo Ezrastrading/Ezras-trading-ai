@@ -1,0 +1,131 @@
+{
+  "anomalies": {
+    "execution": [],
+    "registry": []
+  },
+  "authority_drift": {
+    "blocked": false,
+    "findings": [],
+    "slot_count": 0,
+    "truth_version": "authority_drift_v1"
+  },
+  "automation_surface": {
+    "automatic_ceo_enabled": true,
+    "automatic_progression_enabled": true,
+    "automatic_research_enabled": true,
+    "automatic_review_enabled": true,
+    "automatic_spawn_enabled": false,
+    "system_convergence_mission_active": true,
+    "system_profitability_mission_active": true
+  },
+  "blockers": [
+    "global_orchestration_frozen"
+  ],
+  "budget_snapshot": {
+    "force_deterministic": null,
+    "global_daily_token_budget": 250000,
+    "global_token_used": null,
+    "per_bot_daily_token_budget": 40000
+  },
+  "environment_hints": {
+    "EZRAS_BOT_REGISTRY_PATH": null,
+    "EZRAS_ORCHESTRATION_LIVE_GATE": null,
+    "EZRAS_RUNTIME_ROOT": "/private/var/folders/t6/xk4fnv2s7q7chm2yyf8_0xsh0000gn/T/pytest-of-nexplora.ai/pytest-161/test_deployed_environment_smok0/opt/ezra-runtime"
+  },
+  "execution_authority": {
+    "slots": [],
+    "truth_version": "execution_authority_v1",
+    "updated_at": null
+  },
+  "execution_authority_invariant": {
+    "errors": [],
+    "ok": true
+  },
+  "generated_at": "2026-04-21T21:20:07.895539+00:00",
+  "historical_note": "Stale failures in older JSON files under runtime_root do not override this chain — refresh truth after fixes.",
+  "next_operator_commands": [
+    "Resolve blockers[] before enabling EZRAS_ORCHESTRATION_LIVE_GATE=1",
+    "python -m trading_ai.deployment orchestration-status",
+    "python -m trading_ai.deployment refresh-orchestration-truth-chain",
+    "python -m trading_ai.deployment orchestration-daily-ceo"
+  ],
+  "orchestration_kill_switch": {
+    "avenue": {},
+    "bot_class": {},
+    "bot_id": {},
+    "degrade_to_observe_only": true,
+    "gate": {},
+    "orchestration_frozen": true,
+    "truth_version": "orchestration_kill_switch_v1",
+    "updated_at": "2026-04-21T07:25:49.193102+00:00",
+    "venue_family": {}
+  },
+  "readiness": {
+    "autonomous_operation": false,
+    "autonomous_operation_scoped_note": "orchestration_registry_governance_only — not Avenue A autonomous_live daemon contracts (see daemon_live_switch_authority.json + avenue_a_autonomous_runtime_truth).",
+    "honesty": "supervised_ready requires zero blockers and no registry anomalies; autonomous_operation here means orchestration-surface only.",
+    "supervised_live_operation": false
+  },
+  "registry": {
+    "bot_count": 0,
+    "truth_version": "bot_registry_v2"
+  },
+  "risk_caps_snapshot": {
+    "current_daily_realized_loss_usd": 0.0,
+    "max_daily_loss_usd_global": 5000.0,
+    "max_data_age_sec_for_trading": 120
+  },
+  "runtime_root": {
+    "path": "/private/var/folders/t6/xk4fnv2s7q7chm2yyf8_0xsh0000gn/T/pytest-of-nexplora.ai/pytest-161/test_deployed_environment_smok0/opt/ezra-runtime",
+    "resolved": true
+  },
+  "shadow_vs_live": {
+    "execution_authority_permission": [],
+    "shadow_or_non_execution": []
+  },
+  "system_mission": {
+    "active": true,
+    "philosophy": {
+      "aspirational_trajectory_note": "The system scores all strategies and edges by how quickly measured results could compound capital toward aggressive upside targets (e.g. high daily ROI as a horizon). This is an optimization pressure toward evidence-backed repeatability — it does not promise any fixed rate of return.",
+      "automation_principle": "Automatically research, rank candidates, spawn scoped bots within caps, review, audit, queue implementation, promote or demote paths, run CEO sessions, and maintain cumulative memory — operator enables supervised live and only promotes autonomous paths through objective contracts.",
+      "behavior": [
+        "adaptive",
+        "aggressive_but_risk_gated",
+        "continuously_optimizing",
+        "avoid_idle_research_loops_when_budgets_allow_actionable_queue_items",
+        "keep_capital_working_when_safe_per_governor_and_truth"
+      ],
+      "learning_mandate": "Every completed trade is data: what worked, what failed, why, and what to try next — stored structurally.",
+      "learning_phases": {
+        "phase_1": "Days 1–3: exploration, data gathering, edge discovery (shadow / supervised as allowed).",
+        "phase_2": "After ~100–150 trades: emphasize convergence and ranking from measured outcomes.",
+        "phase_3": "Days 4–6 onward: prioritize execution of highest-scoring strategies **only** when gates and truth allow."
+      },
+      "mission_stage_labeling": {
+        "honesty": "Learning phases and mission labels are policy text — not a learned stage classifier.",
+        "label_kind": "rule_based_phase_metadata",
+        "not_ml": true
+      },
+      "operating_philosophy": "Discover, validate, and exploit the fastest repeatable paths to extreme upside through autonomous research, testing, review, implementation, and adaptation — while preserving truthfulness, capital discipline, and strict fail-closed safety.",
+      "primary_objective": "Find and scale the fastest repeatable profitable edges across avenues, gates, strategies, latency patterns, entry/exit methods, timing patterns, and execution improvements — using only measured evidence.",
+      "secondary_objectives": [
+        "compress_learning_time",
+        "compress_time_to_edge",
+        "compress_time_to_promotion",
+        "compress_time_to_capital_readiness",
+        "compress_time_to_repeatable_profitable_deployment",
+        "reduce_wasteful_research_and_token_burn",
+        "reduce_slow_or_non_productive_strategies",
+        "aggressively_reallocate_effort_toward_what_is_working",
+        "minimize_losses_and_drawdowns_subject_to_safety_gates",
+        "maximize_trade_efficiency_profit_per_unit_time_where_measured",
+        "reduce_latency_between_opportunity_detection_and_execution_where_safe",
+        "eliminate_unproductive_strategies_quickly_via_demotion_disable"
+      ],
+      "truth_principle": "Never hallucinate edge, profitability, or readiness. Ground decisions in measured evidence: artifacts, replay results, smoke results, real ledger results, or explicit truth files.",
+      "truth_version": "system_mission_v2"
+    },
+    "version": "system_mission_v2"
+  },
+  "truth_version": "orchestration_truth_chain_v1"
+}

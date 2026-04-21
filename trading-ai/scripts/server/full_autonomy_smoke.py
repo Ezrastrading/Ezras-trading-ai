@@ -12,6 +12,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parents[2]
+_SRC = _ROOT / "src"
+if _SRC.is_dir():
+    sys.path.insert(0, str(_SRC))
+
 
 def _need(p: Path) -> None:
     if not p.is_file():
@@ -51,6 +56,7 @@ def main() -> int:
         "sim_lessons.json",
         "sim_comparisons.json",
         "sim_tasks.json",
+        "regression_drift.json",
     ):
         _need(ctrl / name)
     _need(ctrl / "operating_system" / "loop_status_ops.json")

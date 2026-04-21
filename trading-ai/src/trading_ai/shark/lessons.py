@@ -31,7 +31,6 @@ def _repo_committed_lessons_path() -> Optional[Path]:
         pass
     return None
 
-
 DEFAULT_LESSONS: Dict[str, Any] = {
     "version": 1,
     "last_updated": None,
@@ -219,3 +218,20 @@ def get_rules_summary() -> str:
         + "\n".join(f"✗ {d}" for d in dont)
     )
 
+
+def classify_lessons_smoke_status(lessons: Dict[str, Any]) -> Dict[str, Any]:
+    """Smoke classification for mission / operator scripts (structure vs Day-A completeness)."""
+    if not isinstance(lessons, dict):
+        return {"healthy_structure": False, "status": "FAIL", "day_a_complete": False}
+    ok_lists = isinstance(lessons.get("lessons"), list) and isinstance(lessons.get("rules"), list)
+    ok_dnr = isinstance(lessons.get("do_not_repeat"), list)
+    if not ok_lists or not ok_dnr:
+        return {
+            "healthy_structure": False,
+            "status": "FAIL",
+            "day_a_complete": bool(lessons.get("day_a_complete")),
+        }
+    day_a = bool(lessons.get("day_a_complete"))
+    if not day_a:
+        return {"healthy_structure": True, "status": "WARN", "day_a_complete": False}
+    return {"healthy_structure": True, "status": "PASS", "day_a_complete": True}

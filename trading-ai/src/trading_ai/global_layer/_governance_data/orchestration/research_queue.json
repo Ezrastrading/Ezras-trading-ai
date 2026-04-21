@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "action": "investigate top blocker root-causes (data freshness, slippage, spread widening)",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.625123+00:00",
+      "id": "mission_goals::research::2026-04-21::1",
+      "kind": "research",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "rank opportunities by liquidity stability and verified edge quality",
+      "active_goal_id": "GOAL_A",
+      "created_at": "2026-04-21T20:47:49.625120+00:00",
+      "id": "mission_goals::research::2026-04-21::0",
+      "kind": "research",
+      "pace_state": "ahead_of_pace",
+      "safety_note": "does_not_override_gates_or_kill_switches",
+      "source": "mission_goals_operating_layer"
+    },
+    {
+      "action": "research_a",
+      "id": "research1"
+    }
+  ],
+  "generated_at": "2026-04-21T21:20:08.099464+00:00",
+  "truth_version": "research_queue_v1"
+}
