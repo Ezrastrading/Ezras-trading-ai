@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -72,6 +72,80 @@ def _touch_writable(root: Path) -> Dict[str, Any]:
     return {"ok": True, "path": str(p)}
 
 
+def _git_head(repo_root: Path) -> Dict[str, Any]:
+    """Best-effort commit SHA for operator proof (no network)."""
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        return {"ok": False, "reason": "no_dot_git", "path": str(repo_root)}
+    try:
+        cp = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        sha = (cp.stdout or "").strip()
+        if cp.returncode == 0 and len(sha) >= 7:
+            return {"ok": True, "sha": sha, "path": str(repo_root)}
+        return {"ok": False, "reason": f"git_exit_{cp.returncode}", "stderr": (cp.stderr or "")[:200]}
+    except Exception as exc:
+        return {"ok": False, "reason": type(exc).__name__}
+
+
+def _read_deployed_refs(runtime_root: Path) -> Dict[str, Any]:
+    p = runtime_root / "data" / "control" / "deployed_refs.json"
+    if not p.is_file():
+        return {"present": False, "path": str(p)}
+    try:
+        return {"present": True, "path": str(p), "payload": json.loads(p.read_text(encoding="utf-8"))}
+    except Exception as exc:
+        return {"present": True, "path": str(p), "error": type(exc).__name__}
+
+
+def _optional_simulation_artifacts(runtime_root: Path) -> Dict[str, Any]:
+    ctrl = runtime_root / "data" / "control"
+    names = (
+        "sim_trade_log.json",
+        "sim_fill_log.json",
+        "sim_pnl.json",
+        "sim_lessons.json",
+        "sim_tasks.json",
+        "sim_24h_validation.json",
+        "regression_drift.json",
+        "service_status.json",
+        "master_smoke.json",
+        "tasks.jsonl",
+    )
+    return {n: bool((ctrl / n).is_file()) for n in names}
+
+
+def _databank_probe(runtime_root: Path) -> Dict[str, Any]:
+    os.environ["EZRAS_RUNTIME_ROOT"] = str(runtime_root)
+    os.environ.setdefault("TRADE_DATABANK_MEMORY_ROOT", str(runtime_root / "databank"))
+    try:
+        from trading_ai.nte.databank.local_trade_store import resolve_databank_root
+
+        root, src = resolve_databank_root()
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".deployed_smoke_databank_probe"
+        probe.write_text(_iso() + "\n", encoding="utf-8")
+        return {"ok": True, "databank_root": str(root), "resolution": src}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def _post_trade_probe(runtime_root: Path) -> Dict[str, Any]:
+    try:
+        for rel in ("logs", "state"):
+            p = runtime_root / rel
+            p.mkdir(parents=True, exist_ok=True)
+            (p / ".deployed_smoke_post_trade_probe").write_text(_iso() + "\n", encoding="utf-8")
+        return {"ok": True, "logs_dir": str(runtime_root / "logs"), "state_dir": str(runtime_root / "state")}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
 def main(argv: List[str]) -> int:
     import argparse
 
@@ -86,6 +160,10 @@ def main(argv: List[str]) -> int:
     private_src = Path(args.private_root).resolve() / "trading-ai" / "src"
     runtime_root = Path(args.runtime_root).resolve()
 
+    # Align process env with services so imports, databank, and supervisors resolve the same tree.
+    os.environ["EZRAS_RUNTIME_ROOT"] = str(runtime_root)
+    os.environ.setdefault("TRADE_DATABANK_MEMORY_ROOT", str(runtime_root / "databank"))
+
     live_ok, live_errs = _assert_live_disabled()
     overlay = _py_path_overlay_ok(public_src=public_src, private_src=private_src)
 
@@ -96,6 +174,12 @@ def main(argv: List[str]) -> int:
         "trading_ai.global_layer.mission_goals_operating_layer",
         "trading_ai.global_layer.mission_goals_task_consumer",
         "trading_ai.nte.hardening.live_order_guard",
+        "trading_ai.deployment",
+        "trading_ai.runtime.trade_snapshots",
+        "trading_ai.runtime_proof.first_twenty_judge",
+        "trading_ai.automation.post_trade_hub",
+        "trading_ai.shark.mission",
+        "trading_ai.global_layer.governance_order_gate",
     ):
         try:
             __import__(mod)
@@ -144,6 +228,17 @@ def main(argv: List[str]) -> int:
     except Exception as exc:
         task_probe = {"ok": False, "path": str(tasks_path), "error": type(exc).__name__}
 
+    public_repo = Path(args.public_root).resolve()
+    private_repo = Path(args.private_root).resolve()
+    repo_git = {
+        "public_repo_head": _git_head(public_repo),
+        "private_repo_head": _git_head(private_repo),
+    }
+    deployed_refs = _read_deployed_refs(runtime_root)
+    databank_probe = _databank_probe(runtime_root)
+    post_trade_probe = _post_trade_probe(runtime_root)
+    optional_sim = _optional_simulation_artifacts(runtime_root)
+
     report = {
         "truth_version": "deployed_environment_smoke_v1",
         "generated_at": _iso(),
@@ -162,6 +257,11 @@ def main(argv: List[str]) -> int:
         "research_supervisor": research,
         "expected_artifacts_exist": exists,
         "task_probe": task_probe,
+        "commit_evidence": repo_git,
+        "deployed_refs_artifact": deployed_refs,
+        "databank_probe": databank_probe,
+        "post_trade_path_probe": post_trade_probe,
+        "optional_simulation_and_router_artifacts": optional_sim,
         "honesty": "Smoke does not place orders; it proves supervisor loops and artifact/task emission in deployed layout.",
     }
 
@@ -196,6 +296,8 @@ def main(argv: List[str]) -> int:
         and all(exists.values())
         and bool(ops.get("ok"))
         and bool(research.get("ok"))
+        and bool(databank_probe.get("ok"))
+        and bool(post_trade_probe.get("ok"))
     )
     return 0 if ok else 2
 

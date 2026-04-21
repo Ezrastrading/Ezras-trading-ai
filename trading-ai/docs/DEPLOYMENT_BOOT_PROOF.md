@@ -1,5 +1,8 @@
 ## Deployment boot persistence proof (Ezra Trading AI)
 
+**Extended runbook (deploy + micro-trade + proof matrix):** `docs/SERVER_DEPLOY_AND_MICRO_TRADE_RUNBOOK.md`  
+**One-shot local/server chain:** `scripts/server/server_side_smoke_chain.sh`
+
 This runbook proves **boot persistence** and **non-live safety** for the two-role operating system on a server with:
 
 - **public repo**: `/opt/ezra-public`
