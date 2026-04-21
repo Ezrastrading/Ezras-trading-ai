@@ -23,6 +23,9 @@ from trading_ai.runtime_paths import ezras_runtime_root
 
 logger = logging.getLogger(__name__)
 
+# Single authoritative Avenue A live BUY execution path (Gate A / Coinbase).
+AVENUE_A_AUTHORITATIVE_BUY_PATH = "nte_only"
+
 # Actions that may proceed when execution is paused (exit / safety).
 _EXIT_SAFE_ACTIONS: Set[str] = {
     "place_market_exit",
@@ -232,8 +235,135 @@ def assert_live_order_permitted(
             )
         raise RuntimeError(f"Live order blocked: {reason}")
 
+    # Hard block: illegal legacy shark execution bypass (no break-glass in live).
+    if (os.environ.get("EZRAS_ALLOW_SHARK_COINBASE_EXECUTION") or "").strip() in ("1", "true", "TRUE", "yes", "YES"):
+        try:
+            from trading_ai.safety.fail_closed import fail_closed
+
+            fail_closed(
+                "ILLEGAL_EXECUTION_PATH_ATTEMPT:EZRAS_ALLOW_SHARK_COINBASE_EXECUTION_set",
+                meta={"surface": "live_order_guard", "avenue_id": avenue_id, "action": action},
+            )
+        except Exception:
+            _block("ILLEGAL_EXECUTION_PATH_ATTEMPT:EZRAS_ALLOW_SHARK_COINBASE_EXECUTION_set", severe=True)
+
     if action not in ALLOWED_ACTIONS:
         _block(f"unknown_action:{action}", severe=False)
+
+    # Universal candidate enforcement for live entries (fail-closed).
+    # Any BUY-capable live entry path must have evaluated and set a UniversalGapCandidate
+    # in-context before reaching venue order methods.
+    if action in ("place_limit_entry", "place_market_entry", "replace_order") and str(order_side or "").strip().upper() == "BUY":
+        try:
+            from trading_ai.global_layer.gap_models import (
+                authoritative_live_buy_path_get,
+                candidate_context_get,
+                require_valid_candidate_for_execution,
+            )
+            from trading_ai.global_layer.gap_engine import evaluate_candidate
+
+            cand = candidate_context_get()
+            val = require_valid_candidate_for_execution(cand)
+            if not val.ok:
+                _block(
+                    "missing_or_incomplete_universal_candidate:" + ",".join(val.missing_fields + val.errors),
+                    severe=False,
+                )
+            # Avenue A live BUY must be routed through the one authoritative path.
+            if (
+                str(avenue_id or "").lower() == "coinbase"
+                and str(execution_gate or "").lower() == "gate_a"
+                and ctx.execution_mode == ExecutionMode.LIVE
+            ):
+                auth = authoritative_live_buy_path_get()
+                if auth != AVENUE_A_AUTHORITATIVE_BUY_PATH:
+                    _block(
+                        "non_authoritative_live_buy_path_blocked",
+                        severe=True,
+                    )
+            dec = evaluate_candidate(cand)
+            if not bool(dec.should_trade):
+                _block(
+                    "universal_gap_engine_rejected:" + ",".join(dec.rejection_reasons or ["rejected"]),
+                    severe=False,
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            _block(f"universal_candidate_enforcement_error:{type(exc).__name__}", severe=False)
+
+        # Mission probability tier enforcement (authoritative, fail-closed).
+        # This must not weaken existing safety; it is an additional guard.
+        try:
+            from trading_ai.shark.mission import evaluate_trade_against_mission, mission_probability_get, TIER_MAX_RISK_FRACTION
+
+            prob = mission_probability_get()
+            if prob is None:
+                _merge_system_health(
+                    {
+                        "mission_probability_enforcement": {
+                            "evaluated": True,
+                            "allowed": False,
+                            "reason": "missing_mission_probability_ctx",
+                        }
+                    }
+                )
+                _block("mission_probability_missing", severe=False)
+            # Total balance for tier caps: best-effort from provided capital truth.
+            try:
+                tb = sum(float(v) for v in (quote_balances_for_capital_truth or {}).values())
+            except Exception:
+                tb = 0.0
+            if tb <= 0:
+                # Fail-closed: do not allow live BUY without capital truth baseline for tier sizing.
+                _merge_system_health(
+                    {
+                        "mission_probability_enforcement": {
+                            "evaluated": True,
+                            "allowed": False,
+                            "reason": "missing_total_balance_for_tier_caps",
+                            "probability": float(prob),
+                        }
+                    }
+                )
+                _block("mission_probability_missing_total_balance", severe=False)
+            qn = float(quote_notional or 0.0)
+            rep = evaluate_trade_against_mission(
+                str(avenue_id or ""),
+                str(product_id or ""),
+                qn,
+                float(prob),
+                float(tb),
+                metadata={"execution_gate": str(execution_gate or ""), "action": str(action or "")},
+            )
+            tier = int(rep.get("probability_tier") or 0)
+            tier_cap = None
+            if tier in (1, 2, 3):
+                try:
+                    tier_cap = float(tb) * float(TIER_MAX_RISK_FRACTION.get(tier) or 0.0)
+                except Exception:
+                    tier_cap = None
+            _merge_system_health(
+                {
+                    "mission_probability_enforcement": {
+                        "evaluated": True,
+                        "allowed": bool(rep.get("approved")),
+                        "probability": float(prob),
+                        "tier": tier,
+                        "quote_notional": qn,
+                        "total_balance_usd": float(tb),
+                        "tier_cap_usd": tier_cap,
+                        "reason": str(rep.get("reason") or ""),
+                        "violations": list(rep.get("violations") or []),
+                    }
+                }
+            )
+            if not bool(rep.get("approved")):
+                _block("mission_probability_tier_blocked:" + str(rep.get("reason") or "blocked"), severe=False)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            _block(f"mission_probability_enforcement_error:{type(exc).__name__}", severe=False)
 
     sz_err = _validate_size_notional(
         action,
@@ -265,32 +395,6 @@ def assert_live_order_permitted(
                 }
             }
         )
-        _block(str(exc), severe=False)
-
-    # Final failsafe layer (kill switch, PnL caps, governance, duplicates, capital truth)
-    try:
-        from trading_ai.safety.failsafe_guard import FailsafeContext, assert_failsafe_or_raise
-
-        g: Literal["gate_a", "gate_b"] = "gate_b" if execution_gate == "gate_b" else "gate_a"
-        dup_iso = validation_duplicate_isolation_key()
-        assert_failsafe_or_raise(
-            FailsafeContext(
-                action=action,
-                avenue_id=avenue_id,
-                product_id=product_id,
-                gate=g,
-                quote_notional=quote_notional,
-                base_size=base_size,
-                quote_balances_by_ccy=quote_balances_for_capital_truth,
-                strategy_id=strategy_id,
-                trade_id=trade_id,
-                multi_leg=multi_leg,
-                skip_governance=False,
-                validation_duplicate_isolation_key=dup_iso,
-            ),
-            runtime_root=None,
-        )
-    except RuntimeError as exc:
         _block(str(exc), severe=False)
 
     # Mode / flags
@@ -367,6 +471,36 @@ def assert_live_order_permitted(
             _block(str(exc), severe=True)
         except Exception as exc:
             logger.debug("control artifact preflight skipped: %s", exc)
+
+    # Final failsafe layer (kill switch, PnL caps, governance, duplicates, capital truth).
+    #
+    # IMPORTANT: this must run after all pre-venue blocks (mode/scope/config/artifacts). Otherwise a
+    # pre-venue block can still poison the duplicate window by recording a "recent_orders" entry
+    # even though no live order was actually eligible to be submitted.
+    try:
+        from trading_ai.safety.failsafe_guard import FailsafeContext, assert_failsafe_or_raise
+
+        g: Literal["gate_a", "gate_b"] = "gate_b" if execution_gate == "gate_b" else "gate_a"
+        dup_iso = validation_duplicate_isolation_key()
+        assert_failsafe_or_raise(
+            FailsafeContext(
+                action=action,
+                avenue_id=avenue_id,
+                product_id=product_id,
+                gate=g,
+                quote_notional=quote_notional,
+                base_size=base_size,
+                quote_balances_by_ccy=quote_balances_for_capital_truth,
+                strategy_id=strategy_id,
+                trade_id=trade_id,
+                multi_leg=multi_leg,
+                skip_governance=False,
+                validation_duplicate_isolation_key=dup_iso,
+            ),
+            runtime_root=None,
+        )
+    except RuntimeError as exc:
+        _block(str(exc), severe=False)
 
     try:
         from trading_ai.runtime.live_execution_state import record_execution_step

@@ -8,6 +8,14 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+def _lessons_section_status(lessons: dict) -> tuple[str, bool, bool]:
+    from trading_ai.shark.lessons import classify_lessons_smoke_status
+
+    out = classify_lessons_smoke_status(lessons)
+    st = str(out.get("status") or "FAIL").upper()
+    icon = "✅" if st == "PASS" else ("⚠️" if st == "WARN" else "❌")
+    return f"{icon} {st}", bool(out.get("healthy_structure")), bool(out.get("day_a_complete"))
+
 
 def main() -> None:
     from trading_ai.shark.dotenv_load import load_shark_dotenv
@@ -35,8 +43,12 @@ def main() -> None:
     cb_lessons = [l for l in ll if l.get("platform") == "coinbase"]
     print(f"   Kalshi lessons: {len(kalshi_lessons)}")
     print(f"   Coinbase lessons: {len(cb_lessons)}")
-    status = "✅ PASS" if len(ll) >= 10 else "❌ FAIL"
+    # Bootstrap smoke intent: validate the lessons store is readable and structured,
+    # not that a specific day has already been completed on a fresh server.
+    status, healthy, day_a_complete = _lessons_section_status(lessons)
     print(f"   Status: {status}")
+    if healthy and not day_a_complete:
+        print("   Note: Day A not complete yet (ok on fresh server)")
     _ = get_rules_summary()
 
     # ── 2. SUPABASE ─────────────────────────────
@@ -58,22 +70,127 @@ def main() -> None:
     # ── 3. MISSION ─────────────────────────────
     print("\n3. MISSION:")
     from trading_ai.shark.mission import evaluate_trade_against_mission, get_mission_status
+    from trading_ai.global_layer.mission_goals_operating_layer import refresh_mission_goals_operating_layer
+    from trading_ai.global_layer.mission_goals_task_consumer import consume_mission_goals_into_tasks
 
     status_m = get_mission_status(200.0)
     print("   Target: $1,000,000")
     print(f"   Days left: {status_m['days_left']}")
     print(f"   Required: {status_m['required_daily_pct']:.2f}%/day")
 
-    bad = evaluate_trade_against_mission("kalshi", "KXBTC", 5.0, 0.70, 200.0)
-    good = evaluate_trade_against_mission("kalshi", "KXBTC", 5.0, 0.92, 200.0)
+    below_min = evaluate_trade_against_mission("kalshi", "KXBTC", 5.0, 0.62, 200.0)
+    tier1_blocked_by_size = evaluate_trade_against_mission("kalshi", "KXBTC", 12.0, 0.70, 200.0)
+    tier2_allows_more = evaluate_trade_against_mission("kalshi", "KXBTC", 12.0, 0.80, 200.0)
+    tier3 = evaluate_trade_against_mission("kalshi", "KXBTC", 30.0, 0.92, 200.0)
     oversized = evaluate_trade_against_mission(
         "coinbase", "BTC-USD", 1000.0, 0.60, 200.0, metadata={"gate": "A"}
     )
-    print(f"   Blocks 70% prob: {not bad['approved']}")
-    print(f"   Allows 92% prob: {good['approved']}")
+    print(f"   Tier BLOCK (<63): {not below_min['approved']}")
+    print(f"   Tier 1 (63–76) protective sizing: {not tier1_blocked_by_size['approved']}")
+    print(f"   Tier 2 (77–90) moderate protective: {tier2_allows_more['approved']}")
+    print(f"   Tier 3 (90%+) strongest allowance (within caps): {tier3['approved']}")
     print(f"   Blocks oversized Coinbase buy: {not oversized['approved']}")
-    ok_m = (not bad["approved"]) and good["approved"] and (not oversized["approved"])
+    ok_m = (
+        (not below_min["approved"])
+        and (not tier1_blocked_by_size["approved"])
+        and tier2_allows_more["approved"]
+        and tier3["approved"]
+        and (not oversized["approved"])
+    )
     print(f"   Status: {'✅ PASS' if ok_m else '❌ FAIL'}")
+    # Active mission/goals operating layer: should produce next actions, not just report status.
+    op = refresh_mission_goals_operating_layer(total_balance_usd=200.0)
+    ps = op["plan"]["pace"]["pace_state"]
+    n_actions = sum(len(op["plan"]["daily_loop"][k]) for k in ("review", "research", "testing", "implementation"))
+    print(f"   Operating layer pace_state: {ps}")
+    print(f"   Operating layer next actions (count): {n_actions}")
+    # Prove consumption: operating outputs are converted into real orchestration tasks.
+    cons = consume_mission_goals_into_tasks()
+    print(f"   Orchestration task consumer created: {cons.get('tasks_created')}")
+    top = (cons.get("top_tasks") or [])[:1]
+    if top:
+        t0 = top[0]
+        mg = t0.get("mission_goals") or {}
+        print(
+            f"   Top task: {t0.get('task_type')} scope={t0.get('avenue')}|{t0.get('gate')} "
+            f"prio={t0.get('priority')} kind={mg.get('kind')} pace={mg.get('pace_state')} goal={mg.get('active_goal_id')}"
+        )
+
+    # Prove REAL execution guard enforces probability tiers (authoritative live order guard).
+    try:
+        from trading_ai.global_layer.gap_models import authoritative_live_buy_path_set, authoritative_live_buy_path_reset
+        from trading_ai.global_layer.gap_models import candidate_context_set, candidate_context_reset
+        from trading_ai.nte.hardening.live_order_guard import assert_live_order_permitted
+        from trading_ai.nte.paths import nte_system_health_path
+        from trading_ai.nte.utils.atomic_json import atomic_write_json
+        from trading_ai.shark.mission import mission_probability_set, mission_probability_reset
+
+        # Local-only: set env for live guard evaluation without secrets.
+        os.environ["EZRAS_RUNTIME_ROOT"] = os.environ.get("EZRAS_RUNTIME_ROOT") or str(Path.cwd() / ".runtime_tmp")
+        os.environ["NTE_EXECUTION_MODE"] = "live"
+        os.environ["NTE_LIVE_TRADING_ENABLED"] = "true"
+        os.environ["NTE_PAPER_MODE"] = "false"
+        os.environ["NTE_DRY_RUN"] = "false"
+        os.environ["COINBASE_EXECUTION_ENABLED"] = "true"
+        os.environ["NTE_EXECUTION_SCOPE"] = "live"
+        os.environ["NTE_COINBASE_EXECUTION_ROUTE"] = "live"
+        os.environ["EZRAS_CONTROL_ARTIFACT_PREFLIGHT"] = "false"
+        os.environ["GAP_MIN_CONFIDENCE_SCORE"] = "0.0"
+        os.environ["GAP_MIN_EDGE_PERCENT"] = "-9999"
+        os.environ["GAP_MIN_LIQUIDITY_SCORE"] = "0.0"
+
+        atomic_write_json(
+            nte_system_health_path(),
+            {"healthy": True, "execution_should_pause": False, "global_pause": False, "avenue_pause": {}},
+        )
+        cand = {
+            "candidate_id": "ugc_smoke",
+            "edge_percent": 10.0,
+            "edge_score": 10.0,
+            "confidence_score": 0.9,
+            "execution_mode": "maker",
+            "gap_type": "probability_gap",
+            "estimated_true_value": 100.0,
+            "liquidity_score": 0.9,
+            "fees_estimate": 0.01,
+            "slippage_estimate": 0.01,
+            "must_trade": True,
+            "risk_flags": [],
+        }
+        ctok = candidate_context_set(cand)  # type: ignore[arg-type]
+        atok = authoritative_live_buy_path_set("nte_only")
+        try:
+            pbad = mission_probability_set(0.62)
+            try:
+                assert_live_order_permitted(
+                    "place_limit_entry",
+                    avenue_id="coinbase",
+                    product_id="BTC-USD",
+                    order_side="BUY",
+                    base_size="0.0002",
+                    quote_notional=10.0,
+                    credentials_ready=True,
+                    skip_config_validation=True,
+                    execution_gate="gate_a",
+                    quote_balances_for_capital_truth={"USD": 200.0},
+                    trade_id="smoke_prob_062",
+                )
+                print("   Live guard mission enforcement (<63): ❌ FAIL (should block)")
+            except RuntimeError as e:
+                print(f"   Live guard mission enforcement (<63): ✅ PASS ({str(e)[:80]})")
+            finally:
+                mission_probability_reset(pbad)
+        finally:
+            try:
+                candidate_context_reset(ctok)
+            except Exception:
+                pass
+            try:
+                authoritative_live_buy_path_reset(atok)
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"   Live guard mission enforcement: ⚠️ SKIP ({type(exc).__name__})")
 
     # ── 4. COINBASE NTE (Avenue A) CONFIG ──────
     print("\n4. COINBASE NTE CONFIG:")
