@@ -169,6 +169,26 @@ def main(argv: List[str]) -> int:
     _write_json(out_path, report)
     print(json.dumps(report, indent=2, sort_keys=True))
 
+    # Operator gate scripts expect ``deploy_preflight.json`` alongside the smoke report.
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from scripts.server.deploy_preflight import build_report, resolve_paths
+
+        pr = resolve_paths(
+            public_root=str(Path(args.public_root).resolve()),
+            private_root=str(Path(args.private_root).resolve()),
+            runtime_root=str(runtime_root),
+            venv_root=str(Path(args.venv_root).resolve()),
+        )
+        _write_json(runtime_root / "data" / "control" / "deploy_preflight.json", build_report(pr))
+    except Exception as exc:
+        _write_json(
+            runtime_root / "data" / "control" / "deploy_preflight.json",
+            {"truth_version": "deploy_preflight_v1", "ok": False, "error": type(exc).__name__},
+        )
+
     ok = (
         live_ok
         and report["imports_ok"]

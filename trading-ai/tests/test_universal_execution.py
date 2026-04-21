@@ -188,6 +188,19 @@ def test_duplicate_pretrade_blocks_with_duplicate_terminal() -> None:
 
 def test_loop_proof_artifact_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    # Post-trade truth chain requires minimal on-disk artifacts when ``runtime_root`` is wired.
+    (tmp_path / "execution_proof").mkdir(parents=True)
+    (tmp_path / "execution_proof" / "execution_proof.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "data" / "pnl").mkdir(parents=True)
+    (tmp_path / "data" / "pnl" / "pnl_record.json").write_text(
+        json.dumps({"gross_pnl": 1.0, "fees": 0.1, "slippage": 0.0, "net_pnl": 0.9}),
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "risk").mkdir(parents=True)
+    (tmp_path / "data" / "risk" / "risk_state.json").write_text(
+        json.dumps({"status": "ACTIVE"}),
+        encoding="utf-8",
+    )
     out = execute_round_trip_with_truth(
         _FakeOkAdapter(),
         ctx=AdapterContext(avenue_id="T", extra={"runtime_root": tmp_path}),

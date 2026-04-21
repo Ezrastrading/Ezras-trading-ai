@@ -42,7 +42,7 @@ def test_upsert_failure_queues_row_and_flush_replays(
     out = sts.upsert_trade_event(row)
     assert out["write_status"] == "failed"
     assert out["success"] is False
-    assert out["attempts"] == 4
+    assert out["attempts"] == 5
     assert out["queued_locally"] is True
 
     q = sts.local_unsynced_trades_path()

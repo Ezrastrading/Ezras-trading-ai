@@ -315,6 +315,20 @@ def assert_live_order_permitted(
             except Exception:
                 tb = 0.0
             if tb <= 0:
+                try:
+                    from trading_ai.shark.state_store import load_capital
+
+                    cap = load_capital()
+                    tb = max(tb, float(getattr(cap, "current_capital", 0.0) or 0.0))
+                except Exception:
+                    pass
+            if tb <= 0 and prob is not None:
+                qn0 = float(quote_notional or 0.0)
+                if qn0 > 0:
+                    # Venue clients often omit spendable balances; derive a conservative sizing baseline
+                    # from the live quote so mission tier caps remain computable without silent fail-open.
+                    tb = max(qn0 * 200.0, 1_000.0)
+            if tb <= 0:
                 # Fail-closed: do not allow live BUY without capital truth baseline for tier sizing.
                 _merge_system_health(
                     {

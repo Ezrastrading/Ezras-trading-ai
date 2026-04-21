@@ -92,9 +92,26 @@ class OrganismClosedTradeHook:
             }
         )
 
+        ptr_detail: Dict[str, Any] = {}
+        try:
+            from trading_ai.reality.post_trade_hardening import run_post_trade_reality_hardening
+
+            ptr_detail = run_post_trade_reality_hardening(merged)
+        except Exception as exc:
+            logger.warning("post_trade_reality_hardening: %s", exc)
+            ptr_detail = {"error": type(exc).__name__}
+
         return {
             "edge_hook": edge_report,
             "failsafe": fs,
             "operating_mode": mode.value,
             "trading_halted": halt,
+            "post_trade_reality": {
+                **ptr_detail,
+                "rolling_expectancy": rm["expectancy"],
+                "recent_drawdown_ratio": rm["dd_ratio"],
+                "operating_mode": mode.value,
+                "failsafe": fs,
+                "pipeline_validated": bool(stages.get("validated", True)),
+            },
         }

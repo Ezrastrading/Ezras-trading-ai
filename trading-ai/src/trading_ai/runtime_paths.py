@@ -19,10 +19,26 @@ from pathlib import Path
 def ezras_runtime_root() -> Path:
     raw = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
     if raw:
-        return Path(raw).expanduser().resolve()
+        # Bare ``~`` means ``~/ezras-runtime``, not the home directory root alone.
+        if raw == "~":
+            return (Path.home() / "ezras-runtime").resolve()
+        exp = Path(raw).expanduser()
+        # Mis-set paths like ``/tmp/~/ezras-runtime`` (literal ``~`` segment) → canonical runtime dir.
+        if "~" in exp.parts and str(exp).replace("\\", "/").rstrip("/").endswith("ezras-runtime"):
+            return (Path.home() / "ezras-runtime").resolve()
+        return exp.resolve()
     if os.path.exists("/app"):
         return Path("/app/ezras-runtime").resolve()
     return (Path.home() / "ezras-runtime").resolve()
+
+
+def runtime_root_diagnostics() -> dict:
+    """Lightweight snapshot for audits — paths only, no secrets."""
+    root = ezras_runtime_root()
+    return {
+        "ezras_runtime_root": str(root),
+        "env_EZRAS_RUNTIME_ROOT_set": bool((os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()),
+    }
 
 
 def ezras_runtime_root_fingerprint_component() -> str:

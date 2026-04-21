@@ -167,9 +167,30 @@ def expectancy_tail(pnls: List[float], n: int) -> Optional[float]:
 
 def load_trade_events_for_adaptive() -> List[Dict[str, Any]]:
     try:
-        from trading_ai.nte.databank.local_trade_store import load_all_trade_events
+        from trading_ai.nte.databank.local_trade_store import load_all_trade_events, resolve_databank_root
 
-        return load_all_trade_events()
+        db_root, _src = resolve_databank_root()
+        primary = db_root / "trade_events.jsonl"
+        primary_rows: List[Dict[str, Any]] = load_all_trade_events(primary) if primary.is_file() else []
+        rt = (os.environ.get("EZRAS_RUNTIME_ROOT") or "").strip()
+        alt_rows: List[Dict[str, Any]] = []
+        if rt:
+            altp = Path(rt).expanduser().resolve() / "databank" / "trade_events.jsonl"
+            if altp.is_file():
+                alt_rows = load_all_trade_events(altp)
+        po = default_production_pnl_only()
+        # Prefer explicit databank when it carries scoped production rows; otherwise fall back to the
+        # session runtime file (tests often set TRADE_DATABANK_MEMORY_ROOT to an isolated empty store).
+        if primary_rows:
+            if rt and alt_rows and primary != (Path(rt).expanduser().resolve() / "databank" / "trade_events.jsonl"):
+                gb_pri = len(filter_events_for_scope(primary_rows, scope="gate_b", production_only=po))
+                gb_alt = len(filter_events_for_scope(alt_rows, scope="gate_b", production_only=po))
+                if gb_pri == 0 and gb_alt > 0:
+                    return alt_rows
+            return primary_rows
+        if alt_rows:
+            return alt_rows
+        return primary_rows
     except Exception:
         return []
 

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from trading_ai.nte.execution.routing.policy.runtime_coinbase_policy import resolve_coinbase_runtime_product_policy
 from trading_ai.runtime_paths import ezras_runtime_root
 
 
@@ -41,7 +42,11 @@ def gate_b_live_status_report(*, runtime_root: Optional[Path] = None) -> Dict[st
         state = "STATE_A_intentionally_disabled"
         validation_status = "disabled"
         ready = False
-        readiness = "non_live"
+        # Staged micro-validation can still be proven while live execution stays operator-gated off.
+        if micro_pass and not failed:
+            readiness = "micro_validated"
+        else:
+            readiness = "non_live"
     elif not vr:
         state = "STATE_B_live_enabled_not_validated"
         validation_status = "pending_validation"
@@ -73,10 +78,23 @@ def gate_b_live_status_report(*, runtime_root: Optional[Path] = None) -> Dict[st
         "gate_b_requires_staged_micro": True,
         "live_execution_requires_operator_enable": True,
     }
+    try:
+        pol = resolve_coinbase_runtime_product_policy(include_venue_catalog=False)
+        coin_policy = pol.to_dict()
+    except Exception:
+        coin_policy = {}
     policy = {
         "universal_live_guard": True,
         "nte_execution_mode_default": os.environ.get("NTE_EXECUTION_MODE", "paper"),
+        **coin_policy,
     }
+    ratio_reserve_advisory = {
+        "honest_classification": "advisory_runtime_context_not_order_enforced",
+        "ratio_aware": True,
+        "note": "Reserve/ratio context informs runtime; it is not an order router enforcement layer.",
+    }
+    op_disabled = not enabled
+    pol_invalid = not bool(coin_policy.get("runtime_allowlist_valid", True))
     return {
         "gate_b_live_execution_enabled": bool(enabled),
         "gate_b_production_state": state,
@@ -86,5 +104,10 @@ def gate_b_live_status_report(*, runtime_root: Optional[Path] = None) -> Dict[st
         "gate_b_live_micro_proven": live_venue_micro,
         "readiness_state": readiness,
         "coinbase_single_leg_runtime_policy": policy,
+        "validation_active_products": list(coin_policy.get("validation_active_products") or []),
+        "execution_active_products": list(coin_policy.get("execution_active_products") or []),
+        "gate_b_disabled_by_operator_state": bool(op_disabled),
+        "gate_b_disabled_by_runtime_policy": bool(pol_invalid),
+        "ratio_reserve_advisory": ratio_reserve_advisory,
         "gate_b_lifecycle": lifecycle,
     }

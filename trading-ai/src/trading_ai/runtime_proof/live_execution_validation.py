@@ -168,17 +168,33 @@ def verify_data_pipeline_after_trade(
         "review_packet_updated": False,
     }
 
-    ms = MemoryStore()
+    nte_mem = runtime_root / "shark" / "nte" / "memory"
+    ms = MemoryStore(root=nte_mem)
     ms.ensure_defaults()
     tm = ms.load_json("trade_memory.json")
     trades = tm.get("trades") or []
     out["trade_memory_updated"] = any(str(t.get("trade_id")) == trade_id for t in trades if isinstance(t, dict))
 
-    te = global_trade_events_path()
+    te = (runtime_root / "databank" / "trade_events.jsonl").resolve()
     out["trade_events_appended"] = False
     if te.is_file():
-        tail = te.read_text(encoding="utf-8")[-8000:]
-        out["trade_events_appended"] = trade_id in tail
+        try:
+            for line in reversed(te.read_text(encoding="utf-8").splitlines()):
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except Exception:
+                    if trade_id in s:
+                        out["trade_events_appended"] = True
+                    continue
+                if str(rec.get("trade_id") or "").strip() == trade_id:
+                    out["trade_events_appended"] = True
+                    break
+        except Exception:
+            tail = te.read_text(encoding="utf-8")[-8000:]
+            out["trade_events_appended"] = trade_id in tail
 
     fed, _meta = load_federated_trades(nte_store=ms)
     out["federated_includes_trade_id"] = any(str(r.get("trade_id")) == trade_id for r in fed)
@@ -377,6 +393,7 @@ def run_single_live_execution_validation(
     *,
     quote_usd: float = 10.0,
     product_id: str = "BTC-USD",
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Blocker 2 — one real round-trip: market BUY (``quote_usd``) then SELL to flat.
@@ -389,7 +406,11 @@ def run_single_live_execution_validation(
     - Joint governance must allow (healthy ``joint_review_latest.json`` under runtime root)
 
     Returns a dict including pipeline verification and paths; on guard failure **no order** is sent.
+
+    Extra keyword arguments (e.g. ``include_runtime_stability``, ``execution_profile``) are accepted
+    for backward compatibility with Avenue A daemon / profit-cycle callers and ignored here.
     """
+    _ = kwargs  # reserved for profit-cycle alignment; Gate A round-trip path is unchanged.
     root = Path(runtime_root or os.environ.get("EZRAS_RUNTIME_ROOT") or ezras_runtime_root()).resolve()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(root)
 
@@ -718,3 +739,95 @@ def run_single_live_execution_validation(
 def _supabase_row_exists_with_retry(*_args: Any, **_kwargs: Any) -> bool:
     """Test seam for Supabase existence checks (patched in unit tests)."""
     return False
+
+
+def _gate_a_operator_confirms_live_round_trip(runtime_root: Path | str) -> bool:
+    """True when autonomous ack file is confirmed and Avenue A daemon is marked active in the environment."""
+    root = Path(runtime_root)
+    ack = root / "data" / "control" / "avenue_a_autonomous_live_ack.json"
+    if not ack.is_file():
+        return False
+    try:
+        data = json.loads(ack.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict) or data.get("confirmed") is not True:
+        return False
+    scope = str(data.get("scope") or "")
+    if "avenue_a" not in scope.lower():
+        return False
+    env_active = (os.environ.get("EZRAS_AVENUE_A_DAEMON_ACTIVE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    return bool(env_active)
+
+
+def persist_successful_gate_a_proof_to_disk(runtime_root: Path | str, validation_out: Dict[str, Any]) -> None:
+    """Overwrite ``execution_proof/live_execution_validation.json`` with a successful Gate A proof."""
+    root = Path(runtime_root)
+    ep = root / "execution_proof"
+    ep.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Any] = dict(validation_out)
+    proof = out.get("proof")
+    if isinstance(proof, dict):
+        for k in ("FINAL_EXECUTION_PROVEN", "execution_success"):
+            if k in proof and k not in out:
+                out[k] = proof[k]
+    out["FINAL_EXECUTION_PROVEN"] = bool(out.get("FINAL_EXECUTION_PROVEN", False))
+    out["execution_success"] = bool(out.get("execution_success", False))
+    out["error"] = None
+    out["failure_code"] = None
+    out["failure_reason"] = None
+    out["runtime_root"] = str(root.resolve())
+    (ep / "live_execution_validation.json").write_text(
+        json.dumps(out, indent=2, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def run_gate_b_live_micro_validation(
+    quote_usd: float = 10.0,
+    product_id: str = "BTC-USD",
+    *,
+    include_runtime_stability: bool = True,
+    runtime_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Operator CLI entry: Gate B Coinbase micro round-trip (writes ``execution_proof/gate_b_live_execution_validation.json``).
+
+    Delegates to :func:`run_avenue_a_profit_cycle` with ``execution_profile="gate_b"``.
+    """
+    root = Path(runtime_root or os.environ.get("EZRAS_RUNTIME_ROOT") or ezras_runtime_root()).resolve()
+    os.environ["EZRAS_RUNTIME_ROOT"] = str(root)
+    from trading_ai.orchestration.avenue_a_profit_cycle import run_avenue_a_profit_cycle
+
+    return run_avenue_a_profit_cycle(
+        root,
+        quote_usd=float(quote_usd),
+        product_id=str(product_id),
+        include_runtime_stability=bool(include_runtime_stability),
+        execution_profile="gate_b",
+        gate_a_anchored_majors_only=True,
+        avenue_a_autonomous_lane_decision=None,
+    )
+
+
+def duplicate_guard_proof_fields_for_live_validation() -> Dict[str, Any]:
+    """Fields duplicated into live-validation proof JSON for duplicate-window audits."""
+    from trading_ai.nte.hardening.live_order_guard import deployment_micro_validation_duplicate_isolation_key
+
+    active = (os.environ.get("EZRAS_DEPLOYMENT_MICRO_VALIDATION_ACTIVE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    iso = deployment_micro_validation_duplicate_isolation_key() if active else None
+    return {
+        "duplicate_guard_mode": (
+            "deployment_micro_validation_isolated_keys" if active else "standard"
+        ),
+        "validation_scope_duplicate_isolation_key": iso,
+        "duplicate_guard_bypassed_for_validation": False,
+    }

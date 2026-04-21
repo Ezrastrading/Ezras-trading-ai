@@ -1,9 +1,20 @@
 from trading_ai.validation.trade20_validation import load_trade20_report, maybe_process_trade20_closed_trade
 
+_STRICT = {
+    "gap_type": "probability_gap",
+    "edge_percent": 1.0,
+    "confidence_score": 0.85,
+    "liquidity_score": 0.9,
+    "execution_grade": "A",
+    "entry_slippage_bps": 1.0,
+    "exit_slippage_bps": 1.0,
+}
+
 
 def _fee_flip_trade(i: int) -> dict:
     # gross>0 but net<0 due to fees: explicit fee flip
     return {
+        **_STRICT,
         "trade_id": f"ff{i}",
         "venue_id": "coinbase",
         "gate_id": "gate_a",

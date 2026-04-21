@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -177,7 +178,7 @@ def resolve_coinbase_runtime_product_policy(
     venue intersection, and rejection reasons.
     """
     default_t = tuple(nte_settings_mod._default_nte_coinbase_products())
-    env_t = nte_settings_mod._nte_products_from_environ()
+    env_raw = (os.environ.get("NTE_PRODUCTS") or os.environ.get("NTE_COINBASE_PRODUCTS") or "").strip()
     nte = load_nte_settings()
     active = [str(p).strip().upper() for p in nte.products]
     active_unique = list(dict.fromkeys(active))
@@ -205,15 +206,15 @@ def resolve_coinbase_runtime_product_policy(
     active_set = {x.upper() for x in active_unique}
     removed_by_env: Optional[List[str]] = None
     added_by_env: Optional[List[str]] = None
-    if env_t is not None:
+    if env_raw:
         removed_by_env = sorted(default_set - active_set)
         added_by_env = sorted(active_set - default_set)
-        for x in removed_by_env:
+        for x in removed_by_env or []:
             logger.warning(
                 "WARNING: runtime policy removed default product %s via env override",
                 x,
             )
-    eff_src = "env_override" if env_t is not None else "code_defaults"
+    eff_src = "env_override" if env_raw else "code_defaults"
 
     merged_ids = _merge_spot_candidates_for_runtime(active_unique)
     allowlist_valid = len(active_unique) > 0 and len(merged_ids) > 0
@@ -224,9 +225,10 @@ def resolve_coinbase_runtime_product_policy(
         fatal_msg = "No runtime-allowed products remain after env override"
 
     exec_active = sorted(set(active_unique))
+    env_list = [p.strip().upper() for p in env_raw.split(",") if p.strip()] if env_raw else None
     return CoinbaseRuntimeProductPolicy(
         configured_default_products=[x.upper() for x in default_t],
-        env_override_products=[x.upper() for x in env_t] if env_t else None,
+        env_override_products=env_list,
         effective_products_source=eff_src,
         products_removed_by_env=removed_by_env,
         products_added_by_env=added_by_env,

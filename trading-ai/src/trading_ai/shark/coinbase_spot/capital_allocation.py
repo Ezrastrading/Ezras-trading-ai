@@ -14,9 +14,16 @@ class GateAllocationSplit:
     gate_a_other: float
 
 
-def compute_gate_allocation_split() -> GateAllocationSplit:
-    ga = float(os.environ.get("AVENUE_A_GATE_A_QUOTE_SHARE", "0.5"))
-    gb = float(os.environ.get("AVENUE_A_GATE_B_QUOTE_SHARE", str(max(0.0, 1.0 - ga))))
+def compute_gate_allocation_split(
+    *,
+    gate_a_share: float | None = None,
+    gate_b_share: float | None = None,
+) -> GateAllocationSplit:
+    if gate_a_share is not None and gate_b_share is not None:
+        ga, gb = float(gate_a_share), float(gate_b_share)
+    else:
+        ga = float(os.environ.get("AVENUE_A_GATE_A_QUOTE_SHARE", "0.5"))
+        gb = float(os.environ.get("AVENUE_A_GATE_B_QUOTE_SHARE", str(max(0.0, 1.0 - ga))))
     if ga + gb > 1.0 + 1e-9:
         s = ga + gb
         ga, gb = ga / s, gb / s

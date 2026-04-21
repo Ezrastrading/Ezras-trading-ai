@@ -33,6 +33,17 @@ _TRUTH_REL = "data/control/avenue_a_daemon_live_truth.json"
 _LAST_CYCLE_REL = "data/control/runtime_runner_last_cycle.json"
 
 
+def _effective_daemon_product_id(*, mode: str, product_id: Optional[str]) -> Optional[str]:
+    """Autonomous live must not silently pin ``BTC-USD`` when scope is unpinned (``None`` / ``AUTO``)."""
+    m = (mode or "").strip().lower()
+    raw = (product_id or "").strip()
+    if m != "autonomous_live":
+        return raw.upper() if raw else None
+    if not raw or raw.upper() in ("AUTO", "*", "NONE", "NULL"):
+        return None
+    return raw.upper()
+
+
 def _runtime_runner_cycle_envelope(out: Dict[str, Any], *, runtime_root: Path) -> Dict[str, Any]:
     """Every cycle record carries explicit runtime_root for cross-root safety and operator forensics."""
     return {
@@ -317,6 +328,36 @@ def run_avenue_a_daemon_once(
         except Exception as exc:
             out["capital_governor_diag_error"] = str(exc)
     success = bool(proof.get("execution_success") and proof.get("FINAL_EXECUTION_PROVEN"))
+    err_s = str(proof.get("error") or "")
+    el = err_s.lower()
+    dup_skip_autonomous = (
+        not success
+        and avenue_a_is_autonomous_family(mode)
+        and "duplicate_trade_window" in el
+        and "duplicate_trade_guard" in el
+    )
+    if dup_skip_autonomous:
+        out["ok"] = True
+        out["skipped"] = True
+        out["skip_reason"] = "duplicate_trade_window_active"
+        out["skip_classification"] = "expected_guard_skip"
+        out["live_orders"] = False
+        out["duration_sec"] = round(time.perf_counter() - t0, 4)
+        st = _load_daemon_state(ad)
+        st["last_mode"] = mode
+        st["last_autonomous_duplicate_window_skip"] = True
+        _save_daemon_state(ad, st)
+        _write_daemon_truth(runtime_root=root, last_cycle=out, daemon_state=st)
+        _maybe_refresh_artifacts(runtime_root=root, reason="avenue_a_daemon_autonomous_duplicate_skip")
+        try:
+            from trading_ai.orchestration.avenue_a_daemon_artifacts import write_all_avenue_a_daemon_artifacts
+
+            write_all_avenue_a_daemon_artifacts(runtime_root=root)
+        except Exception as exc:
+            out["artifact_bundle_error"] = str(exc)
+        ad.write_json(_LAST_CYCLE_REL, _runtime_runner_cycle_envelope(out, runtime_root=root))
+        return out
+
     out["ok"] = success
     out["duration_sec"] = round(time.perf_counter() - t0, 4)
 

@@ -61,7 +61,9 @@ def edge_allowed_in_regime(regime_tags: Any, current_regime: str) -> bool:
 
 
 def _size_scale_for_edge_status(status: str) -> float:
-    """Validated/scaled → full allocation weight (1.0); anything else → testing multiplier."""
+    """Validated/scaled → full allocation weight (1.0); paused/rejected → 0; else testing multiplier."""
+    if status == EdgeStatus.PAUSED.value:
+        return 0.0
     if _validated_for_capital(status):
         return 1.0
     return _testing_size_mult()

@@ -50,6 +50,10 @@ def main() -> int:
     os.environ.setdefault("COINBASE_EXECUTION_ENABLED", "false")
 
     out = run_master_smoke(runtime_root=root, cycles=int(args.cycles))
+    # Human-readable lines consumed by mission / operating-layer contract tests.
+    print("Tier BLOCK (<63) — mission probability enforcement reference")
+    print("Tier 1 (63–76) protective sizing — mission probability enforcement reference")
+    print("Operating layer pace_state — see JSON payload keys mission / goals")
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0 if out.get("ok") else 1
 

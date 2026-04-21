@@ -23,6 +23,51 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _index_jsonl_by_trade_id(path: Path) -> Dict[str, Dict[str, Any]]:
+    rows, _ = _load_jsonl(path)
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        tid = str(r.get("trade_id") or "").strip()
+        if tid:
+            out[tid] = r
+    return out
+
+
+def _build_universal_candidate_integrity(runtime_root: Path, trade_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Artifact-only checks for universal gap candidate + execution grade coverage."""
+    root = runtime_root.resolve()
+    tm = root / "data" / "trades" / "trades_master.jsonl"
+    te = root / "data" / "trades" / "trades_edge_snapshot.jsonl"
+    tx = root / "data" / "trades" / "trades_execution_snapshot.jsonl"
+    by_m = _index_jsonl_by_trade_id(tm)
+    by_e = _index_jsonl_by_trade_id(te)
+    by_x = _index_jsonl_by_trade_id(tx)
+    failure_categories_by_trade: Dict[str, List[str]] = {}
+    for t in trade_rows:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("trade_id") or "").strip()
+        if not tid:
+            continue
+        fails: List[str] = []
+        master = by_m.get(tid) or {}
+        edge = by_e.get(tid) or {}
+        exe = by_x.get(tid) or {}
+        ugc = master.get("universal_gap_candidate")
+        if isinstance(ugc, dict) and ugc.get("must_trade") is True:
+            cid = str(edge.get("candidate_id") or edge.get("universal_gap_candidate_id") or "").strip()
+            if not cid:
+                fails.append("missing_candidate")
+        if not str(exe.get("execution_grade") or exe.get("grade") or "").strip():
+            fails.append("missing_execution_grade")
+        if fails:
+            failure_categories_by_trade[tid] = fails
+    return {
+        "failure_categories_by_trade": failure_categories_by_trade,
+        "runtime_root": str(root),
+    }
+
+
 def _load_jsonl(path: Path) -> Tuple[List[Dict[str, Any]], int]:
     out: List[Dict[str, Any]] = []
     bad = 0
@@ -174,6 +219,8 @@ def judge_first_twenty_session(archive_dir: Path) -> Dict[str, Any]:
     if strict_go and organism_status != "FULLY_AGNOSTIC":
         capital = "NO_GO_ORGANISM_NOT_FULLY_AGNOSTIC"
 
+    universal_candidate_integrity = _build_universal_candidate_integrity(rr, trades)
+
     return {
         "archive_dir": str(arch),
         "missing_artifacts": missing,
@@ -210,6 +257,7 @@ def judge_first_twenty_session(archive_dir: Path) -> Dict[str, Any]:
             ]
         },
         "strict_go_with_agnostic_lock": strict_go_agnostic,
+        "universal_candidate_integrity": universal_candidate_integrity,
     }
 
 

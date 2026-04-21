@@ -79,5 +79,5 @@ def load_nte_settings() -> NTECoinbaseSettings:
 
 
 def _default_nte_coinbase_products() -> Tuple[str, ...]:
-    """Default Coinbase product universe for tests and bootstrap wiring."""
-    return load_nte_settings().products
+    """Code-default product universe (ignores env overrides — used for policy diff vs ``NTE_PRODUCTS``)."""
+    return _DEFAULT_NTE_PRODUCTS

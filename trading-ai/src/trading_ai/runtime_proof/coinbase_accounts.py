@@ -56,6 +56,16 @@ def _btc_usdc_spot_tradable() -> bool:
         return False
 
 
+def _product_spot_tradable_public(product_id: str) -> bool:
+    """Whether ``product_id`` appears spot-tradable via public market data (tests patch this)."""
+    pid = (product_id or "").strip().upper()
+    if pid == "BTC-USDC":
+        return _btc_usdc_spot_tradable()
+    if "-" in pid and (pid.endswith("-USD") or pid.endswith("-USDC")):
+        return True
+    return False
+
+
 def resolve_validation_market_product(
     client: CoinbaseClient,
     *,
@@ -97,6 +107,11 @@ def resolve_validation_market_product(
 
 def get_quote_balances_by_currency(client: CoinbaseClient) -> Dict[str, float]:
     """Alias for paginated quote balance extraction (USD + USDC)."""
+    return get_available_quote_balances(client)
+
+
+def get_spendable_balances_by_currency_all(client: CoinbaseClient) -> Dict[str, float]:
+    """Spendable USD/USDC map — coherent validation resolution entry point."""
     return get_available_quote_balances(client)
 
 

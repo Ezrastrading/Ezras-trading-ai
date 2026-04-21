@@ -68,6 +68,10 @@ def test_submit_order_kalshi_invokes_gate(monkeypatch: pytest.MonkeyPatch, tmp_p
         "trading_ai.shark.execution_live._core_execution_preflight",
         lambda intent: None,
     )
+    monkeypatch.setattr(
+        "trading_ai.control.system_execution_lock.require_live_execution_allowed",
+        lambda *a, **k: (True, "ok"),
+    )
     gdir = tmp_path / "shark" / "memory" / "global"
     gdir.mkdir(parents=True)
     _write_joint(gdir, mode="normal")

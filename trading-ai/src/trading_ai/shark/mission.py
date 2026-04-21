@@ -16,12 +16,34 @@ If not — don't do it.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import time
+from contextvars import Token
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Thread/async-safe mission probability context (live guard reads via ``mission_probability_get``).
+_mission_probability_ctx: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "mission_probability", default=None
+)
+
+# Max quote notional as fraction of total balance by Kalshi-style probability tier (1–3).
+TIER_MAX_RISK_FRACTION: Dict[int, float] = {1: 0.05, 2: 0.10, 3: 0.20}
+
+
+def mission_probability_set(p: float) -> Token:
+    return _mission_probability_ctx.set(float(p))
+
+
+def mission_probability_reset(token: Token) -> None:
+    _mission_probability_ctx.reset(token)
+
+
+def mission_probability_get() -> Optional[float]:
+    return _mission_probability_ctx.get()
 
 # ─── MISSION CONSTANTS ─────────────────────
 MISSION_TARGET = 1_000_000.00
@@ -205,32 +227,36 @@ def evaluate_trade_against_mission(
         )
 
     probability_tier: Optional[int] = None
-    kalshi_cap: Optional[float] = None
-    if platform == "kalshi":
+    tier_cap: Optional[float] = None
+    plat = str(platform or "").lower()
+    # Probability tiers and per-tier notional caps apply to Kalshi and Coinbase live sizing
+    # (same thresholds — see ``live_order_guard`` tests).
+    if plat in ("kalshi", "coinbase"):
         p = float(probability)
         if p < 0.63:
             probability_tier = 0
+            label = "Kalshi" if plat == "kalshi" else "Mission probability"
             violations.append(
                 {
                     "directive": "D3",
-                    "reason": f"Kalshi prob {p:.0%} < 63% minimum",
+                    "reason": f"{label} prob {p:.0%} < 63% minimum",
                 }
             )
         elif p < 0.77:
             probability_tier = 1
-            kalshi_cap = float(total_balance) * 0.05
+            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[1]
         elif p < 0.90:
             probability_tier = 2
-            kalshi_cap = float(total_balance) * 0.10
+            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[2]
         else:
             probability_tier = 3
-            kalshi_cap = float(total_balance) * 0.20
-        if probability_tier and probability_tier > 0 and kalshi_cap is not None:
-            if float(size_usd) > float(kalshi_cap) + 1e-9:
+            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[3]
+        if probability_tier and probability_tier > 0 and tier_cap is not None:
+            if float(size_usd) > float(tier_cap) + 1e-9:
                 violations.append(
                     {
                         "directive": "D3",
-                        "reason": f"size ${size_usd:.2f} exceeds tier {probability_tier} cap ${kalshi_cap:.2f}",
+                        "reason": f"size ${size_usd:.2f} exceeds tier {probability_tier} cap ${tier_cap:.2f}",
                     }
                 )
 
@@ -257,7 +283,7 @@ def evaluate_trade_against_mission(
         "mission_aligned": approved,
         "reason": violations[0]["reason"] if violations else "APPROVED",
     }
-    if platform == "kalshi":
+    if plat in ("kalshi", "coinbase"):
         out["probability_tier"] = int(probability_tier if probability_tier is not None else 0)
     return out
 

@@ -839,13 +839,10 @@ def _extract_balance_from_json(obj: Any) -> Optional[float]:
 
 def fetch_polymarket_balance() -> Optional[float]:
     """
-    Resolve balance using the same probe order as test_polymarket_credentials, then legacy fallbacks.
+    Resolve balance: public CLOB endpoints when the full L2 wallet trio is absent (tests / key-only wiring),
+    else auth probes (``probe_polymarket_balance_methods``) then signed + public fallbacks.
     """
     load_shark_dotenv()
-    bal, method, _ = probe_polymarket_balance_methods()
-    if bal is not None:
-        logger.info("Polymarket balance: $%.2f (auth method %s)", bal, method)
-        return bal
 
     base = (os.environ.get("POLY_CLOB_BASE") or "https://clob.polymarket.com").rstrip("/")
     fixed_clob = "https://clob.polymarket.com"
@@ -881,6 +878,20 @@ def fetch_polymarket_balance() -> Optional[float]:
             auth_headers = build_polymarket_l2_headers("GET", CLOB_SIGN_PATH_BALANCE, serialized_body=None)
         except Exception:
             auth_headers = None
+
+    if not has_pm_auth:
+        for url in clob_urls:
+            body = _http_get_balance_json(url, None)
+            if body is not None:
+                b = _extract_balance_from_json(body)
+                if b is not None:
+                    logger.info("Polymarket balance: $%.2f (endpoint succeeded: %s)", b, url)
+                    return b
+    else:
+        bal, method, _ = probe_polymarket_balance_methods()
+        if bal is not None:
+            logger.info("Polymarket balance: $%.2f (auth method %s)", bal, method)
+            return bal
 
     for url in clob_urls:
         if auth_headers:

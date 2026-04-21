@@ -2089,6 +2089,10 @@ def test_119_polymarket_balance_fetch_returns_float_when_credentials_set(monkeyp
     )
     monkeypatch.setenv("POLY_API_KEY", "test-access-key")
     monkeypatch.setenv("POLY_API_SECRET", base64.b64encode(raw).decode("ascii"))
+    # ``load_shark_dotenv()`` may merge a developer ``.env`` with wallet keys; this test stubs HTTP only.
+    monkeypatch.delenv("POLY_WALLET_KEY", raising=False)
+    monkeypatch.delenv("POLY_WALLET_ADDRESS", raising=False)
+    monkeypatch.delenv("POLY_CLOB_BALANCE_URL", raising=False)
 
     class Resp:
         def __enter__(self):

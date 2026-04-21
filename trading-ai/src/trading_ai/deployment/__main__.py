@@ -23,7 +23,6 @@ from trading_ai.deployment.live_micro_validation import (
 from trading_ai.deployment.readiness_decision import compute_final_readiness
 from trading_ai.deployment.validation_products_runner import run_validation_products
 from trading_ai.runtime_paths import resolve_ezras_runtime_root_for_daemon_authority
-from trading_ai.runtime_proof.live_execution_validation import run_gate_b_live_micro_validation
 
 
 def _cli_runtime_root() -> Path:
@@ -517,6 +516,8 @@ def main() -> int:
         print(json.dumps(out, indent=2, default=str))
         return 0 if out.get("live_validation_streak_passed") else 3
     if args.cmd == "gate-b-live-micro":
+        from trading_ai.runtime_proof.live_execution_validation import run_gate_b_live_micro_validation
+
         out = run_gate_b_live_micro_validation(
             quote_usd=float(args.quote_usd),
             product_id=str(args.product_id),

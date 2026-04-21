@@ -13,6 +13,7 @@ class EdgeStatus(str, Enum):
     TESTING = "testing"
     VALIDATED = "validated"
     SCALED = "scaled"
+    PAUSED = "paused"
     REJECTED = "rejected"
     DEPRECATED = "deprecated"
 
@@ -50,6 +51,8 @@ class EdgeRecord:
     required_conditions: Dict[str, Any]
     status: str
     confidence: float = 0.25
+    strategy_lane: Optional[str] = None
+    regime_fit: Optional[Dict[str, Any]] = None
     linked_strategy_id: Optional[str] = None
     source_research_ts: Optional[str] = None
     source: str = "research"
@@ -74,6 +77,8 @@ class EdgeRecord:
             "required_conditions": dict(self.required_conditions),
             "status": self.status,
             "confidence": float(self.confidence),
+            "strategy_lane": self.strategy_lane,
+            "regime_fit": self.regime_fit,
             "linked_strategy_id": self.linked_strategy_id,
             "source_research_ts": self.source_research_ts,
             "source": self.source,
@@ -94,6 +99,8 @@ class EdgeRecord:
             required_conditions=dict(d.get("required_conditions") or {}),
             status=str(d.get("status") or EdgeStatus.CANDIDATE.value),
             confidence=float(d.get("confidence") or 0.25),
+            strategy_lane=d.get("strategy_lane"),
+            regime_fit=d.get("regime_fit"),
             linked_strategy_id=d.get("linked_strategy_id"),
             source_research_ts=d.get("source_research_ts"),
             source=str(d.get("source") or "research"),

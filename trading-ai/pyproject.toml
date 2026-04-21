@@ -33,7 +33,7 @@ trading-ai = "trading_ai.__main__:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 norecursedirs = [".git", ".tox", "dist", "build", "scripts"]
 
 [tool.ruff]

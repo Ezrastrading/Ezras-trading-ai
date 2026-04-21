@@ -166,6 +166,20 @@ def execute_post_trade_placed(
         _append_post_trade_log(out)
         return out
 
+    if str(trade.get("live_or_paper") or "").strip().lower() == "live":
+        from trading_ai.runtime.trade_snapshots import SnapshotWriteError, snapshot_trades_master
+
+        try:
+            snapshot_trades_master(
+                trade_id=tid,
+                avenue_id=str(trade.get("avenue_id") or "A"),
+                gate_id=str(trade.get("gate_id") or "A_CORE"),
+                payload=dict(trade),
+                runtime_root=runtime_root(),
+            )
+        except SnapshotWriteError as exc:
+            raise RuntimeError(f"required_snapshot_write_failed:{exc}") from exc
+
     try:
         from trading_ai.automation.position_sizing_policy import enrich_open_payload_with_sizing_preview
 

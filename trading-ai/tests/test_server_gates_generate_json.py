@@ -21,10 +21,18 @@ def test_server_smoke_and_readiness_scripts_write_json() -> None:
         env["NTE_EXECUTION_MODE"] = "paper"
         env["NTE_LIVE_TRADING_ENABLED"] = "false"
         env["COINBASE_EXECUTION_ENABLED"] = "false"
+        env.pop("COINBASE_ENABLED", None)
+        env.setdefault("GOVERNANCE_ORDER_ENFORCEMENT", "false")
 
         trading_ai_repo = Path(__file__).resolve().parents[1]
         workspace = trading_ai_repo.parent
-        env["PYTHONPATH"] = str(trading_ai_repo / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(trading_ai_repo / "src")
+            + os.pathsep
+            + str(trading_ai_repo)
+            + os.pathsep
+            + env.get("PYTHONPATH", "")
+        )
 
         # Minimal runtime env contract (deploy_preflight expects this tree).
         env_dir = root / "env"
@@ -37,10 +45,13 @@ def test_server_smoke_and_readiness_scripts_write_json() -> None:
         # Minimal fake venv so deploy_preflight can pass without /opt/ezra-venv.
         fake_venv = Path(td) / "fake_venv"
         (fake_venv / "bin").mkdir(parents=True, exist_ok=True)
-        try:
-            (fake_venv / "bin" / "python3").symlink_to(Path(sys.executable).resolve(), target_is_directory=False)
-        except FileExistsError:
-            pass
+        exe = Path(sys.executable).resolve()
+        for name in ("python3", "python"):
+            p = fake_venv / "bin" / name
+            try:
+                p.symlink_to(exe, target_is_directory=False)
+            except FileExistsError:
+                pass
 
         base = Path(__file__).resolve().parents[1] / "scripts" / "server"
         smoke = base / "deployed_environment_smoke.py"

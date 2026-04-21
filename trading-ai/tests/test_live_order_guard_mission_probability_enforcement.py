@@ -16,6 +16,8 @@ def _set_live_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("NTE_COINBASE_EXECUTION_ROUTE", "live")
     # Keep control artifact preflight off for unit tests (smoke handles end-to-end wiring).
     monkeypatch.setenv("EZRAS_CONTROL_ARTIFACT_PREFLIGHT", "false")
+    # Mission tier tests are not governance/joint-review tests — keep advisory mode.
+    monkeypatch.setenv("GOVERNANCE_ORDER_ENFORCEMENT", "false")
     # Gap engine thresholds must be configured for live-order guard evaluation.
     # Set permissive minimums for unit tests; execution still remains fail-closed on missing candidate fields.
     monkeypatch.setenv("GAP_MIN_CONFIDENCE_SCORE", "0.0")

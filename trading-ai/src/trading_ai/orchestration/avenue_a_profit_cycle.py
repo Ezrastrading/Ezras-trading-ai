@@ -114,10 +114,17 @@ def _profit_market_fallback_enabled(*, gate: str) -> bool:
 
 def profit_mode_enabled(*, mode: str) -> bool:
     """
-    STRICT HARDENING:
-    - Default OFF for controlled micro-live readiness.
-    - Can only be enabled explicitly via PROFIT_MODE_ENABLED=true.
+    Autonomous Avenue A modes default to profit-mode ON (operator expectation for venue cycles).
+
+    Other modes stay behind ``PROFIT_MODE_ENABLED=true`` unless explicitly disabled with
+    ``PROFIT_MODE_ENABLED=false`` for autonomous family modes.
     """
+    m = (mode or "").strip().lower()
+    if m in ("autonomous_live", "autonomous_paper"):
+        v = (os.environ.get("PROFIT_MODE_ENABLED") or "").strip().lower()
+        if v in ("0", "false", "no"):
+            return False
+        return True
     return (os.environ.get("PROFIT_MODE_ENABLED") or "").strip().lower() in ("1", "true", "yes")
 
 

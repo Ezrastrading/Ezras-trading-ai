@@ -33,6 +33,9 @@ def test_autonomous_duplicate_window_skip_does_not_reset_autonomous_cycle_counte
         "trading_ai.orchestration.runtime_runner.daemon_abort_conditions",
         return_value=(False, "ok", False),
     ), patch(
+        "trading_ai.orchestration.avenue_a_live_daemon.avenue_a_autonomous_live_allowed",
+        return_value=(True, "ok"),
+    ), patch(
         "trading_ai.orchestration.autonomous_daemon_live_contract.autonomous_daemon_may_submit_live_orders",
         return_value=(True, []),
     ), patch(

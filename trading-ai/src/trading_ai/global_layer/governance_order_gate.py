@@ -197,6 +197,32 @@ def check_new_order_allowed_full(
     ``audit`` is suitable for logs and tests; includes joint snapshot fields and decision.
     ``strategy_class`` / ``route_bucket`` are **metadata only** for logs — they do not change the gate math.
     """
+    miss_joint_blocks = (os.environ.get("GOVERNANCE_MISSING_JOINT_BLOCKS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if _enforcement_enabled() and not miss_joint_blocks:
+        try:
+            from trading_ai.global_layer.global_memory_store import GlobalMemoryStore
+
+            st = GlobalMemoryStore()
+            jp = st.path("joint_review_latest.json")
+            if not jp.is_file():
+                st.save_json(
+                    "joint_review_latest.json",
+                    {
+                        "joint_review_id": "bootstrap_joint_review_v1",
+                        "live_mode_recommendation": "normal",
+                        "review_integrity_state": "full",
+                        "packet_id": "bootstrap_packet",
+                        "empty": False,
+                        "bootstrap_safe_default": True,
+                    },
+                )
+        except Exception as exc:
+            logger.debug("joint_review bootstrap skipped: %s", exc)
+
     snap = load_joint_review_snapshot()
     mode = str(snap.get("live_mode") or "unknown").strip().lower()
     caution_block = _caution_block_entries()

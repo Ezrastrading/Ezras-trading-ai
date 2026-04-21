@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Mapping
 def evaluate_breakout_entry(
     row: Mapping[str, Any],
     *,
-    min_move_pct: float,
-    min_volume_surge_ratio: float,
-    min_continuation_candles: int,
     min_momentum_score: float,
+    min_move_pct: float = 0.05,
+    min_volume_surge_ratio: float = 1.5,
+    min_continuation_candles: int = 2,
 ) -> Dict[str, Any]:
     move = float(row.get("move_pct") or 0.0)
     vsr = float(row.get("volume_surge_ratio") or 0.0)
