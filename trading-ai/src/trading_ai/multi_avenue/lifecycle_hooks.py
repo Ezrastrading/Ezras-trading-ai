@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -252,6 +254,64 @@ def on_scanner_cycle_export(*, runtime_root: Optional[Path] = None) -> Dict[str,
                 prev_gap = max(0.0, (datetime.now(timezone.utc) - prev_dt).total_seconds())
     except Exception:
         prev_gap = None
+    # Optional: Gate B (Coinbase gainers snapshot) — public market tickers only, no orders.
+    gb: Optional[Dict[str, Any]] = None
+    try:
+        gb_enabled = (os.environ.get("GATE_B_LIVE_EXECUTION_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+    except Exception:
+        gb_enabled = False
+    if gb_enabled:
+        try:
+            from trading_ai.orchestration.coinbase_gate_selection.gate_b_gainers_selection import run_gate_b_gainers_selection
+            from trading_ai.global_layer.review_storage import ReviewStorage
+
+            # Writes data/control/gate_b_selection_snapshot.json
+            gb = run_gate_b_gainers_selection(runtime_root=root, client=None)
+
+            # Publish lightweight candidate queue items for the global layer.
+            st = ReviewStorage()
+            cq = st.load_json("candidate_queue.json")
+            items = list(cq.get("items") or [])
+            for pid in list(gb.get("selected_symbols") or [])[:8]:
+                items.append(
+                    {
+                        "id": f"gate_b_{pid}_{int(time.time())}",
+                        "ts": time.time(),
+                        "avenue_id": "B",
+                        "gate_id": "gate_b",
+                        "product_id": pid,
+                        "source": "gate_b_gainers_selection",
+                        "status": "new",
+                        "evidence_ref": "data/control/gate_b_selection_snapshot.json",
+                    }
+                )
+            cq["items"] = items[-300:]
+            st.save_json("candidate_queue.json", cq)
+
+            # Truthful gate-local scanner metadata: active only if snapshot selected or evaluable candidates exist.
+            try:
+                gr = gate_review_dir("B", "gate_b", runtime_root=root)
+                mp = gr / "scanner_metadata.json"
+                present = bool((gb.get("ranked_gainer_candidates") or []))
+                active = present
+                meta = {
+                    "artifact": "scanner_metadata",
+                    "avenue_id": "B",
+                    "gate_id": "gate_b",
+                    "scanner_framework_ready": True,
+                    "active_scanners_present": bool(active),
+                    "scanner_kind": "coinbase_public_tickers",
+                    "last_scan_ts": time.time(),
+                    "selection_state": (gb.get("selection_summary") or {}).get("gate_b_selection_state"),
+                    "selected_symbols": gb.get("selected_symbols") or [],
+                    "honesty": "Active=true means the scanner executed and produced a snapshot; it does not imply any candidate passed policy.",
+                }
+                mp.write_text(json.dumps(meta, indent=2, default=str) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+        except Exception as exc:
+            gb = {"ok": False, "error": type(exc).__name__}
+
     snap = {
         "truth_version": "scanner_autonomy_snapshot_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -259,7 +319,11 @@ def on_scanner_cycle_export(*, runtime_root: Optional[Path] = None) -> Dict[str,
         "hook_status": inner.get("status"),
         "seconds_since_prior_snapshot": prev_gap,
         "anti_idle_rescan_recommended": bool(prev_gap is not None and prev_gap > 60.0),
-        "honesty": "Control scaffold refresh only; no live venue scanner calls.",
+        "gate_b_gainers_snapshot": gb,
+        "honesty": (
+            "Control scaffold refresh. When GATE_B_LIVE_EXECUTION_ENABLED=true, also performs "
+            "unauthenticated Coinbase market ticker reads for Gate B gainers snapshot (no orders)."
+        ),
     }
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(snap, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
