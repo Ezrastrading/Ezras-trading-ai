@@ -9,6 +9,7 @@ Runs in the same environment that systemd services use:
 - proves tasks are created and key artifacts exist
 - writes machine-readable report to:
   /opt/ezra-runtime/data/control/deployed_environment_smoke.json (or runtime_root override)
+- includes ``live_micro_private_build`` (private modules + operator scripts + static CLI wiring check)
 
 Never places live orders.
 """
@@ -70,6 +71,77 @@ def _touch_writable(root: Path) -> Dict[str, Any]:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(f"ok {_iso()}\n", encoding="utf-8")
     return {"ok": True, "path": str(p)}
+
+
+def _live_micro_deployment_main_registers(private_main: Path) -> Tuple[bool, List[str]]:
+    """
+    Statically verify ``trading_ai.deployment.__main__`` wires live-micro subcommands.
+
+    We intentionally do not shell out to ``python -m trading_ai.deployment -h`` here: that entrypoint
+    runs ``enforce_ssl()`` first, which fails on some developer macOS Pythons (LibreSSL) even when
+    the tree is correct. Production servers should still run ``-h`` manually for runtime proof.
+    """
+    if not private_main.is_file():
+        return False, ["missing_deployment__main__.py"]
+    try:
+        txt = private_main.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, [f"read_error:{type(exc).__name__}"]
+    needles = (
+        "live-micro-enablement-request",
+        "live-micro-write-session-limits",
+        "live-micro-preflight",
+        "live-micro-readiness",
+        "live-micro-guard-proof",
+        "live-micro-verify-contract",
+        "live-micro-record-start",
+        "live-micro-disable-receipt",
+        "live-micro-pause",
+        "live-micro-resume",
+    )
+    absent = [n for n in needles if n not in txt]
+    return len(absent) == 0, absent
+
+
+def _live_micro_private_build_probe(
+    *,
+    venv_root: Path,
+    private_repo: Path,
+    public_src: Path,
+    private_src: Path,
+) -> Dict[str, Any]:
+    """
+    Prove the *private* checkout contains the live-micro operator pack and CLI registrations.
+
+    This catches the common failure mode where /opt/ezra-public is fresh but /opt/ezra-private lags
+    an old commit (missing ``live_micro_enablement.py`` / ``live-micro-*`` argparse wiring).
+    """
+    del venv_root, public_src  # retained for signature symmetry with callers / future runtime probes
+    required_modules = (
+        private_src / "trading_ai" / "deployment" / "live_micro_enablement.py",
+        private_src / "trading_ai" / "deployment" / "__main__.py",
+    )
+    required_scripts = (
+        private_repo / "trading-ai" / "scripts" / "server" / "live_micro_operator.sh",
+        private_repo / "trading-ai" / "scripts" / "server" / "live_micro_smoke.sh",
+    )
+    missing_mods = [str(p) for p in required_modules if not p.is_file()]
+    missing_scripts = [str(p) for p in required_scripts if not p.is_file()]
+
+    main_py = private_src / "trading_ai" / "deployment" / "__main__.py"
+    reg_ok, absent = _live_micro_deployment_main_registers(main_py)
+    mods_ok = len(missing_mods) == 0
+    scripts_ok = len(missing_scripts) == 0
+    return {
+        "ok": bool(mods_ok and scripts_ok and reg_ok),
+        "missing_private_modules": missing_mods,
+        "missing_private_scripts": missing_scripts,
+        "subcommands_absent_from_deployment_main": absent,
+        "honesty": (
+            "Build wiring: private modules + operator scripts + live-micro strings in deployment/__main__.py. "
+            "On the server, also run: /opt/ezra-venv/bin/python -m trading_ai.deployment -h (requires OpenSSL-capable Python)."
+        ),
+    }
 
 
 def _git_head(repo_root: Path) -> Dict[str, Any]:
@@ -249,6 +321,12 @@ def main(argv: List[str]) -> int:
     databank_probe = _databank_probe(runtime_root)
     post_trade_probe = _post_trade_probe(runtime_root)
     optional_sim = _optional_simulation_artifacts(runtime_root)
+    live_micro_build = _live_micro_private_build_probe(
+        venv_root=Path(args.venv_root).resolve(),
+        private_repo=private_repo,
+        public_src=public_src,
+        private_src=private_src,
+    )
 
     report = {
         "truth_version": "deployed_environment_smoke_v1",
@@ -273,6 +351,7 @@ def main(argv: List[str]) -> int:
         "databank_probe": databank_probe,
         "post_trade_path_probe": post_trade_probe,
         "optional_simulation_and_router_artifacts": optional_sim,
+        "live_micro_private_build": live_micro_build,
         "honesty": "Smoke does not place orders; it proves supervisor loops and artifact/task emission in deployed layout.",
     }
 
@@ -309,6 +388,7 @@ def main(argv: List[str]) -> int:
         and bool(research.get("ok"))
         and bool(databank_probe.get("ok"))
         and bool(post_trade_probe.get("ok"))
+        and bool(live_micro_build.get("ok"))
     )
     return 0 if ok else 2
 

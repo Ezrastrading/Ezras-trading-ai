@@ -201,15 +201,23 @@ def run_live_micro_preflight(runtime_root: Path, *, max_artifact_age_sec: float 
     smoke_p = root / "data" / "control" / "deployed_environment_smoke.json"
     smoke = _read_json(smoke_p)
     age = _age_sec(smoke_p)
+    lm_probe = smoke.get("live_micro_private_build") if isinstance(smoke, dict) else None
+    lm_ok = isinstance(lm_probe, dict) and bool(lm_probe.get("ok"))
     smoke_ok = bool(smoke.get("truth_version")) and bool((smoke.get("live_disabled") or {}).get("ok"))
     stale = age is None or age > max_artifact_age_sec
-    checks["deployed_environment_smoke"] = {"ok": smoke_ok and not stale, "age_sec": age, "stale": stale}
+    checks["deployed_environment_smoke"] = {"ok": smoke_ok and not stale and lm_ok, "age_sec": age, "stale": stale}
+    checks["live_micro_private_build"] = lm_probe if isinstance(lm_probe, dict) else {"ok": False, "error": "missing_or_invalid"}
     if not smoke_p.is_file():
         blockers.append("missing_deployed_environment_smoke_json")
     elif stale:
         blockers.append("stale_deployed_environment_smoke")
     elif not smoke_ok:
         blockers.append("deployed_environment_smoke_not_ok")
+    elif not lm_ok:
+        if not isinstance(smoke, dict) or not isinstance(smoke.get("live_micro_private_build"), dict):
+            blockers.append("deployed_environment_smoke_missing_live_micro_private_build")
+        else:
+            blockers.append("live_micro_private_build_not_ok")
 
     micro_p = root / "data" / "control" / "micro_trade_readiness.json"
     micro = _read_json(micro_p)

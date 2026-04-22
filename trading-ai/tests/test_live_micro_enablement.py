@@ -36,7 +36,13 @@ def _write_minimal_preflight_ok(root: Path) -> None:
     ctrl.mkdir(parents=True, exist_ok=True)
     now = time.time()
     (ctrl / "deployed_environment_smoke.json").write_text(
-        json.dumps({"truth_version": "t", "live_disabled": {"ok": True}}),
+        json.dumps(
+            {
+                "truth_version": "t",
+                "live_disabled": {"ok": True},
+                "live_micro_private_build": {"ok": True},
+            }
+        ),
         encoding="utf-8",
     )
     (ctrl / "micro_trade_readiness.json").write_text(json.dumps({"ok": True}), encoding="utf-8")

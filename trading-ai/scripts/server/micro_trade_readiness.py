@@ -198,6 +198,11 @@ def main(argv: List[str]) -> int:
         blockers.append("deployed_environment_smoke_reports_live_not_disabled")
     if smoke.get("imports_ok") is False:
         blockers.append("deployed_environment_smoke_imports_failed")
+    lm = smoke.get("live_micro_private_build") if isinstance(smoke, dict) else None
+    if not isinstance(lm, dict):
+        blockers.append("deployed_environment_smoke_missing_live_micro_private_build")
+    elif lm.get("ok") is not True:
+        blockers.append("live_micro_private_build_not_ok")
     if isinstance(preflight.get("checks"), dict):
         ld = (preflight.get("checks") or {}).get("live_disabled") or {}
         if isinstance(ld, dict) and ld.get("ok") is False:

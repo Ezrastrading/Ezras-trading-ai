@@ -24,17 +24,19 @@ def test_deployed_environment_smoke_writes_report(tmp_path: Path, monkeypatch) -
     (venv_root / "bin").mkdir(parents=True, exist_ok=True)
     (venv_root / "bin" / "python").write_text("# fake\n", encoding="utf-8")
 
-    # Point to real source trees by symlinking into the expected location.
-    # If symlink unsupported, fall back to copying src.
+    # Point to real source + server scripts by symlinking into the expected location (overlay layout).
     for root in (public_root, private_root):
-        tgt = root / "trading-ai" / "src"
-        if not tgt.exists():
+        trading = root / "trading-ai"
+        trading.mkdir(parents=True, exist_ok=True)
+        for name in ("src", "scripts"):
+            tgt = trading / name
+            if tgt.exists():
+                continue
             try:
-                tgt.parent.mkdir(parents=True, exist_ok=True)
-                tgt.symlink_to(repo_root / "src")
+                tgt.symlink_to(repo_root / name)
             except Exception:
-                # Copying full tree is expensive; minimal for this test: just ensure script runs and writes report.
-                tgt.mkdir(parents=True, exist_ok=True)
+                if name == "src":
+                    tgt.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("NTE_EXECUTION_MODE", "paper")
     monkeypatch.setenv("NTE_LIVE_TRADING_ENABLED", "false")
@@ -59,4 +61,5 @@ def test_deployed_environment_smoke_writes_report(tmp_path: Path, monkeypatch) -
     assert out.is_file()
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["truth_version"] == "deployed_environment_smoke_v1"
+    assert payload.get("live_micro_private_build", {}).get("ok") is True
 
