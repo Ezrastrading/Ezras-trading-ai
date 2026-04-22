@@ -1,0 +1,131 @@
+{
+  "truth_version": "live_dashboard_thresholds_v1",
+  "units": {
+    "pnl": "USD unless noted",
+    "drawdown": "percent_of_starting_equity_for_window",
+    "bps": "basis_points_of_mid_at_signal",
+    "score": "0_to_1_internal_composite_where_documented"
+  },
+  "metrics": {
+    "total_pnl": {
+      "green": "Trend consistent with validated expectancy band; no single-trade dominance >40% of week PnL.",
+      "caution": "Flat to mildly negative while sample <20 trades OR fees dominate.",
+      "danger": "Large negative week AND rising error counts OR breach of daily/weekly loss budget."
+    },
+    "realized_pnl": {
+      "green": "Matches ledger reconciliation within tolerance; stable day-over-day variance vs model.",
+      "caution": "Spiky but explainable (events, gaps); reconciliation delayed <1h.",
+      "danger": "Mismatch vs venue OR unexplained jumps."
+    },
+    "unrealized_pnl": {
+      "green": "Marks refresh < threshold latency; within risk per open position.",
+      "caution": "Stale marks >1 refresh cycle on illiquid legs only with documented widen.",
+      "danger": "Persistent stale marks OR unrealized breaching liquidation proximity rules."
+    },
+    "fees_paid": {
+      "green": "fees_to_net_pnl_ratio < 0.25 on rolling 20+ trades.",
+      "caution": "0.25–0.40 with rising activity.",
+      "danger": ">0.40 sustained 15+ trades OR rising without throughput increase."
+    },
+    "slippage": {
+      "green": "rolling_median_entry_plus_exit_slippage_bps <= baseline_bps * 1.1",
+      "caution": "baseline * 1.1–1.5 for <15 trades",
+      "danger": "> baseline * 1.5 for 10+ trades OR coverage missing_or_thin"
+    },
+    "fill_quality": {
+      "green": "score >= 0.9",
+      "caution": "0.85–0.9",
+      "danger": "<0.85 for 10+ fills"
+    },
+    "win_rate": {
+      "green": "Within bootstrap CI consistent with strategy sim (not standalone target).",
+      "caution": "Deviates from sim but expectancy still positive post-fee.",
+      "danger": "Win rate collapses AND expectancy negative with min sample."
+    },
+    "average_win": {
+      "green": "Stable vs historical R multiple; not fee-eaten.",
+      "caution": "Shrinking winners with unchanged stops.",
+      "danger": "Avg win < avg loss magnitude with negative expectancy."
+    },
+    "average_loss": {
+      "green": "Losses capped at policy max; tail flat.",
+      "caution": "Occasional tail beyond 1.5x median loss with documented cause.",
+      "danger": "Repeated tail losses without cause OR stop integrity failures."
+    },
+    "expectancy": {
+      "green": "post_fee_expectancy_r > 0.03 with min 30 trades",
+      "caution": "0–0.03 with min 20 trades",
+      "danger": "<=0 with min 30 trades OR CI includes large negative"
+    },
+    "profit_factor": {
+      "green": ">= 1.4 rolling 30+ trades",
+      "caution": "1.0–1.4",
+      "danger": "<1.0 rolling 30+ trades"
+    },
+    "max_drawdown": {
+      "green": "<= 2% rolling 14d equity curve",
+      "caution": "2–3.5%",
+      "danger": ">3.5% OR faster than simulated max adverse excursion"
+    },
+    "daily_loss_used_pct": {
+      "green": "<50% of daily budget",
+      "caution": "50–85%",
+      "danger": ">=100% OR >=85% with rising slippage"
+    },
+    "capital_utilization_pct": {
+      "green": "40–70% of deployable micro budget actively working with rest idle by design",
+      "caution": "<20% idle by neglect OR >90% chronic without scaling gate approval",
+      "danger": ">100% utilization OR margin stress flags"
+    },
+    "idle_capital_time": {
+      "green": "Idle matches low-signal regime with scanner health green",
+      "caution": "Extended idle with scanner errors intermittent",
+      "danger": "Idle due to silent failures OR halt loops"
+    },
+    "setup_type_breakdown": {
+      "green": "1–2 dominant setups explain majority of positive expectancy",
+      "caution": "many setups with thin counts each",
+      "danger": "worst setup contributes large negative without suppression"
+    },
+    "product_breakdown": {
+      "green": "PnL variance explained; no orphan product spikes",
+      "caution": "single illiquid product dominates noise",
+      "danger": "unexplained product concentration losses"
+    },
+    "time_of_day_breakdown": {
+      "green": "known liquidity windows respected",
+      "caution": "new activity in thin windows without approval",
+      "danger": "loss cluster in thin liquidity with high slippage"
+    },
+    "duplicate_skip_count": {
+      "green": "0 per 7d",
+      "caution": "1 per 7d",
+      "danger": ">=2 per 7d"
+    },
+    "failed_order_count": {
+      "green": "0 per day in steady state",
+      "caution": "1 isolated with venue incident id",
+      "danger": ">=2 unexplained / 24h"
+    },
+    "cancelled_order_count": {
+      "green": "cancels correlate with benign replace logic",
+      "caution": "elevated cancels with rising latency",
+      "danger": "cancel storm OR cancel-after-fill pattern"
+    },
+    "halted_event_count": {
+      "green": "0",
+      "caution": "1 supervised halt resolved same day",
+      "danger": ">=1 kill-switch OR repeated halts"
+    },
+    "system_health_score": {
+      "green": ">=0.85",
+      "caution": "0.7–0.85",
+      "danger": "<0.7"
+    },
+    "mission_pace_score": {
+      "green": "validation milestones on track without rushing trades",
+      "caution": "behind pace but risk metrics green",
+      "danger": "ahead on trades without validation OR behind with deteriorating metrics"
+    }
+  }
+}

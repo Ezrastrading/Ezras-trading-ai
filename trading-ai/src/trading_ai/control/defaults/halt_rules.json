@@ -1,0 +1,101 @@
+{
+  "truth_version": "halt_rules_v1",
+  "rules": [
+    {
+      "id": "catastrophic_bug",
+      "trigger": "Any bug causing unauthorized orders, wrong side, wrong size, or bypass of risk caps.",
+      "automatic_response": "Immediate trading halt via kill switch; cancel open orders where safe; snapshot logs.",
+      "human_review_required": true,
+      "resume_conditions": "Root cause in written RCA; patched release or config; replay test on staging; explicit human unhalt.",
+      "artifact_required": "data/control/incidents/rca_catastrophic_bug.md + orchestration incident log entry"
+    },
+    {
+      "id": "unexplained_execution_errors_2",
+      "trigger": "Two execution errors in rolling 24h without attributable venue outage.",
+      "automatic_response": "Pause new entries; allow risk-reducing exits only; tag system health score danger.",
+      "human_review_required": true,
+      "resume_conditions": "Both errors explained or reproduced as benign with proof; regression test added.",
+      "artifact_required": "data/review/execution_error_cluster.json"
+    },
+    {
+      "id": "duplicate_trade_events_3",
+      "trigger": "Three duplicate-intent or double-submit events in rolling 7d (venue or internal).",
+      "automatic_response": "Halt live entries; run duplicate-path audit; tighten idempotency keys.",
+      "human_review_required": true,
+      "resume_conditions": "Zero dupes in 48h dry-run + 24h supervised micro live.",
+      "artifact_required": "data/control/incidents/duplicate_trade_rca.md"
+    },
+    {
+      "id": "daily_loss_cap",
+      "trigger": "Realized+unrealized day loss exceeds configured daily loss cap % of equity.",
+      "automatic_response": "Stop new risk; flatten per risk policy; cooldown until next UTC day or manual reset per policy.",
+      "human_review_required": false,
+      "resume_conditions": "UTC day rollover AND health green OR human override with written rationale.",
+      "artifact_required": "data/review/daily_diagnosis.json risk section updated"
+    },
+    {
+      "id": "slippage_spike",
+      "trigger": "Rolling median slippage bps > danger threshold in live_dashboard_thresholds for N trades.",
+      "automatic_response": "Reduce size to previous step; widen only after measurement fix; pause aggressive deployment gate.",
+      "human_review_required": true,
+      "resume_conditions": "Slippage back to caution band for min 15 closed trades AND cause classified.",
+      "artifact_required": "data/review/slippage_spike_report.json"
+    },
+    {
+      "id": "fill_mismatch",
+      "trigger": "Internal expected fill vs venue reported fill beyond tolerance on any closed trade.",
+      "automatic_response": "Halt entries; reconcile ledger vs venue; freeze scaling gates.",
+      "human_review_required": true,
+      "resume_conditions": "Mismatches explained and corrected in reconciliation tool or feed.",
+      "artifact_required": "data/review/fill_reconciliation_report.json"
+    },
+    {
+      "id": "edge_disappeared",
+      "trigger": "Post-fee expectancy drops below zero for min_sample trades since last good window AND profit_factor < 1.",
+      "automatic_response": "Force state NOT_READY_REDUCE_RISK; cut size 50%; suppress worst setup types automatically if wired.",
+      "human_review_required": true,
+      "resume_conditions": "Expectancy back above gate with stable CI OR strategy revision approved.",
+      "artifact_required": "data/review/edge_disappearance_analysis.json"
+    },
+    {
+      "id": "strategy_degradation",
+      "trigger": "Rolling profit_factor falls below 1.0 for >=30 trades OR max_dd exceeds weekly budget.",
+      "automatic_response": "Rollback last scaling step; freeze search pressure widening.",
+      "human_review_required": true,
+      "resume_conditions": "Two consecutive weeks in caution-or-better on dashboard with same policy version.",
+      "artifact_required": "data/review/strategy_degradation_weekly.json"
+    },
+    {
+      "id": "databank_corruption",
+      "trigger": "JSON/JSONL parse failures, checksum mismatch, or missing append-only continuity on trade_events.",
+      "automatic_response": "Halt autonomy writers; switch to read-only ops mode; backup damaged files.",
+      "human_review_required": true,
+      "resume_conditions": "Repaired chain from venue exports OR restored backup; validator passes.",
+      "artifact_required": "data/control/incidents/databank_repair_log.md"
+    },
+    {
+      "id": "orchestration_drift",
+      "trigger": "orchestration_truth_chain or deployment fingerprint differs from expected for active release.",
+      "automatic_response": "Block scaling; enqueue validation_queue; snapshot configs.",
+      "human_review_required": true,
+      "resume_conditions": "Drift explained (deploy vs config) and reconciled to single truth version.",
+      "artifact_required": "data/governance/orchestration/drift_report.json"
+    },
+    {
+      "id": "bot_conflict",
+      "trigger": "Conflicting directives from two bots on same scope (capital, gate, or execution intent).",
+      "automatic_response": "Fail-closed to stricter instruction; log conflict; pause autonomous parameter changes.",
+      "human_review_required": true,
+      "resume_conditions": "Conflict resolved in bot_permissions_matrix + written precedence rule.",
+      "artifact_required": "data/governance/orchestration/conflicts.jsonl excerpt + resolution note"
+    },
+    {
+      "id": "signal_execution_deviation",
+      "trigger": "Unexplained delta between logged signal intent and execution parameters beyond tolerance.",
+      "automatic_response": "Halt live; trace intent ledger to fills; freeze learning bot auto-writes.",
+      "human_review_required": true,
+      "resume_conditions": "Trace complete with code/config fix OR proven external venue behavior with acceptance doc.",
+      "artifact_required": "data/review/signal_execution_trace.json"
+    }
+  ]
+}

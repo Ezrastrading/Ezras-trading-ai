@@ -115,6 +115,7 @@ def role_contract() -> Dict[str, Any]:
                     "learning_distillation_snapshot",
                     "task_intake_dispatch",
                     "research_regression_drift",
+                    "first_60_live_ops_tick",
                 ],
             },
         },
@@ -746,6 +747,14 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
                 pass
         return payload
 
+    def _first_60_live_ops_tick(root: Path) -> Dict[str, Any]:
+        from trading_ai.control.first_60_day_ops import run_first_60_live_ops_tick
+
+        return run_first_60_live_ops_tick(runtime_root=root, force=False)
+
+    ft60_interval = float((os.environ.get("EZRAS_FIRST_60_TICK_SEC") or "180").strip() or "180")
+    ft60_interval = max(30.0, ft60_interval)
+
     return [
         LoopSpec("daily_cycle", "research", 120.0, _daily_cycle),
         LoopSpec("review_cycle", "research", 600.0, _review_cycle),
@@ -757,6 +766,7 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         LoopSpec("learning_distillation_snapshot", "research", 600.0, _learning_snapshot),
         LoopSpec("task_intake_dispatch", "research", 30.0, _task_intake),
         LoopSpec("research_regression_drift", "research", 420.0, _research_regression_drift),
+        LoopSpec("first_60_live_ops_tick", "research", ft60_interval, _first_60_live_ops_tick),
     ]
 
 

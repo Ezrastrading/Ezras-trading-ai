@@ -1,0 +1,19 @@
+{
+  "truth_version": "daily_ceo_review_template_v1",
+  "required_questions": [
+    "Did we trade well today (process + execution), independent of lucky PnL?",
+    "Did the system behave correctly (no dupes, kill switch reachable, logs complete)?",
+    "Was PnL good, bad, or misleading (fees/slippage/luck vs setup quality)?",
+    "Which setup type performed best on post-fee expectancy?",
+    "Which setup type should be reduced or shadowed?",
+    "Ahead or behind validation goals for this calendar day?",
+    "Tomorrow: same size, lower, or slightly higher — per scaling gates only?",
+    "Single highest-value improvement for execution or risk guard tomorrow?"
+  ],
+  "artifact_refs": [
+    "data/review/daily_diagnosis.json",
+    "data/review/ceo_daily_review.json",
+    "data/review/first_60_day_daily_envelope.json",
+    "data/databank/trade_events.jsonl"
+  ]
+}

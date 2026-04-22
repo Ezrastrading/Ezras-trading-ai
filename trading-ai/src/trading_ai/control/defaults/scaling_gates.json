@@ -1,0 +1,73 @@
+{
+  "truth_version": "scaling_gates_v1",
+  "policy": "Scaling is stepwise, evidence-gated, never emotional. All gates AND with no halt flags.",
+  "global_requirements_all_gates": {
+    "min_closed_trades_since_last_scale": 20,
+    "min_post_fee_expectancy_r_per_trade": 0.02,
+    "max_expectancy_ci_width_r_at_95": 0.15,
+    "max_rolling_drawdown_pct_equity": 3.0,
+    "max_avg_slippage_bps_vs_baseline_multiple": 1.5,
+    "min_fill_quality_score_0_to_1": 0.85,
+    "kill_switch_events_last_7d": 0,
+    "unresolved_severity_high_tickets": 0,
+    "max_duplicate_skip_events_last_7d": 0,
+    "slippage_coverage_label_allowed": [
+      "full",
+      "partial"
+    ],
+    "notes": "If slippage_coverage_label is missing_or_thin, scaling is blocked regardless of numeric averages."
+  },
+  "gates": [
+    {
+      "gate_id": "increase_max_notional",
+      "description": "Raise per-trade or aggregate open notional one step.",
+      "additional_min_closed_trades": 30,
+      "additional_min_expectancy_r": 0.03,
+      "max_drawdown_pct_after_change_simulated": 4.0,
+      "step_rule": "One step only (e.g. +25% notional cap), then hold at least 10 trading days."
+    },
+    {
+      "gate_id": "increase_max_trades_per_day",
+      "description": "Allow more round-trips per UTC day.",
+      "additional_min_closed_trades": 40,
+      "additional_min_expectancy_r": 0.025,
+      "require_stable_median_hold_minutes": true,
+      "step_rule": "+1 trade/day max per promotion; 15+ clean trading days since last frequency change."
+    },
+    {
+      "gate_id": "add_allowed_product",
+      "description": "Add one new symbol/product class to live allowlist.",
+      "additional_min_closed_trades": 50,
+      "additional_min_expectancy_r": 0.03,
+      "require_dedicated_shadow_period_days": 7,
+      "require_ops_latency_slo_pass": true,
+      "step_rule": "One product at a time; shadow parity proof required."
+    },
+    {
+      "gate_id": "shorten_cooldown",
+      "description": "Reduce minimum seconds between decisions or re-entries.",
+      "additional_min_closed_trades": 35,
+      "additional_min_expectancy_r": 0.03,
+      "require_no_duplicate_events_14d": true,
+      "require_median_ws_latency_ms_below": 250,
+      "step_rule": "Max -10% cooldown per step; never below hard venue safety floor."
+    },
+    {
+      "gate_id": "widen_search_pressure",
+      "description": "Expand scanner breadth, candidate fan-out, or correlation budget.",
+      "additional_min_closed_trades": 45,
+      "additional_min_expectancy_r": 0.035,
+      "max_correlated_losses_cluster_3d": 0,
+      "step_rule": "One dimension at a time (breadth OR depth), with rollback preset documented."
+    },
+    {
+      "gate_id": "more_aggressive_deployment",
+      "description": "Loosen non-safety deployment parameters (still within hard caps).",
+      "additional_min_closed_trades": 60,
+      "additional_min_expectancy_r": 0.04,
+      "require_ceo_weekly_signoff": true,
+      "require_profit_factor_min": 1.25,
+      "step_rule": "Requires explicit human+CEO artifact linkage; never same-day as other gate changes."
+    }
+  ]
+}

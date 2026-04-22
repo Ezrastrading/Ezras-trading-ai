@@ -1,0 +1,5 @@
+{
+  "truth_version": "first_60_day_state_v1",
+  "live_start_date_iso": null,
+  "operator_note": "Set live_start_date_iso (UTC calendar date, YYYY-MM-DD) on first micro-live session. Optional: EZRAS_LIVE_START_DATE env for CI."
+}

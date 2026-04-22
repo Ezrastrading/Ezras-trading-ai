@@ -1,0 +1,600 @@
+{
+  "truth_version": "first_60_day_calendar_v1",
+  "default_phase_label": "micro_live_validating",
+  "core_mission": {
+    "primary": [
+      "survive live",
+      "prove edge",
+      "avoid stupid losses",
+      "tighten execution",
+      "learn fast",
+      "scale only when justified"
+    ],
+    "non_goals": [
+      "maximize day-1 pnl",
+      "prove genius",
+      "skip validation"
+    ]
+  },
+  "objective_sequence": [
+    {
+      "days": "1-7",
+      "focus": "protect capital, validate live execution, confirm clean micro behavior"
+    },
+    {
+      "days": "8-14",
+      "focus": "evaluate first trade clusters; edge vs noise"
+    },
+    {
+      "days": "15-30",
+      "focus": "stabilize best setups, suppress weak paths, tiny scaling only if gates pass"
+    },
+    {
+      "days": "31-45",
+      "focus": "compound proven paths, careful throughput, strengthen learning loops"
+    },
+    {
+      "days": "46-60",
+      "focus": "controlled small machine only if metrics support"
+    }
+  ],
+  "daily_monitoring_checklist": [
+    "Kill switch reachable + tested on schedule (paper ok if live frozen).",
+    "Exchange connectivity + auth expiry + clock skew.",
+    "Order intent vs placement vs fills reconciliation (every session).",
+    "Fees + realized slippage vs baseline (per product).",
+    "Duplicate / idempotency guards + skip counts.",
+    "Open interest / exposure vs caps; daily loss budget consumption.",
+    "WS / REST error rates + circuit breaker trips.",
+    "Databank append-only continuity (trade_events tail + checksum if enabled).",
+    "Latency: signal time → submit → ack (p50/p95).",
+    "Scanner + opportunity bot outputs vs execution bot allowlist.",
+    "Post-trade classifications written for every close.",
+    "Orchestration truth chain / deployment fingerprint vs expected.",
+    "Halt flags + scaling gate state (no drift vs written policy)."
+  ],
+  "risk_escalation_ladder": [
+    "Level 0: auto metrics only — OPS handles within playbooks.",
+    "Level 1: caution band on any execution metric — reduce size or frequency per policy.",
+    "Level 2: danger on health OR two unexplained errors — pause new entries; RESEARCH + human.",
+    "Level 3: kill switch / catastrophic — halt; full RCA before resume. See data/control/halt_rules.json."
+  ],
+  "milestone_states_ref": "inline section K in operator docs; machine-readable milestones optional extension",
+  "days_1_14": [
+    {
+      "day": 1,
+      "phase_label": "micro_live_connectivity",
+      "objective": "Prove venue session, read-only + smallest-risk probes; no optimization.",
+      "max_open_notional_usd_aggregate": 15,
+      "max_trades": 1,
+      "monitor": [
+        "API keys, permissions, rate limits",
+        "Order placement dry path then minimal live size",
+        "Fee schedule correctness",
+        "Kill switch latency"
+      ],
+      "success": [
+        "Clean open/close with logs",
+        "Fees match tariff",
+        "No dupes",
+        "Kill switch works"
+      ],
+      "pause_or_review_triggers": [
+        "Any wrong-side or wrong-size",
+        "Any duplicate",
+        "Auth errors >2",
+        "Kill switch fails"
+      ],
+      "databank_and_reports": [
+        "trade_events.jsonl row",
+        "daily_trade_summary.json",
+        "system_health.json snapshot",
+        "first_60_day_daily_envelope.json"
+      ],
+      "ceo_evening_review": [
+        "Connectivity verdict",
+        "Single biggest execution risk tomorrow"
+      ]
+    },
+    {
+      "day": 2,
+      "phase_label": "micro_live_connectivity",
+      "objective": "Repeat venue proof with alternate window; measure slippage on smallest size.",
+      "max_open_notional_usd_aggregate": 15,
+      "max_trades": 1,
+      "monitor": [
+        "Slippage vs mid",
+        "Partial fills / cancels",
+        "Balance reconciliation"
+      ],
+      "success": [
+        "Slippage within dashboard caution band",
+        "Ledger matches venue"
+      ],
+      "pause_or_review_triggers": [
+        "Slippage danger band",
+        "Fill mismatch",
+        "Balance drift"
+      ],
+      "databank_and_reports": [
+        "trade_write_verification.json",
+        "venue latency note in daily diagnosis"
+      ],
+      "ceo_evening_review": [
+        "Slippage vs expectation",
+        "Whether venue is acceptable for micro week"
+      ]
+    },
+    {
+      "day": 3,
+      "phase_label": "micro_live_connectivity",
+      "objective": "Stress daemon continuity: restarts, reconnects, duplicate prevention under light flow.",
+      "max_open_notional_usd_aggregate": 20,
+      "max_trades": 2,
+      "monitor": [
+        "Daemon restart behavior",
+        "Idempotency keys across restarts",
+        "Duplicate skip counter"
+      ],
+      "success": [
+        "No orphan orders after restart",
+        "Dupes = 0"
+      ],
+      "pause_or_review_triggers": [
+        "Duplicate event",
+        "Orphan order",
+        "Unhandled exception loop"
+      ],
+      "databank_and_reports": [
+        "deployment_status.json",
+        "control lifecycle_hook_log.json tail"
+      ],
+      "ceo_evening_review": [
+        "Operational maturity vs day 1",
+        "Go/no-go for pattern micro-trading days 4–7"
+      ]
+    },
+    {
+      "day": 4,
+      "phase_label": "micro_live_first_patterns",
+      "objective": "First intentional pattern trades only from frozen allowlist; measure EV vs realized.",
+      "max_open_notional_usd_aggregate": 25,
+      "max_trades": 2,
+      "monitor": [
+        "Setup tagging consistency",
+        "Win/loss symmetry vs thesis",
+        "Exit discipline vs plan"
+      ],
+      "success": [
+        "Losses are clean (in-stop) and explained",
+        "Wins match pre-defined setup notes"
+      ],
+      "pause_or_review_triggers": [
+        "Chaotic loss outside thesis",
+        "Missing post-trade classification"
+      ],
+      "databank_and_reports": [
+        "post_trade_classifications.jsonl",
+        "setup type rollup in daily diagnosis"
+      ],
+      "ceo_evening_review": [
+        "Honest EV vs realized gap",
+        "One discipline fix for tomorrow"
+      ]
+    },
+    {
+      "day": 5,
+      "phase_label": "micro_live_first_patterns",
+      "objective": "Execution quality trend: fees+slippage as % of gross; tighten if rising.",
+      "max_open_notional_usd_aggregate": 25,
+      "max_trades": 2,
+      "monitor": [
+        "fees_to_pnl_ratio",
+        "cancel/replace ratio",
+        "time-in-queue"
+      ],
+      "success": [
+        "fees_to_pnl_ratio in green/caution per dashboard doc",
+        "No unexplained cancels"
+      ],
+      "pause_or_review_triggers": [
+        "fees_to_pnl danger",
+        "Slippage spike rule"
+      ],
+      "databank_and_reports": [
+        "daily_ratio_review payload if generated",
+        "trade_scores.json update"
+      ],
+      "ceo_evening_review": [
+        "Execution tax verdict",
+        "Whether to keep same micro cap"
+      ]
+    },
+    {
+      "day": 6,
+      "phase_label": "micro_live_first_patterns",
+      "objective": "Reproducibility check — similar setups should behave similarly (variance, not copy-paste PnL).",
+      "max_open_notional_usd_aggregate": 30,
+      "max_trades": 3,
+      "monitor": [
+        "Intra-setup variance",
+        "Liquidity context fields completeness"
+      ],
+      "success": [
+        "Narrative links between context and outcome",
+        "No silent missing fields"
+      ],
+      "pause_or_review_triggers": [
+        "High variance with missing context",
+        "Data holes in >20% trades"
+      ],
+      "databank_and_reports": [
+        "research_learning_hooks.jsonl entries"
+      ],
+      "ceo_evening_review": [
+        "Reproducibility opinion (evidence-weighted)",
+        "Candidate best setup vs worst"
+      ]
+    },
+    {
+      "day": 7,
+      "phase_label": "micro_live_first_patterns",
+      "objective": "End week-1 proof: micro behavior clean; decide flat vs reduce for week 2.",
+      "max_open_notional_usd_aggregate": 30,
+      "max_trades": 3,
+      "monitor": [
+        "Weekly rollup vs caps",
+        "All halt rules dormant",
+        "Error budget"
+      ],
+      "success": [
+        "Week within loss budget",
+        "Execution anomalies <=1 explained"
+      ],
+      "pause_or_review_triggers": [
+        "Loss budget breach",
+        "Two unexplained anomalies"
+      ],
+      "databank_and_reports": [
+        "weekly_summary.json",
+        "first_60_day_weekly_envelope.json"
+      ],
+      "ceo_evening_review": [
+        "Week-1 scorecard: survive? validate?",
+        "Explicit notional plan for days 8–14 (flat/down only unless gates green)"
+      ]
+    },
+    {
+      "day": 8,
+      "phase_label": "cluster_analysis",
+      "objective": "Begin first-20-trades style clustering; rank setups by post-fee expectancy (honest sample).",
+      "max_open_notional_usd_aggregate": 35,
+      "max_trades": 3,
+      "monitor": [
+        "Cluster sizes",
+        "Overfit risk",
+        "Time-of-day leakage"
+      ],
+      "success": [
+        "At least 8 closed trades lifetime OR documented low-activity reason",
+        "Ranked setup table present"
+      ],
+      "pause_or_review_triggers": [
+        "Scaling up without samples",
+        "Chasing trades to hit count"
+      ],
+      "databank_and_reports": [
+        "post_trade_clusters.json refresh",
+        "edge_discovery_snapshot consumption note"
+      ],
+      "ceo_evening_review": [
+        "Best vs worst setup",
+        "Is activity level appropriate?"
+      ]
+    },
+    {
+      "day": 9,
+      "phase_label": "cluster_analysis",
+      "objective": "Latency + friction diagnosis: where time is lost from signal to fill.",
+      "max_open_notional_usd_aggregate": 35,
+      "max_trades": 3,
+      "monitor": [
+        "p95 latency path",
+        "Partial fill patterns",
+        "Queue position proxies if any"
+      ],
+      "success": [
+        "Documented top-1 friction cause",
+        "Mitigation ticket or config experiment queued (advisory)"
+      ],
+      "pause_or_review_triggers": [
+        "p95 beyond SLO with rising errors",
+        "Venue instability"
+      ],
+      "databank_and_reports": [
+        "organism/deployment_metrics.json"
+      ],
+      "ceo_evening_review": [
+        "Friction vs edge magnitude",
+        "Go/no-go for tiny throughput change"
+      ]
+    },
+    {
+      "day": 10,
+      "phase_label": "cluster_analysis",
+      "objective": "Hold variables flat; repeat measurement day (science, not heroics).",
+      "max_open_notional_usd_aggregate": 35,
+      "max_trades": 3,
+      "monitor": [
+        "Metric stationarity",
+        "Regime notes (volatility, spreads)"
+      ],
+      "success": [
+        "Stable execution metrics day-over-day",
+        "PnL not the primary success signal"
+      ],
+      "pause_or_review_triggers": [
+        "Metric collapse vs day 9",
+        "External regime shift unaccounted"
+      ],
+      "databank_and_reports": [
+        "daily_diagnosis.json compare D9 vs D10"
+      ],
+      "ceo_evening_review": [
+        "Variance diagnosis",
+        "Emotional pressure check (must be absent)"
+      ]
+    },
+    {
+      "day": 11,
+      "phase_label": "cluster_analysis",
+      "objective": "Edge vs noise: bootstrap CI on expectancy; no scaling decisions from point estimates.",
+      "max_open_notional_usd_aggregate": 40,
+      "max_trades": 4,
+      "monitor": [
+        "CI width",
+        "Outlier trades leverage on summary",
+        "fee/slippage drag"
+      ],
+      "success": [
+        "Written statement: edge candidate vs insufficient evidence",
+        "If insufficient: plan stays flat"
+      ],
+      "pause_or_review_triggers": [
+        "Positive PnL but negative expectancy",
+        "One mega-winner masking bad process"
+      ],
+      "databank_and_reports": [
+        "strategy_performance_summary.json",
+        "CEO weekly questions pre-answer draft"
+      ],
+      "ceo_evening_review": [
+        "Edge vs noise verdict",
+        "What would falsify the edge thesis next week?"
+      ]
+    },
+    {
+      "day": 12,
+      "phase_label": "cluster_analysis",
+      "objective": "Sizing policy fork: only flat or reduce unless scaling_gates.json satisfied (machine check).",
+      "max_open_notional_usd_aggregate": 40,
+      "max_trades": 4,
+      "monitor": [
+        "Gate checklist output",
+        "Drawdown vs gate",
+        "Slippage coverage label"
+      ],
+      "success": [
+        "Explicit tomorrow sizing from gates only",
+        "No discretionary bump"
+      ],
+      "pause_or_review_triggers": [
+        "Any discretionary size change without gate artifact",
+        "Danger metric with planned increase"
+      ],
+      "databank_and_reports": [
+        "capital_allocation.json decision log if present",
+        "scaling gate evaluation stub in envelope"
+      ],
+      "ceo_evening_review": [
+        "Tomorrow size decision with evidence pointers",
+        "Red team: emotional justification check"
+      ]
+    },
+    {
+      "day": 13,
+      "phase_label": "cluster_analysis",
+      "objective": "Suppress worst setup path automatically if policy wiring exists; else manual ban list.",
+      "max_open_notional_usd_aggregate": 40,
+      "max_trades": 4,
+      "monitor": [
+        "Suppression effectiveness",
+        "Opportunity bot false positives"
+      ],
+      "success": [
+        "Worst setup exposure drops measurably",
+        "No increase in errors"
+      ],
+      "pause_or_review_triggers": [
+        "Suppression breaks routing",
+        "Rise in failed orders"
+      ],
+      "databank_and_reports": [
+        "blocked_opportunity_reasons.json or equivalent"
+      ],
+      "ceo_evening_review": [
+        "Did suppression improve distribution?",
+        "What remains exposed?"
+      ]
+    },
+    {
+      "day": 14,
+      "phase_label": "cluster_analysis",
+      "objective": "Close first fortnight: go/no-go for phase 3 (days 15–30) tiny scaling track.",
+      "max_open_notional_usd_aggregate": 45,
+      "max_trades": 5,
+      "monitor": [
+        "Full sample integrity",
+        "All dashboards green or explained cautions",
+        "Halt history"
+      ],
+      "success": [
+        "Written phase decision: STABLE_MICRO vs REDUCE vs HALT_REVIEW",
+        "Updated first_60_day_state notes optional"
+      ],
+      "pause_or_review_triggers": [
+        "Any danger without mitigation plan",
+        "Inconsistent logging across venues"
+      ],
+      "databank_and_reports": [
+        "fortnight_summary in weekly envelope + diagnosis",
+        "trade_databank_health.json"
+      ],
+      "ceo_evening_review": [
+        "Fortnight verdict",
+        "Explicit policy for days 15–21 notional + frequency"
+      ]
+    }
+  ],
+  "weekly_blocks": [
+    {
+      "day_range_start": 15,
+      "day_range_end": 21,
+      "phase_label": "stabilize_suppress",
+      "operating_priority": "Stabilize best setups; keep weak paths dead; throughput only if gates green.",
+      "trade_count_target_range": "8–18 closed trades/week (venue liquidity permitting)",
+      "notional_policy": "Flat to +10% vs prior week only if all scaling global requirements pass.",
+      "scale_policy": "No new products; no shorter cooldown; notional step max +10% once.",
+      "validation_focus": "Per-setup expectancy stability; drawdown speed; fee drag.",
+      "learning_focus": "Post-trade reviews → concrete suppress/promote list with evidence IDs.",
+      "bots_optimize": "Opportunity bot: precision; Execution bot: latency; Risk bot: tail loss; Learning bot: cluster updates.",
+      "frozen": [
+        "New strategy classes",
+        "Aggressive deployment gate",
+        "Cooldown shortening"
+      ],
+      "no_mid_block_changes": [
+        "Scanner correlation budget",
+        "Venue allowlist",
+        "Core risk caps"
+      ]
+    },
+    {
+      "day_range_start": 22,
+      "day_range_end": 30,
+      "phase_label": "stabilize_suppress",
+      "operating_priority": "Continue stabilization; prepare tiny scaling proof window days 31+.",
+      "trade_count_target_range": "10–22 closed trades/week",
+      "notional_policy": "Default flat; one notional step only if week 15–21 ended green across execution metrics.",
+      "scale_policy": "Cooldown shortening still blocked; search pressure widening blocked.",
+      "validation_focus": "Slippage stability week-on-week; fill quality; duplicate stays zero.",
+      "learning_focus": "Cross-venue lessons; time-of-day discipline; inventory model checks if spot.",
+      "bots_optimize": "Comparison bot: sim vs live deltas; Review bot: anomaly false positives down.",
+      "frozen": [
+        "New products",
+        "Aggressive deployment"
+      ],
+      "no_mid_block_changes": [
+        "Kill switch thresholds",
+        "Daily loss cap"
+      ]
+    },
+    {
+      "day_range_start": 31,
+      "day_range_end": 45,
+      "phase_label": "controlled_compound",
+      "operating_priority": "Compound only proven paths; increase throughput carefully with doubled monitoring.",
+      "trade_count_target_range": "15–35 closed trades/week (cap by liquidity first)",
+      "notional_policy": "Stepwise increases per scaling_gates.json only; max one gate change per 5 trading days.",
+      "scale_policy": "May allow cooldown shorten OR search widen (one only) if gates + human note satisfied.",
+      "validation_focus": "Profit factor persistence; max DD velocity; incident rate near zero.",
+      "learning_focus": "Mission/goals bot pacing vs actual validation depth — prevent fake acceleration.",
+      "bots_optimize": "Mission bot: honest pace scoring; CEO bot: weekly promotion/demotion recommendations advisory.",
+      "frozen": [
+        "Hard safety caps",
+        "Promotion to unproven strategy classes"
+      ],
+      "no_mid_block_changes": [
+        "Orchestration truth contract",
+        "Databank schema"
+      ]
+    },
+    {
+      "day_range_start": 46,
+      "day_range_end": 60,
+      "phase_label": "controlled_small_machine",
+      "operating_priority": "If metrics support: become a controlled small machine — repeatable ops, low drama.",
+      "trade_count_target_range": "20–45 closed trades/week subject to error budget = 0",
+      "notional_policy": "Notional tied to rolling expectancy CI narrowing; stop sizing up if CI widens.",
+      "scale_policy": "Aggressive deployment gate may be considered only if separate CEO+human artifact exists.",
+      "validation_focus": "End-to-end autonomy discipline; halt/rollback drills; chaos readiness.",
+      "learning_focus": "Automation of suppression + sizing helpers; human time on exceptions only.",
+      "bots_optimize": "All bots: reduce false positives; tighten writes to durable stores; improve escalation clarity.",
+      "frozen": [
+        "Retroactive trade log edits",
+        "Undocumented parameter drift"
+      ],
+      "no_mid_block_changes": [
+        "Baseline slippage measurement methodology",
+        "Venue fee schedule assumptions without re-proof"
+      ]
+    }
+  ],
+  "scaling_gates_file": "data/control/scaling_gates.json",
+  "halt_rules_file": "data/control/halt_rules.json",
+  "dashboard_thresholds_file": "data/control/live_dashboard_thresholds.json",
+  "milestone_states": {
+    "MICRO_LIVE_VALIDATING": {
+      "entry": [
+        "live_start_date configured",
+        "days_since_start <= 14 OR execution proof incomplete",
+        "no unresolved catastrophic incidents"
+      ]
+    },
+    "MICRO_LIVE_STABLE": {
+      "entry": [
+        "7+ clean trading days with execution metrics green/caution-only",
+        "duplicate_skip_count green",
+        "halted_event_count green",
+        "loss budgets never breached"
+      ]
+    },
+    "EDGE_CANDIDATE_PROVEN": {
+      "entry": [
+        "min 30 closed trades on primary path OR 20 with narrow CI above zero expectancy post-fee",
+        "profit_factor >= 1.2 on rolling window",
+        "slippage coverage not missing_or_thin"
+      ]
+    },
+    "READY_FOR_SMALL_SCALE_UP": {
+      "entry": [
+        "EDGE_CANDIDATE_PROVEN true",
+        "all conditions in scaling_gates.json gate increase_max_notional",
+        "human acknowledgment record present"
+      ]
+    },
+    "CONTROLLED_COMPOUNDING": {
+      "entry": [
+        "READY_FOR_SMALL_SCALE_UP sustained 10+ trading days",
+        "no rollback events",
+        "weekly CEO review answers 'stable enough to scale' with evidence IDs"
+      ]
+    },
+    "NOT_READY_REDUCE_RISK": {
+      "entry": [
+        "any danger dashboard metric unexplained 48h+",
+        "expectancy <=0 with min sample",
+        "profit_factor <1 with min sample",
+        "two unexplained execution errors / 7d"
+      ]
+    },
+    "HALT_AND_REPAIR": {
+      "entry": [
+        "any halt_rules.json automatic_response triggered at halt level",
+        "kill switch fired",
+        "databank corruption",
+        "signal_execution_deviation unresolved"
+      ]
+    }
+  }
+}

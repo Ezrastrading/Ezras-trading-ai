@@ -1,0 +1,17 @@
+{
+  "truth_version": "weekly_ceo_review_template_v1",
+  "required_questions": [
+    "Is there measurable edge vs fees/slippage on an honest sample, or mostly noise?",
+    "Is edge stable week-over-week (distribution, not one outlier)?",
+    "What should be cut completely (setup/product/path)?",
+    "What should be promoted (still within gates)?",
+    "Is the system becoming more precise (fill quality, latency, fewer anomalies)?",
+    "Is the path toward $1K credible on throughput + expectancy math — not hope?"
+  ],
+  "artifact_refs": [
+    "data/review/first_60_day_weekly_envelope.json",
+    "data/trade_logs/weekly_summary.json",
+    "data/control/scaling_gates.json",
+    "data/control/halt_rules.json"
+  ]
+}

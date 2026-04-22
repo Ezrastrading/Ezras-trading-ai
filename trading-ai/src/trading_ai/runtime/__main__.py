@@ -162,6 +162,21 @@ def main() -> int:
         help="Verify docs/systemd/*.service templates; writes systemd_unit_contract_verify.json",
     )
 
+    f60t = sub.add_parser("first-60-live-ops-tick", help="One first-60 calendar automation tick (envelopes + heartbeat)")
+    f60t.add_argument("--runtime-root", default=None)
+    f60t.add_argument(
+        "--force",
+        action="store_true",
+        help="Rewrite daily envelope even if already written for current UTC day",
+    )
+
+    f60d = sub.add_parser(
+        "first-60-live-ops-daemon",
+        help="Loop first-60 ticks forever (SIGINT/SIGTERM stop). Sleep: --interval-sec or EZRAS_FIRST_60_DAEMON_SLEEP_SEC (default 120).",
+    )
+    f60d.add_argument("--runtime-root", default=None)
+    f60d.add_argument("--interval-sec", type=float, default=None)
+
     args = p.parse_args()
 
     from trading_ai.runtime.operating_system import (
@@ -244,6 +259,19 @@ def main() -> int:
         ok, out = verify_systemd_unit_contract_templates(repo_root=_repo_root)
         _print_json(out)
         return 0 if ok else 7
+
+    if args.cmd == "first-60-live-ops-tick":
+        from trading_ai.control.first_60_day_ops import run_first_60_live_ops_tick
+
+        out = run_first_60_live_ops_tick(runtime_root=rt, force=bool(getattr(args, "force", False)))
+        _print_json(out)
+        return 0 if out.get("ok") else 8
+
+    if args.cmd == "first-60-live-ops-daemon":
+        from trading_ai.control.first_60_day_ops import run_first_60_live_ops_daemon_forever
+
+        run_first_60_live_ops_daemon_forever(runtime_root=rt, interval_sec=getattr(args, "interval_sec", None))
+        return 0
 
     holder = args.holder_id or f"pid_{os.getpid()}"
     ok, why, _lock = try_acquire_role_lock(

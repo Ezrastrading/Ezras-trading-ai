@@ -8,6 +8,8 @@ from trading_ai.control.command_center import (
 from trading_ai.control.first_60_day_ops import (
     attach_first_60_context_for_ceo_review,
     ensure_first_60_day_control_artifacts,
+    run_first_60_live_ops_daemon_forever,
+    run_first_60_live_ops_tick,
     write_first_60_day_daily_envelope,
     write_first_60_day_weekly_envelope_if_due,
 )
@@ -18,6 +20,8 @@ __all__ = [
     "run_command_center_snapshot",
     "attach_first_60_context_for_ceo_review",
     "ensure_first_60_day_control_artifacts",
+    "run_first_60_live_ops_daemon_forever",
+    "run_first_60_live_ops_tick",
     "write_first_60_day_daily_envelope",
     "write_first_60_day_weekly_envelope_if_due",
 ]
