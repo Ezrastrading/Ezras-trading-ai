@@ -22,6 +22,8 @@ EnvironmentFile=/opt/ezra-runtime/env/common.env
 EnvironmentFile=-/opt/ezra-runtime/env/ops.env
 # Optional operator overlay for FULL_AUTONOMY_ACTIVE (live env). File may be absent.
 EnvironmentFile=-/opt/ezra-runtime/env/ops-live.env
+# Optional secrets overlay (Coinbase keys, etc). Keep separate from ops-live.env.
+EnvironmentFile=-/opt/ezra-runtime/env/secrets.env
 
 # Authoritative module resolution: prefer public tree (private may lag).
 Environment=PYTHONPATH=/opt/ezra-public/trading-ai/src:/opt/ezra-private/trading-ai/src

@@ -20,6 +20,7 @@ Environment=COINBASE_ENABLED=false
 EnvironmentFile=/opt/ezra-runtime/env/common.env
 EnvironmentFile=-/opt/ezra-runtime/env/research.env
 EnvironmentFile=-/opt/ezra-runtime/env/research-live.env
+EnvironmentFile=-/opt/ezra-runtime/env/secrets.env
 
 # Authoritative module resolution: prefer public tree (private may lag).
 Environment=PYTHONPATH=/opt/ezra-public/trading-ai/src:/opt/ezra-private/trading-ai/src
