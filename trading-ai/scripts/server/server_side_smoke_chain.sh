@@ -48,4 +48,11 @@ else
   "${PY}" "${ROOT}/scripts/server/full_autonomy_smoke.py" --ticks 10
 fi
 
+echo "== 5) production_stack_proof (systemd + smokes on RUNTIME_ROOT)"
+"${PY}" "${ROOT}/scripts/server/production_stack_proof.py" \
+  --public-root "${PUBLIC_DIR}" \
+  --private-root "${PRIVATE_DIR}" \
+  --runtime-root "${RUNTIME_ROOT}" \
+  --venv-root "${VENV}"
+
 echo "OK: server_side_smoke_chain completed"

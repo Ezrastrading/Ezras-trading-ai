@@ -68,17 +68,6 @@ maybe_restart() {
   fi
 }
 
-run_proof() {
-  local py="${VENV}/bin/python"
-  local proof="${PUBLIC_DIR}/trading-ai/scripts/server/production_stack_proof.py"
-  echo "== production_stack_proof (requires active units if not --skip-systemd)"
-  "${py}" "${proof}" \
-    --public-root "${PUBLIC_DIR}" \
-    --private-root "${PRIVATE_DIR}" \
-    --runtime-root "${RUNTIME_ROOT}" \
-    --venv-root "${VENV}" || true
-}
-
 status_summary() {
   systemctl --no-pager --full status ezra-ops.service || true
   systemctl --no-pager --full status ezra-research.service || true
@@ -97,8 +86,7 @@ main() {
   maybe_restart
   status_summary
   if [[ "${RESTART}" == "1" ]]; then
-    sleep 3
-    run_proof
+    echo "Run: ${PUBLIC_DIR}/trading-ai/scripts/server/production_stack_proof.py (see script header)"
   fi
 }
 
