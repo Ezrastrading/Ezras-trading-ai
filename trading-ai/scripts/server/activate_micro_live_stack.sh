@@ -20,12 +20,12 @@ if [[ ! -x "${PY}" ]]; then
 fi
 
 export EZRAS_RUNTIME_ROOT="${RUNROOT}"
-export PYTHONPATH="${PRIVATE_ROOT}/trading-ai/src:${PUBLIC_ROOT}/trading-ai/src"
+export PYTHONPATH="${PUBLIC_ROOT}/trading-ai/src:${PRIVATE_ROOT}/trading-ai/src"
 
 echo "== 0) Refresh deployed_environment_smoke under forced paper (preflight consumes this JSON)"
 (
   export EZRAS_RUNTIME_ROOT="${RUNROOT}"
-  export PYTHONPATH="${PRIVATE_ROOT}/trading-ai/src:${PUBLIC_ROOT}/trading-ai/src"
+  export PYTHONPATH="${PUBLIC_ROOT}/trading-ai/src:${PRIVATE_ROOT}/trading-ai/src"
   export NTE_EXECUTION_MODE=paper
   export NTE_LIVE_TRADING_ENABLED=false
   export COINBASE_EXECUTION_ENABLED=false
@@ -73,7 +73,7 @@ set -a
 [[ -f "${RUNROOT}/env/secrets.env" ]] && source "${RUNROOT}/env/secrets.env"
 set +a
 export EZRAS_RUNTIME_ROOT="${RUNROOT}"
-export PYTHONPATH="${PRIVATE_ROOT}/trading-ai/src:${PUBLIC_ROOT}/trading-ai/src"
+export PYTHONPATH="${PUBLIC_ROOT}/trading-ai/src:${PRIVATE_ROOT}/trading-ai/src"
 cd "${REPO}"
 
 "${PY}" -m trading_ai.deployment live-micro-resume --runtime-root "${RUNROOT}" >/dev/null 2>&1 || true
