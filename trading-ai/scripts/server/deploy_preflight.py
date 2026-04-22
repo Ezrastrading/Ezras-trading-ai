@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import server_sys_path
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -163,6 +165,7 @@ def main(argv: List[str]) -> int:
         runtime_root=args.runtime_root,
         venv_root=args.venv_root,
     )
+    server_sys_path.ensure_dual_repo_src_on_path(public_root=p.public_root, private_root=p.private_root)
     rep = build_report(p)
     print(json.dumps(rep, indent=2, sort_keys=True))
     if args.write_report:

@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import server_sys_path
+
 
 def _iso() -> str:
     import datetime
@@ -248,8 +250,11 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--venv-root", default="/opt/ezra-venv")
     args = ap.parse_args(argv)
 
-    public_src = Path(args.public_root).resolve() / "trading-ai" / "src"
-    private_src = Path(args.private_root).resolve() / "trading-ai" / "src"
+    public_root = Path(args.public_root).resolve()
+    private_root = Path(args.private_root).resolve()
+    server_sys_path.ensure_dual_repo_src_on_path(public_root=public_root, private_root=private_root)
+    public_src = public_root / "trading-ai" / "src"
+    private_src = private_root / "trading-ai" / "src"
     runtime_root = Path(args.runtime_root).resolve()
 
     # Align process env with services so imports, databank, and supervisors resolve the same tree.
@@ -307,7 +312,6 @@ def main(argv: List[str]) -> int:
     # Verify tasks created (governance JSONL and/or runtime mirror)
     task_probe = {"ok": False, "paths": [], "matches": []}
     try:
-        sys.path.insert(0, str(Path(args.public_root).resolve() / "trading-ai" / "src"))
         from trading_ai.global_layer.task_registry import tasks_store_path
 
         cand = [
@@ -331,8 +335,8 @@ def main(argv: List[str]) -> int:
     except Exception as exc:
         task_probe = {"ok": False, "paths": task_probe.get("paths") or [], "error": type(exc).__name__}
 
-    public_repo = Path(args.public_root).resolve()
-    private_repo = Path(args.private_root).resolve()
+    public_repo = public_root
+    private_repo = private_root
     repo_git = {
         "public_repo_head": _git_head(public_repo),
         "private_repo_head": _git_head(private_repo),

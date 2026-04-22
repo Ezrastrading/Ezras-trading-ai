@@ -80,18 +80,20 @@ cd "${REPO}"
 "${PY}" -m trading_ai.deployment live-micro-readiness --runtime-root "${RUNROOT}"
 "${PY}" -m trading_ai.deployment live-micro-guard-proof --runtime-root "${RUNROOT}"
 
-if command -v jq >/dev/null 2>&1; then
-  if ! jq -e '.ok == true' "${RUNROOT}/data/control/live_preflight.json" >/dev/null; then
-    echo "ERROR: live_preflight.json not ok — inspect blockers; leaving EZRA_LIVE_MICRO_ENABLED=false" >&2
-    exit 3
-  fi
-  if ! jq -e '.ok == true' "${RUNROOT}/data/control/live_micro_readiness.json" >/dev/null; then
-    echo "ERROR: live_micro_readiness.json not ok" >&2
-    exit 4
-  fi
-else
-  echo "WARN: jq missing; skipping strict JSON ok checks — review artifacts manually" >&2
-fi
+RUNROOT="${RUNROOT}" "${PY}" - <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["RUNROOT"]) / "data" / "control"
+for name in ("live_preflight.json", "live_micro_readiness.json"):
+    p = root / name
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("ok") is not True:
+        print(f"ERROR: {name} ok != true — inspect blockers; leaving EZRA_LIVE_MICRO_ENABLED=false", file=sys.stderr)
+        sys.exit(3 if name == "live_preflight.json" else 4)
+PY
 
 echo "== 5) Enable micro runtime flag in ops-live.env + restart"
 sed -i 's/^EZRA_LIVE_MICRO_ENABLED=false/EZRA_LIVE_MICRO_ENABLED=true/' "${RUNROOT}/env/ops-live.env"

@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import server_sys_path
+
 
 def _iso() -> str:
     import datetime
@@ -142,6 +144,7 @@ def main(argv: List[str]) -> int:
     runtime_root = Path(args.runtime_root).resolve()
     public_root = Path(args.public_root).resolve()
     private_root = Path(args.private_root).resolve()
+    server_sys_path.ensure_dual_repo_src_on_path(public_root=public_root, private_root=private_root)
     os.environ["EZRAS_RUNTIME_ROOT"] = str(runtime_root)
     os.environ.setdefault("TRADE_DATABANK_MEMORY_ROOT", str(runtime_root / "databank"))
 
