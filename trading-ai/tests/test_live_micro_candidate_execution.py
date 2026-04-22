@@ -51,6 +51,7 @@ def _seed_micro_contract_green(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_TRADES_PER_SESSION", "3")
     monkeypatch.setenv("EZRA_LIVE_MICRO_COOLDOWN_SEC", "0")
     monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_CONCURRENT_POSITIONS", "1")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MISSION_PROB", "0.90")
 
     monkeypatch.setattr("trading_ai.deployment.operator_env_contracts.missing_coinbase_credential_env_vars", lambda: [])
     monkeypatch.setattr("trading_ai.control.kill_switch.kill_switch_active", lambda: False)

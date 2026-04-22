@@ -244,25 +244,39 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         mission_prob = float((os.environ.get("EZRA_LIVE_MICRO_MISSION_PROB") or "0.55").strip() or "0.55")
     except Exception:
         mission_prob = 0.55
-    tier_cap = None
-    try:
-        from trading_ai.shark.mission import evaluate_trade_against_mission
-
-        m = evaluate_trade_against_mission(
-            platform="coinbase",
-            product_id=pid,
-            size_usd=min_notional,
-            probability=mission_prob,
-            total_balance=max(total_quote, 0.0),
+    # Mission tier cap (matches trading_ai.shark.mission + live_order_guard expectations):
+    # - p < 0.63 => blocked
+    # - 0.63–0.77 => tier1: 5%
+    # - 0.77–0.90 => tier2: 10%
+    # - >=0.90 => tier3: 20%
+    # Also enforce D1 20% hard cap (same as tier3).
+    if mission_prob < 0.63:
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "blocked",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "reason": "mission_probability_below_min",
+                "mission_prob": mission_prob,
+            },
         )
-        tc = m.get("tier_cap")
-        tier_cap = float(tc) if tc is not None else None
-    except Exception:
-        tier_cap = None
+        return {**out, "skipped": True, "reason": "mission_probability_below_min"}
+    if mission_prob < 0.77:
+        frac = 0.05
+        tier = 1
+    elif mission_prob < 0.90:
+        frac = 0.10
+        tier = 2
+    else:
+        frac = 0.20
+        tier = 3
+    tier_cap = float(total_quote) * float(frac)
+    tier_cap = min(tier_cap, float(total_quote) * 0.20)
 
     hard_cap = min(max_notional, max(0.0, avail_quote * 0.95) if avail_quote > 0 else max_notional)
-    if tier_cap is not None:
-        hard_cap = min(hard_cap, max(0.0, float(tier_cap)))
+    hard_cap = min(hard_cap, max(0.0, float(tier_cap)))
     quote_usd = max(0.0, float(hard_cap))
     if quote_usd + 1e-9 < min_notional:
         _append_jsonl(
@@ -374,6 +388,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "quote_currency": quote_ccy,
                 "avail_quote": avail_quote,
                 "tier_cap": tier_cap,
+                "mission_tier": tier,
                 "mission_prob": mission_prob,
                 "should_trade": bool(dec.should_trade),
                 "rejection_reasons": list(dec.rejection_reasons or []),
