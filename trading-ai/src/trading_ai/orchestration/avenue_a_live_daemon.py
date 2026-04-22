@@ -215,6 +215,22 @@ def run_avenue_a_daemon_once(
         _write_daemon_truth(runtime_root=root, last_cycle=out)
         return out
 
+    try:
+        from trading_ai.deployment.live_micro_enablement import assert_live_micro_runtime_contract, live_micro_runtime_enabled
+
+        if live_micro_runtime_enabled():
+            lm_ok, lm_err, _ = assert_live_micro_runtime_contract(root, phase="avenue_a_daemon_once")
+            if not lm_ok:
+                out["blocked"] = lm_err
+                out["duration_sec"] = round(time.perf_counter() - t0, 4)
+                _write_daemon_truth(runtime_root=root, last_cycle=out)
+                return out
+    except Exception as exc:
+        out["blocked"] = f"live_micro_contract_error:{type(exc).__name__}"
+        out["duration_sec"] = round(time.perf_counter() - t0, 4)
+        _write_daemon_truth(runtime_root=root, last_cycle=out)
+        return out
+
     if mode == "supervised_live":
         from trading_ai.nte.hardening.live_order_guard import validation_duplicate_isolation_key
         from trading_ai.safety.failsafe_guard import peek_duplicate_trade_window_would_block_entry

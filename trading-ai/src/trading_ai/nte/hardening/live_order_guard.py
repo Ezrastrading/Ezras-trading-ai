@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Set
 
 from trading_ai.nte.config.config_validator import validate_nte_settings
@@ -485,6 +486,21 @@ def assert_live_order_permitted(
             _block(str(exc), severe=True)
         except Exception as exc:
             logger.debug("control artifact preflight skipped: %s", exc)
+
+    try:
+        from trading_ai.deployment.live_micro_enablement import enforce_live_micro_order_guards
+
+        enforce_live_micro_order_guards(
+            runtime_root=Path(ezras_runtime_root()),
+            avenue_id=avenue_id,
+            product_id=product_id,
+            execution_gate=execution_gate,
+            quote_notional=quote_notional,
+            action=action,
+            order_side=order_side,
+        )
+    except RuntimeError as exc:
+        _block(str(exc), severe=False)
 
     # Final failsafe layer (kill switch, PnL caps, governance, duplicates, capital truth).
     #

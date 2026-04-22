@@ -414,6 +414,40 @@ def run_single_live_execution_validation(
     root = Path(runtime_root or os.environ.get("EZRAS_RUNTIME_ROOT") or ezras_runtime_root()).resolve()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(root)
 
+    try:
+        from trading_ai.deployment.live_micro_enablement import assert_live_micro_runtime_contract, live_micro_runtime_enabled
+
+        if live_micro_runtime_enabled():
+            ok_lm, err_lm, _lm = assert_live_micro_runtime_contract(root, phase="run_single_live_execution_validation")
+            if not ok_lm:
+                base_early: Dict[str, Any] = {
+                    "execution_success": False,
+                    "coinbase_order_verified": False,
+                    "databank_written": False,
+                    "supabase_synced": False,
+                    "governance_logged": False,
+                    "packet_updated": False,
+                    "scheduler_stable": False,
+                    "error": err_lm,
+                    "runtime_root": str(root),
+                }
+                write_execution_proof_json(root, _proof_failure_payload(error=err_lm))
+                return base_early
+    except Exception as exc:
+        base_early2: Dict[str, Any] = {
+            "execution_success": False,
+            "coinbase_order_verified": False,
+            "databank_written": False,
+            "supabase_synced": False,
+            "governance_logged": False,
+            "packet_updated": False,
+            "scheduler_stable": False,
+            "error": f"live_micro_gate_error:{type(exc).__name__}",
+            "runtime_root": str(root),
+        }
+        write_execution_proof_json(root, _proof_failure_payload(error=base_early2["error"]))
+        return base_early2
+
     base_out: Dict[str, Any] = {
         "execution_success": False,
         "coinbase_order_verified": False,
@@ -498,6 +532,14 @@ def run_single_live_execution_validation(
     base_size = buy_agg.buy_base_qty
     fee_buy = buy_agg.fees_buy_usd
     avg_px = buy_agg.avg_fill_price
+
+    try:
+        from trading_ai.deployment.live_micro_enablement import live_micro_runtime_enabled, touch_live_micro_session_open_increment
+
+        if live_micro_runtime_enabled():
+            touch_live_micro_session_open_increment(root, quote_usd=float(quote_buy))
+    except Exception as exc:
+        logger.error("live_micro_open_increment_failed:%s", exc)
 
     base_s = round_base_to_increment(product_id, base_size)
     try:
@@ -731,6 +773,18 @@ def run_single_live_execution_validation(
     proof["realized_pnl"] = base_out.get("realized_pnl") or {}
     base_out["proof"] = proof
     base_out["FINAL_EXECUTION_PROVEN"] = all_ok
+
+    if all_ok and round_trip_complete:
+        try:
+            from trading_ai.deployment.live_micro_enablement import live_micro_runtime_enabled, touch_live_micro_session_trade_completed
+
+            if live_micro_runtime_enabled():
+                touch_live_micro_session_trade_completed(root, quote_usd=float(quote_buy))
+        except Exception as exc:
+            logger.error("live_micro_trade_completed_bookkeeping_failed:%s", exc)
+            base_out["live_micro_session_close_error"] = str(exc)
+            base_out["FINAL_EXECUTION_PROVEN"] = False
+            proof["FINAL_EXECUTION_PROVEN"] = False
 
     write_execution_proof_json(root, proof)
     return base_out

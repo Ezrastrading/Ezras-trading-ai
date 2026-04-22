@@ -30,6 +30,13 @@ def _cli_runtime_root() -> Path:
     return resolve_ezras_runtime_root_for_daemon_authority()
 
 
+def _live_micro_runtime_arg(args: Any) -> Path:
+    raw = getattr(args, "runtime_root", None)
+    if raw:
+        return Path(str(raw)).expanduser().resolve()
+    return _cli_runtime_root()
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(prog="python -m trading_ai.deployment")
@@ -140,6 +147,78 @@ def main() -> int:
 
     sub.add_parser("avenue-a-daemon-status", help="Print avenue_a_daemon + policy snapshot JSON")
     sub.add_parser("avenue-a-daemon-stop", help="Best-effort runtime_runner.lock removal")
+
+    p_lm_rt = argparse.ArgumentParser(add_help=False)
+    p_lm_rt.add_argument(
+        "--runtime-root",
+        default=None,
+        help="EZRAS_RUNTIME_ROOT (default: daemon authority resolver, else /opt/ezra-runtime on server)",
+    )
+
+    p_lm_req = sub.add_parser(
+        "live-micro-enablement-request",
+        parents=[p_lm_rt],
+        help="Write data/control/live_enablement_request.json from current env (fail-closed if env incomplete)",
+    )
+    p_lm_req.add_argument("--operator", required=True, help="Operator id for audit trail")
+    p_lm_req.add_argument("--note", default="", help="Free-text note (non-secret)")
+
+    p_lm_lim = sub.add_parser(
+        "live-micro-write-session-limits",
+        parents=[p_lm_rt],
+        help="Write data/control/live_session_limits.json from required EZRA_LIVE_MICRO_* env",
+    )
+
+    sub.add_parser(
+        "live-micro-preflight",
+        parents=[p_lm_rt],
+        help="Write data/control/live_preflight.json (services/smoke/micro-readiness/governance checks)",
+    )
+    sub.add_parser(
+        "live-micro-readiness",
+        parents=[p_lm_rt],
+        help="Write data/control/live_micro_readiness.json (preflight + import/write probes)",
+    )
+    sub.add_parser(
+        "live-micro-guard-proof",
+        parents=[p_lm_rt],
+        help="Write data/control/live_guard_proof.json (snapshot; no orders)",
+    )
+    p_lm_start = sub.add_parser(
+        "live-micro-record-start",
+        parents=[p_lm_rt],
+        help="Write data/control/live_start_receipt.json after operator starts approved live path",
+    )
+    p_lm_start.add_argument("--component", default="operator_cli", help="Component name for receipt")
+    p_lm_start.add_argument("--detail-json", default=None, help="Optional JSON string merged into receipt detail")
+
+    p_lm_dis = sub.add_parser(
+        "live-micro-disable-receipt",
+        parents=[p_lm_rt],
+        help="Write data/control/live_disable_receipt.json (audit; unset EZRA_LIVE_MICRO_ENABLED in service env)",
+    )
+    p_lm_dis.add_argument("--reason", required=True)
+    p_lm_dis.add_argument("--operator", default="")
+
+    p_lm_pau = sub.add_parser(
+        "live-micro-pause",
+        parents=[p_lm_rt],
+        help="Create data/control/live_micro_force_halt.json — blocks all live micro orders until resume",
+    )
+    p_lm_pau.add_argument("--operator", default="")
+    p_lm_pau.add_argument("--reason", default="operator_pause")
+
+    sub.add_parser(
+        "live-micro-resume",
+        parents=[p_lm_rt],
+        help="Remove live_micro_force_halt.json (pause file) if present",
+    )
+
+    sub.add_parser(
+        "live-micro-verify-contract",
+        parents=[p_lm_rt],
+        help="Print JSON for assert_live_micro_runtime_contract (no mutation; exit 1 if not ok when micro enabled)",
+    )
 
     p_orch_st = sub.add_parser(
         "orchestration-status",
@@ -632,6 +711,96 @@ def main() -> int:
         rt = _cli_runtime_root()
         out = avenue_a_daemon_stop(runtime_root=rt)
         print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "live-micro-enablement-request":
+        from trading_ai.deployment.live_micro_enablement import write_live_enablement_request
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = write_live_enablement_request(rt, operator=str(args.operator), note=str(args.note))
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("env_contract_ok") else 31
+    if args.cmd == "live-micro-write-session-limits":
+        from trading_ai.deployment.live_micro_enablement import write_live_session_limits
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = write_live_session_limits(rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("contract_ok") else 32
+    if args.cmd == "live-micro-preflight":
+        from trading_ai.deployment.live_micro_enablement import run_live_micro_preflight
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = run_live_micro_preflight(rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 33
+    if args.cmd == "live-micro-readiness":
+        from trading_ai.deployment.live_micro_enablement import run_live_micro_readiness
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = run_live_micro_readiness(rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0 if out.get("ok") else 34
+    if args.cmd == "live-micro-guard-proof":
+        from trading_ai.deployment.live_micro_enablement import build_live_guard_proof
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = build_live_guard_proof(rt)
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "live-micro-record-start":
+        from trading_ai.deployment.live_micro_enablement import record_live_start_receipt
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        detail: Dict[str, Any] = {}
+        dj = getattr(args, "detail_json", None)
+        if dj:
+            try:
+                detail = json.loads(str(dj))
+            except json.JSONDecodeError:
+                print(json.dumps({"error": "invalid_detail_json"}, indent=2))
+                return 35
+        out = record_live_start_receipt(rt, component=str(args.component), detail=detail if isinstance(detail, dict) else {})
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "live-micro-disable-receipt":
+        from trading_ai.deployment.live_micro_enablement import record_live_disable_receipt
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = record_live_disable_receipt(rt, reason=str(args.reason), operator=str(args.operator))
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "live-micro-pause":
+        from trading_ai.deployment.live_micro_enablement import write_live_micro_force_halt
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        out = write_live_micro_force_halt(rt, operator=str(args.operator), reason=str(args.reason))
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+    if args.cmd == "live-micro-resume":
+        from trading_ai.deployment.live_micro_enablement import clear_live_micro_force_halt
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        cleared = clear_live_micro_force_halt(rt)
+        print(json.dumps({"runtime_root": str(rt), "cleared": cleared}, indent=2))
+        return 0
+    if args.cmd == "live-micro-verify-contract":
+        from trading_ai.deployment.live_micro_enablement import assert_live_micro_runtime_contract, live_micro_runtime_enabled
+
+        rt = _live_micro_runtime_arg(args)
+        os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
+        ok, err, audit = assert_live_micro_runtime_contract(rt, phase="live_micro_verify_contract_cli")
+        print(json.dumps({"ok": ok, "error": err, "audit": audit, "micro_runtime_enabled": live_micro_runtime_enabled()}, indent=2, default=str))
+        if live_micro_runtime_enabled() and not ok:
+            return 36
         return 0
     if args.cmd == "orchestration-status":
 
