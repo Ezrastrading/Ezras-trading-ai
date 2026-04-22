@@ -98,7 +98,7 @@ def role_contract() -> Dict[str, Any]:
                     "scanner_cycle",
                     "simulation_cycle",
                     "outcome_ingestion",
-                    "fast_health",
+                    "fast_health_snapshot",
                     "fast_regression_drift",
                 ],
             },
@@ -135,15 +135,11 @@ def role_contract() -> Dict[str, Any]:
 
 
 def assert_live_trading_env_disabled() -> Tuple[bool, str]:
-    """Public alias for the fail-closed live-env gate (no venue orders from this OS)."""
-    return _safety_assert_non_live()
-
-
-def _safety_assert_non_live() -> Tuple[bool, str]:
     """
-    Hard safety gate for this OS.
+    Strict deploy / preflight gate: fail if live execution env flags are set.
 
-    Non-negotiable: do not run if live execution env is enabled.
+    Ignores ``FULL_AUTONOMY_ACTIVE`` artifact — callers that need the artifact bypass should use
+    :func:`assert_supervisor_execution_env_ok` instead.
     """
     nte_mode = (os.environ.get("NTE_EXECUTION_MODE") or os.environ.get("EZRAS_MODE") or "paper").strip().lower()
     nte_live = (os.environ.get("NTE_LIVE_TRADING_ENABLED") or "").strip().lower() in ("1", "true", "yes")
@@ -151,6 +147,19 @@ def _safety_assert_non_live() -> Tuple[bool, str]:
     if nte_mode in ("live", "production", "prod") or nte_live or cb_enabled:
         return False, "live_execution_env_detected"
     return True, "ok"
+
+
+def assert_supervisor_execution_env_ok(*, runtime_root: Optional[Path] = None) -> Tuple[bool, str]:
+    """Supervisor entry gate: non-live env, or persisted ``FULL_AUTONOMY_ACTIVE`` under runtime_root."""
+    from trading_ai.simulation.nonlive import nonlive_env_ok
+
+    root = Path(runtime_root or os.environ.get("EZRAS_RUNTIME_ROOT") or ezras_runtime_root()).resolve()
+    return nonlive_env_ok(runtime_root=root)
+
+
+def _safety_assert_non_live(*, runtime_root: Optional[Path] = None) -> Tuple[bool, str]:
+    """Alias for supervisor entry (artifact-aware)."""
+    return assert_supervisor_execution_env_ok(runtime_root=runtime_root)
 
 
 def enforce_non_live_env_defaults() -> None:
@@ -240,10 +249,10 @@ def tick_ops_once(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
     One ops tick (non-live): scaffolds, scanner hooks, outcomes ingestion, safety snapshot, metrics.
     """
     enforce_non_live_env_defaults()
-    ok, why = _safety_assert_non_live()
+    root = _runtime_root(runtime_root)
+    ok, why = _safety_assert_non_live(runtime_root=root)
     if not ok:
         return {"ok": False, "blocked": True, "reason": why}
-    root = _runtime_root(runtime_root)
 
     steps: Dict[str, Any] = {"generated_at": _iso(), "role": "ops", "runtime_root": str(root)}
 
@@ -313,10 +322,10 @@ def tick_research_once(*, runtime_root: Optional[Path] = None, skip_models: bool
     learning distillation, promotion/capital cycle (deterministic).
     """
     enforce_non_live_env_defaults()
-    ok, why = _safety_assert_non_live()
+    root = _runtime_root(runtime_root)
+    ok, why = _safety_assert_non_live(runtime_root=root)
     if not ok:
         return {"ok": False, "blocked": True, "reason": why}
-    root = _runtime_root(runtime_root)
     steps: Dict[str, Any] = {"generated_at": _iso(), "role": "research", "runtime_root": str(root)}
 
     try:
@@ -407,7 +416,7 @@ def _ops_loops() -> List[LoopSpec]:
         out = tick_ops_once(runtime_root=r)
         return out.get("steps", {}).get("outcome_ingestion") or {"ok": False, "error": "missing_outcome_ingestion"}
 
-    def _fast_health(r: Path) -> Dict[str, Any]:
+    def _fast_health_snapshot(r: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.orchestration_detection import write_detection_snapshot
 
         snap = write_detection_snapshot()
@@ -489,7 +498,7 @@ def _ops_loops() -> List[LoopSpec]:
         LoopSpec("scanner_cycle", "ops", 20.0, _scanner_cycle),
         LoopSpec("simulation_cycle", "ops", 25.0, _simulation_cycle),
         LoopSpec("outcome_ingestion", "ops", 30.0, _outcome_ingestion),
-        LoopSpec("fast_health", "ops", 30.0, _fast_health),
+        LoopSpec("fast_health_snapshot", "ops", 30.0, _fast_health_snapshot),
         LoopSpec("fast_regression_drift", "ops", 60.0, _fast_regression),
     ]
 
@@ -511,12 +520,30 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         from trading_ai.global_layer.review_scheduler import run_full_review_cycle
 
         rep = run_full_review_cycle("midday", skip_models=bool(skip_models))
+        snap = {
+            "truth_version": "review_cycle_control_v1",
+            "generated_at": _iso(),
+            "kind": "midday",
+            "packet_id": (rep.get("packet") or {}).get("packet_id"),
+            "ok": True,
+        }
+        _write_json(root / "data" / "control" / "review_cycle.json", snap)
         return {"packet_id": (rep.get("packet") or {}).get("packet_id"), "ok": True}
 
     def _ceo(root: Path) -> Dict[str, Any]:
         from trading_ai.global_layer.ceo_daily_orchestration import write_daily_ceo_review
 
         ceo = write_daily_ceo_review(estimated_review_tokens=50)
+        mirror = {
+            "truth_version": "ceo_daily_review_control_snapshot_v1",
+            "generated_at": _iso(),
+            "truth_version_inner": ceo.get("truth_version"),
+            "bot_total": ceo.get("bot_total"),
+            "allow_review": ceo.get("allow_review"),
+            "review_why": ceo.get("review_why"),
+            "honesty": "Truncated mirror of write_daily_ceo_review; canonical file remains under governance/review paths.",
+        }
+        _write_json(root / "data" / "control" / "ceo_daily_review.json", mirror)
         return {"truth_version": ceo.get("truth_version"), "bot_total": ceo.get("bot_total")}
 
     def _pnl_review(root: Path) -> Dict[str, Any]:
@@ -624,6 +651,17 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         }
         out_path = gov_dir / "learning_distillation_snapshot.json"
         _write_json(out_path, dist)
+        sim_lessons = _read_json(root / "data" / "control" / "sim_lessons.json")
+        lessons_out = {
+            "truth_version": "lessons_control_rollout_v1",
+            "generated_at": _iso(),
+            "lessons": list((sim_lessons.get("lessons") or [])[:80]),
+            "rules": list(sim_lessons.get("rules") or []),
+            "do_not_repeat": sim_lessons.get("do_not_repeat"),
+            "distillation_pending_count": int(dist.get("pending_count") or 0),
+            "honesty": "Rollup from sim_lessons.json plus learning distillation queue snapshot.",
+        }
+        _write_json(root / "data" / "control" / "lessons.json", lessons_out)
         return {"ok": True, "path": str(out_path), "pending": dist["pending_count"]}
 
     def _task_intake(root: Path) -> Dict[str, Any]:
@@ -733,10 +771,10 @@ def run_role_supervisor_once(
     One supervisor step: runs any due loops, writes per-loop result artifacts, and updates loop status.
     """
     enforce_non_live_env_defaults()
-    ok, why = _safety_assert_non_live()
+    root = _runtime_root(runtime_root)
+    ok, why = _safety_assert_non_live(runtime_root=root)
     if not ok:
         return {"ok": False, "blocked": True, "reason": why, "role": role}
-    root = _runtime_root(runtime_root)
     status_p = _role_status_path(root, role)
     status = _read_json(status_p)
     loops_state = status.get("loops") if isinstance(status.get("loops"), dict) else {}

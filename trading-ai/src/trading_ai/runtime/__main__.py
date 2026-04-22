@@ -173,7 +173,7 @@ def main() -> int:
         try_acquire_role_lock,
     )
     from trading_ai.runtime_paths import ezras_runtime_root
-    from trading_ai.simulation.nonlive import LiveTradingNotAllowedError, assert_nonlive_for_simulation
+    from trading_ai.simulation.nonlive import nonlive_env_ok
 
     enforce_non_live_env_defaults()
 
@@ -181,10 +181,9 @@ def main() -> int:
     os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
 
     if args.cmd != "live-guard-proof":
-        try:
-            assert_nonlive_for_simulation()
-        except LiveTradingNotAllowedError as exc:
-            _print_json({"ok": False, "blocked": True, "reason": "live_trading_env_forbidden", "detail": str(exc)})
+        ok_env, why_env = nonlive_env_ok(runtime_root=rt)
+        if not ok_env:
+            _print_json({"ok": False, "blocked": True, "reason": "live_trading_env_forbidden", "detail": why_env})
             return 11
 
     if args.cmd == "tick":

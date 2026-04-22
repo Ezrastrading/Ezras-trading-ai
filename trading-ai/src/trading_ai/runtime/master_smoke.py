@@ -18,6 +18,7 @@ def _iso() -> str:
 
 
 def run_master_smoke(*, runtime_root: Path, cycles: int = 14) -> Dict[str, Any]:
+    from trading_ai.control.full_autonomy_mode import write_full_autonomy_active_live_artifacts
     from trading_ai.global_layer.task_registry import load_all_tasks
     from trading_ai.runtime.now_live_proof import run_authoritative_live_guard_proof
     from trading_ai.runtime.operating_system import enforce_non_live_env_defaults, run_role_supervisor_once
@@ -25,8 +26,9 @@ def run_master_smoke(*, runtime_root: Path, cycles: int = 14) -> Dict[str, Any]:
     from trading_ai.simulation.engine import run_simulation_tick
 
     enforce_non_live_env_defaults()
-    assert_nonlive_for_simulation()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(runtime_root.resolve())
+    assert_nonlive_for_simulation(runtime_root=runtime_root)
+    write_full_autonomy_active_live_artifacts(runtime_root=runtime_root, reason="master_smoke", apply_env=False)
     ran_ops: List[str] = []
     ran_rs: List[str] = []
     for _ in range(max(3, int(cycles))):
@@ -49,6 +51,16 @@ def run_master_smoke(*, runtime_root: Path, cycles: int = 14) -> Dict[str, Any]:
         "sim_pnl": (ctrl / "sim_pnl.json").is_file(),
         "sim_lessons": (ctrl / "sim_lessons.json").is_file(),
         "sim_tasks": (ctrl / "sim_tasks.json").is_file(),
+        "full_autonomy_mode": (ctrl / "full_autonomy_mode.json").is_file(),
+        "full_autonomy_live_status": (ctrl / "full_autonomy_live_status.json").is_file(),
+        "lessons_control": (ctrl / "lessons.json").is_file(),
+        "review_cycle": (ctrl / "review_cycle.json").is_file(),
+        "ceo_daily_review_control": (ctrl / "ceo_daily_review.json").is_file(),
+        "mission_goals_plan": (ctrl / "mission_goals_operating_plan.json").is_file(),
+        "pnl_review": (ctrl / "pnl_review.json").is_file(),
+        "performance_comparisons": (ctrl / "performance_comparisons.json").is_file(),
+        "bot_inboxes": bool(list((ctrl / "bot_inboxes").glob("*.json"))),
+        "tasks_jsonl_mirror": (ctrl / "tasks.jsonl").is_file(),
     }
     tasks = load_all_tasks()
     types: Set[str] = set()

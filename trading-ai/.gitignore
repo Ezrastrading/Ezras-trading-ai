@@ -1,4 +1,6 @@
 .env
+.env.runtime
+.env.runtime.transfer
 .venv/
 venv/
 __pycache__/

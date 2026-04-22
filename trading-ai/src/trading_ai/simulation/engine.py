@@ -79,8 +79,8 @@ def run_simulation_tick(*, runtime_root: Optional[Path] = None) -> Dict[str, Any
     Writes under ``<runtime_root>/data/control/``:
     sim_24h_summary, sim_trade_log, sim_fill_log, sim_pnl, sim_lessons, sim_comparisons, sim_tasks
     """
-    assert_nonlive_for_simulation()
     root = _root(runtime_root)
+    assert_nonlive_for_simulation(runtime_root=root)
     ctrl = root / "data" / "control"
     ctrl.mkdir(parents=True, exist_ok=True)
     eng_p = ctrl / "simulation" / "engine_state.json"

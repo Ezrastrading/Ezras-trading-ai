@@ -12,8 +12,9 @@ Environment=PYTHONPATH=/opt/ezra-private/trading-ai/src:/opt/ezra-public/trading
 
 EnvironmentFile=/opt/ezra-runtime/env/common.env
 EnvironmentFile=-/opt/ezra-runtime/env/research.env
+EnvironmentFile=-/opt/ezra-runtime/env/research-live.env
 
-# Hard safety defaults (non-live). EnvironmentFile may override, but deploy_preflight blocks live.
+# Default safety: non-live. research-live.env may override when operator enables live stack.
 Environment=NTE_EXECUTION_MODE=paper
 Environment=NTE_LIVE_TRADING_ENABLED=false
 Environment=NTE_PAPER_MODE=true

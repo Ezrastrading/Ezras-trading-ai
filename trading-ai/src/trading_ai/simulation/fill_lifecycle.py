@@ -67,8 +67,8 @@ def advance_simulated_fill_once(
 
     Deterministic branches keyed by ``completed_cycles`` for tests and repeatability.
     """
-    assert_nonlive_for_simulation()
     root = _root(runtime_root)
+    assert_nonlive_for_simulation(runtime_root=root)
     cdir = _chain_dir(root)
     state_p = cdir / "active_intent.json"
     st = _read_json(state_p)

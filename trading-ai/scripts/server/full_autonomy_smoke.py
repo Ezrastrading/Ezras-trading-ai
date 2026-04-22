@@ -35,12 +35,14 @@ def main() -> int:
     os.environ.setdefault("NTE_LIVE_TRADING_ENABLED", "false")
     os.environ.setdefault("COINBASE_EXECUTION_ENABLED", "false")
 
+    from trading_ai.control.full_autonomy_mode import write_full_autonomy_active_live_artifacts
     from trading_ai.runtime.operating_system import enforce_non_live_env_defaults, run_role_supervisor_once
     from trading_ai.simulation.engine import run_simulation_tick
     from trading_ai.simulation.nonlive import assert_nonlive_for_simulation
 
     enforce_non_live_env_defaults()
-    assert_nonlive_for_simulation()
+    assert_nonlive_for_simulation(runtime_root=root)
+    write_full_autonomy_active_live_artifacts(runtime_root=root, reason="full_autonomy_smoke", apply_env=False)
 
     for _ in range(max(1, int(args.ticks))):
         run_simulation_tick(runtime_root=root)
@@ -57,6 +59,14 @@ def main() -> int:
         "sim_comparisons.json",
         "sim_tasks.json",
         "regression_drift.json",
+        "full_autonomy_mode.json",
+        "full_autonomy_live_status.json",
+        "mission_goals_operating_plan.json",
+        "pnl_review.json",
+        "performance_comparisons.json",
+        "ceo_daily_review.json",
+        "review_cycle.json",
+        "lessons.json",
     ):
         _need(ctrl / name)
     _need(ctrl / "operating_system" / "loop_status_ops.json")
@@ -68,6 +78,13 @@ def main() -> int:
         raise SystemExit("missing_ops_loop_artifacts")
     if not list(rs_loops):
         raise SystemExit("missing_research_loop_artifacts")
+
+    inboxes = ctrl / "bot_inboxes"
+    if not list(inboxes.glob("*.json")):
+        raise SystemExit("missing_bot_inbox_artifacts")
+    tasks_mirror = ctrl / "tasks.jsonl"
+    if not tasks_mirror.is_file():
+        raise SystemExit("missing_runtime_tasks_jsonl_mirror")
 
     print(json.dumps({"ok": True, "runtime_root": str(root), "ticks": int(args.ticks)}, indent=2))
     return 0

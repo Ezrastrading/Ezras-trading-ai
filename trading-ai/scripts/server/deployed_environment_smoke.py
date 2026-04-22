@@ -212,11 +212,21 @@ def main(argv: List[str]) -> int:
     }
     exists = {k: v.is_file() for k, v in expected_paths.items()}
 
-    # Verify tasks created (at least one of our known classes)
-    tasks_path = Path(args.public_root).resolve() / "trading-ai" / "src" / "trading_ai" / "global_layer" / "_governance_data" / "tasks.jsonl"
-    task_probe = {"ok": False, "path": str(tasks_path), "matches": []}
+    # Verify tasks created (governance JSONL and/or runtime mirror)
+    task_probe = {"ok": False, "paths": [], "matches": []}
     try:
-        if tasks_path.is_file():
+        sys.path.insert(0, str(Path(args.public_root).resolve() / "trading-ai" / "src"))
+        from trading_ai.global_layer.task_registry import tasks_store_path
+
+        cand = [
+            tasks_store_path(),
+            runtime_root / "data" / "control" / "tasks.jsonl",
+            Path(args.public_root).resolve() / "trading-ai" / "src" / "trading_ai" / "global_layer" / "_governance_data" / "tasks.jsonl",
+        ]
+        task_probe["paths"] = [str(p) for p in cand]
+        for tasks_path in cand:
+            if not tasks_path.is_file():
+                continue
             lines = tasks_path.read_text(encoding="utf-8").splitlines()[-500:]
             matches = []
             for ln in lines:
@@ -224,9 +234,10 @@ def main(argv: List[str]) -> int:
                     matches.append(ln[:300])
                     if len(matches) >= 5:
                         break
-            task_probe = {"ok": True, "path": str(tasks_path), "matches": matches}
+            task_probe = {"ok": True, "paths": [str(tasks_path)], "matches": matches}
+            break
     except Exception as exc:
-        task_probe = {"ok": False, "path": str(tasks_path), "error": type(exc).__name__}
+        task_probe = {"ok": False, "paths": task_probe.get("paths") or [], "error": type(exc).__name__}
 
     public_repo = Path(args.public_root).resolve()
     private_repo = Path(args.private_root).resolve()
