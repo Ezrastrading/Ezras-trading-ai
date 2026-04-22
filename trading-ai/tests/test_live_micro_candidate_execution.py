@@ -127,3 +127,63 @@ def test_candidate_queue_progresses_to_submit_and_fill(tmp_path: Path, monkeypat
     assert "order_submitted" in tail
     assert "fill_probe" in tail
 
+
+def test_candidate_execution_blocks_when_tier_cap_below_coinbase_min_notional(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    _seed_micro_contract_green(tmp_path, monkeypatch)
+
+    from trading_ai.global_layer.review_storage import ReviewStorage
+
+    st = ReviewStorage()
+    st.ensure_review_files()
+    cq = st.load_json("candidate_queue.json")
+    cq["items"] = [
+        {
+            "id": "c1",
+            "ts": time.time(),
+            "avenue_id": "B",
+            "gate_id": "gate_b",
+            "product_id": "BTC-USD",
+            "status": "new",
+        }
+    ]
+    st.save_json("candidate_queue.json", cq)
+
+    # Small balance so tier cap < Coinbase min notional.
+    class _SmallBalanceCoinbaseClient(_FakeCoinbaseClient):
+        def get_usd_balance(self):
+            return 25.0
+
+    monkeypatch.setattr("trading_ai.shark.outlets.coinbase.CoinbaseClient", _SmallBalanceCoinbaseClient)
+    monkeypatch.setattr(
+        "trading_ai.shark.outlets.coinbase._brokerage_public_request",
+        lambda _p: {"best_bid": "1", "best_ask": "1.01", "price": "1.005", "time": time.time()},
+    )
+    monkeypatch.setattr(
+        "trading_ai.global_layer.gap_engine.evaluate_candidate",
+        lambda _c: type("D", (), {"should_trade": True, "rejection_reasons": []})(),
+    )
+    monkeypatch.setattr("trading_ai.shark.mission.mission_probability_set", lambda _p: object())
+    monkeypatch.setattr("trading_ai.shark.mission.mission_probability_reset", lambda _t: None)
+    monkeypatch.setattr(
+        "trading_ai.control.system_execution_lock.require_live_execution_allowed",
+        lambda *_, **__: (True, "ok"),
+    )
+
+    # Force Coinbase min notional to bind at $10 and mission prob tier1 => cap = 5% of $25 = $1.25.
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MISSION_PROB", "0.70")
+    monkeypatch.setattr("trading_ai.nte.execution.product_rules.venue_min_notional_usd", lambda _pid: 10.0)
+
+    from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once
+
+    out = run_live_micro_candidate_execution_once(runtime_root=tmp_path)
+    assert out.get("skipped") is True
+    assert out.get("reason") == "blocked_by_min_notional_vs_tier_cap"
+
+    ev = tmp_path / "data" / "control" / "live_micro_execution_events.jsonl"
+    tail = ev.read_text(encoding="utf-8")
+    assert "blocked_by_min_notional_vs_tier_cap" in tail
+    assert "order_submitted" not in tail
+

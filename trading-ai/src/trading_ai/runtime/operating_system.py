@@ -758,6 +758,11 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
 
         return run_first_60_live_ops_tick(runtime_root=root, force=False)
 
+    def _crypto_learning_distillation(root: Path) -> Dict[str, Any]:
+        from trading_ai.intelligence.crypto_intelligence.distillation import write_daily_crypto_learning_distillation
+
+        return write_daily_crypto_learning_distillation(runtime_root=root)
+
     ft60_interval = float((os.environ.get("EZRAS_FIRST_60_TICK_SEC") or "180").strip() or "180")
     ft60_interval = max(30.0, ft60_interval)
 
@@ -772,6 +777,7 @@ def _research_loops(*, skip_models: bool) -> List[LoopSpec]:
         LoopSpec("learning_distillation_snapshot", "research", 600.0, _learning_snapshot),
         LoopSpec("task_intake_dispatch", "research", 30.0, _task_intake),
         LoopSpec("research_regression_drift", "research", 420.0, _research_regression_drift),
+        LoopSpec("crypto_learning_distillation", "research", 1800.0, _crypto_learning_distillation),
         LoopSpec("first_60_live_ops_tick", "research", ft60_interval, _first_60_live_ops_tick),
     ]
 

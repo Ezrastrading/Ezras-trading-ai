@@ -105,6 +105,21 @@ class GateBMomentumEngine:
             pid = str(r.get("product_id") or "").strip().upper()
             if not pid:
                 continue
+            def _learn(stage: str, *, passed: bool, rejection_kind: Optional[str] = None, failure_codes: Optional[List[str]] = None, detail: Optional[Mapping[str, Any]] = None) -> None:
+                try:
+                    from trading_ai.intelligence.crypto_intelligence.recorder import record_gate_b_candidate_event
+
+                    record_gate_b_candidate_event(
+                        runtime_root=None,
+                        row=r,
+                        stage=stage,
+                        passed=passed,
+                        rejection_kind=rejection_kind,
+                        failure_codes=failure_codes,
+                        detail=detail,
+                    )
+                except Exception:
+                    return
             dq = evaluate_data_quality(
                 quote_ts=r.get("quote_ts"),
                 max_age_sec=float(self.config.max_quote_age_sec),
@@ -112,6 +127,13 @@ class GateBMomentumEngine:
                 ask=r.get("best_ask"),
             )
             if not dq["acceptable"]:
+                _learn(
+                    "data_quality",
+                    passed=False,
+                    rejection_kind="data_quality",
+                    failure_codes=failure_codes_for_data_quality(dq),
+                    detail=dq,
+                )
                 pre_rank_rejections.append(
                     {
                         "product_id": pid,
@@ -133,6 +155,13 @@ class GateBMomentumEngine:
                 min_depth_usd=float(self.config.min_book_depth_usd),
             )
             if not liq["passed"]:
+                _learn(
+                    "liquidity_gate",
+                    passed=False,
+                    rejection_kind="market_policy",
+                    failure_codes=failure_codes_for_liquidity(liq),
+                    detail={k: v for k, v in liq.items() if k != "components"},
+                )
                 pre_rank_rejections.append(
                     {
                         "product_id": pid,
@@ -155,6 +184,13 @@ class GateBMomentumEngine:
                 min_momentum_score=float(self.config.min_momentum_score_entry),
             )
             if not br["passed"]:
+                _learn(
+                    "breakout_filter",
+                    passed=False,
+                    rejection_kind="market_policy",
+                    failure_codes=failure_codes_for_breakout(br),
+                    detail=br,
+                )
                 pre_rank_rejections.append(
                     {
                         "product_id": pid,
@@ -189,6 +225,13 @@ class GateBMomentumEngine:
                 max_high_corr=int(self.config.max_high_corr_positions),
             )
             if not corr["allowed"]:
+                _learn(
+                    "portfolio_correlation",
+                    passed=False,
+                    rejection_kind="market_policy",
+                    failure_codes=failure_codes_for_correlation(corr),
+                    detail=corr,
+                )
                 pre_rank_rejections.append(
                     {
                         "product_id": pid,
@@ -209,6 +252,13 @@ class GateBMomentumEngine:
                 new_breakout_confirmed=bool(r.get("new_breakout_confirmed", True)),
             )
             if not re_ok:
+                _learn(
+                    "reentry",
+                    passed=False,
+                    rejection_kind="market_policy",
+                    failure_codes=failure_codes_for_reentry(re_rs),
+                    detail={"reasons": re_rs},
+                )
                 pre_rank_rejections.append(
                     {
                         "product_id": pid,
@@ -223,6 +273,7 @@ class GateBMomentumEngine:
                 )
                 enriched.append({**dict(r), "_reentry": re_rs})
                 continue
+            _learn("passed_pre_rank", passed=True, detail={"momentum_score": br.get("momentum_score"), "liquidity_score": liq.get("liquidity_score")})
             enriched.append({**row_for_rank, "_row": dict(r)})
 
         rank_rows = [x for x in enriched if "product_id" in x and "_row" in x]
@@ -253,6 +304,21 @@ class GateBMomentumEngine:
                 min_momentum_score=float(self.config.min_momentum_score),
                 max_results=max(1, slots),
             )
+        try:
+            # Record accepted + not-selected outcomes (advisory learning only).
+            from trading_ai.intelligence.crypto_intelligence.recorder import record_gate_b_candidate_event
+            for c in list(acc or [])[: max(0, int(self.config.max_simultaneous_positions))]:
+                pid = str(getattr(c, "product_id", "") or "").strip().upper()
+                rr = next((x for x in raw_rows if isinstance(x, Mapping) and str(x.get("product_id") or "").strip().upper() == pid), None)
+                if isinstance(rr, Mapping):
+                    record_gate_b_candidate_event(runtime_root=None, row=rr, stage="accepted", passed=True, detail={"score": getattr(c, "score", None)})
+            for rj in list(rej or [])[:80]:
+                pid = str(rj.get("product_id") or "").strip().upper()
+                rr = next((x for x in raw_rows if isinstance(x, Mapping) and str(x.get("product_id") or "").strip().upper() == pid), None)
+                if isinstance(rr, Mapping):
+                    record_gate_b_candidate_event(runtime_root=None, row=rr, stage="rank_rejected", passed=False, rejection_kind="rank", failure_codes=["not_selected"], detail=rj)
+        except Exception:
+            pass
         mult = float(regime["gate_b_size_multiplier"])
         edge_rep = self.edge_stats.report()
         if edge_rep.get("recommend_reduce_size"):

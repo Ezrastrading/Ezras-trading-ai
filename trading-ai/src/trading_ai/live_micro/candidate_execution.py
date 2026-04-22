@@ -192,11 +192,20 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
     client = CoinbaseClient()
 
     # Self-sizing (fail-closed): must satisfy BOTH Coinbase min-notional and mission tier caps.
-    min_notional = 10.0
+    # Preserve existing env-configured minimum as a *floor*, but always compute Coinbase venue min too.
+    min_notional_env = 10.0
     try:
-        min_notional = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NOTIONAL_USD") or "10").strip() or "10")
+        min_notional_env = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NOTIONAL_USD") or "10").strip() or "10")
     except Exception:
-        min_notional = 10.0
+        min_notional_env = 10.0
+    coinbase_min_notional = 10.0
+    try:
+        from trading_ai.nte.execution.product_rules import venue_min_notional_usd
+
+        coinbase_min_notional = float(venue_min_notional_usd(pid))
+    except Exception:
+        coinbase_min_notional = 10.0
+    min_notional = max(0.0, float(min_notional_env), float(coinbase_min_notional))
     quote_ccy = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
     quote_balances = None
     try:
@@ -274,6 +283,37 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         tier = 3
     tier_cap = float(total_quote) * float(frac)
     tier_cap = min(tier_cap, float(total_quote) * 0.20)
+
+    # If the mission tier cap cannot even reach Coinbase venue minimum, do NOT attempt submission.
+    # This is a truthful sizing impossibility under current policy, not an execution failure.
+    if float(tier_cap) + 1e-9 < float(coinbase_min_notional):
+        try:
+            requested_notional = min(
+                float(max_notional),
+                max(0.0, float(avail_quote) * 0.95) if float(avail_quote) > 0 else float(max_notional),
+                max(0.0, float(tier_cap)),
+            )
+        except Exception:
+            requested_notional = max(0.0, float(tier_cap))
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "blocked_by_min_notional_vs_tier_cap",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "reason": "blocked_by_min_notional_vs_tier_cap",
+                "available_balance": float(avail_quote),
+                "quote_currency": quote_ccy,
+                "tier_cap": float(tier_cap),
+                "coinbase_min_notional": float(coinbase_min_notional),
+                "requested_notional": float(requested_notional),
+                "max_notional": float(max_notional),
+                "mission_prob": float(mission_prob),
+                "mission_tier": int(tier),
+            },
+        )
+        return {**out, "skipped": True, "reason": "blocked_by_min_notional_vs_tier_cap"}
 
     hard_cap = min(max_notional, max(0.0, avail_quote * 0.95) if avail_quote > 0 else max_notional)
     hard_cap = min(hard_cap, max(0.0, float(tier_cap)))
@@ -395,6 +435,22 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "candidate": cand.to_dict(),
             },
         )
+        try:
+            from trading_ai.intelligence.crypto_intelligence.recorder import record_micro_candidate_decision
+
+            record_micro_candidate_decision(
+                runtime_root=root,
+                product_id=pid,
+                gate_id="gate_b",
+                venue="coinbase",
+                quote_usd=float(quote_usd),
+                should_trade=bool(dec.should_trade),
+                rejection_reasons=list(dec.rejection_reasons or []),
+                candidate=cand.to_dict(),
+                extra={"source": "live_micro_candidate_queue", "mission_prob": mission_prob},
+            )
+        except Exception:
+            pass
         if not must_trade:
             return {
                 **out,
@@ -435,6 +491,20 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             },
         },
     )
+    try:
+        from trading_ai.intelligence.crypto_intelligence.recorder import link_trade_to_candidate
+
+        link_trade_to_candidate(
+            runtime_root=root,
+            trade_id=str(res.order_id or ""),
+            candidate_id=str(cand.candidate_id),
+            setup_family="gate_b::micro::behavioral_gap",
+            gate_id="gate_b",
+            product_id=pid,
+            venue="coinbase",
+        )
+    except Exception:
+        pass
 
     out = {**out, "order_id": res.order_id, "submitted": bool(res.success)}
     if not res.success or not str(res.order_id or "").strip():

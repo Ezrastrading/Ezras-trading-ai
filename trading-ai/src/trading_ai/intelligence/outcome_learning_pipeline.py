@@ -314,6 +314,14 @@ def on_closed_trade(
         post_trade_intelligence=post_trade_intelligence,
     )
     appended = _append_jsonl_dedup(paths["trade_learning_jsonl"], learning_obj, trade_id=trade_id)
+    try:
+        from trading_ai.intelligence.crypto_intelligence.setup_family_stats import (
+            update_setup_family_stats_from_trade_learning_object,
+        )
+
+        _ = update_setup_family_stats_from_trade_learning_object(learning_obj, runtime_root=runtime_root)
+    except Exception:
+        pass
 
     recent = _load_recent_learning_objects(paths["trade_learning_jsonl"], limit=240)
     patterns = _rank_loss_patterns(recent[-80:])
