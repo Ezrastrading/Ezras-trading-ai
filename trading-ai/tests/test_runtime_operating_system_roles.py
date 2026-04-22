@@ -37,6 +37,54 @@ def test_ops_and_research_ticks_run_and_live_disabled(monkeypatch: pytest.Monkey
     assert st.is_file()
 
 
+def test_supervisor_allows_micro_live_env_when_contract_green(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setenv("NTE_EXECUTION_MODE", "live")
+    monkeypatch.setenv("NTE_LIVE_TRADING_ENABLED", "true")
+    monkeypatch.setenv("COINBASE_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ENABLED", "true")
+
+    from trading_ai.deployment import live_micro_enablement as lme
+
+    monkeypatch.setenv("EZRA_LIVE_MICRO_OPERATOR_CONFIRM", lme.OPERATOR_CONFIRM_VALUE)
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_NOTIONAL_USD", "5")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_DAILY_LOSS_USD", "25")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_TOTAL_EXPOSURE_USD", "15")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOWED_PRODUCTS", "BTC-USD")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOWED_AVENUE", "COINBASE")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOWED_GATE", "gate_a")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_TRADES_PER_SESSION", "3")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_MAX_CONCURRENT_POSITIONS", "1")
+
+    monkeypatch.setattr("trading_ai.deployment.operator_env_contracts.missing_coinbase_credential_env_vars", lambda: [])
+    monkeypatch.setattr("trading_ai.control.kill_switch.kill_switch_active", lambda: False)
+
+    ctrl = tmp_path / "data" / "control"
+    ctrl.mkdir(parents=True, exist_ok=True)
+    (ctrl / "deployed_environment_smoke.json").write_text(
+        '{"truth_version":"t","live_disabled":{"ok":true},"live_micro_private_build":{"ok":true}}',
+        encoding="utf-8",
+    )
+    (ctrl / "micro_trade_readiness.json").write_text('{"ok":true}', encoding="utf-8")
+    jr = tmp_path / "shark" / "memory" / "global"
+    jr.mkdir(parents=True, exist_ok=True)
+    (jr / "joint_review_latest.json").write_text("{}", encoding="utf-8")
+    risk = tmp_path / "data" / "risk"
+    risk.mkdir(parents=True, exist_ok=True)
+    (risk / "risk_state.json").write_text('{"daily_pnl_usd":0.0}', encoding="utf-8")
+
+    lme.write_live_session_limits(tmp_path)
+    lme.run_live_micro_preflight(tmp_path)
+    lme.run_live_micro_readiness(tmp_path)
+    lme.write_live_enablement_request(tmp_path, operator="pytest", note="ok")
+
+    from trading_ai.runtime.operating_system import run_role_supervisor_once
+
+    out = run_role_supervisor_once(role="ops", runtime_root=tmp_path, force_all_due=True)
+    assert out.get("ok") is True
+
+
 def test_role_lock_prevents_two_ops_daemons(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EZRAS_RUNTIME_ROOT", str(tmp_path))
     from trading_ai.runtime.operating_system import try_acquire_role_lock

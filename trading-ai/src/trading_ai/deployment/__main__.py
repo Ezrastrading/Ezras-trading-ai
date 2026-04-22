@@ -793,13 +793,13 @@ def main() -> int:
         print(json.dumps({"runtime_root": str(rt), "cleared": cleared}, indent=2))
         return 0
     if args.cmd == "live-micro-verify-contract":
-        from trading_ai.deployment.live_micro_enablement import assert_live_micro_runtime_contract, live_micro_runtime_enabled
+        from trading_ai.deployment.live_micro_enablement import live_micro_runtime_enabled, write_live_micro_verify_contract
 
         rt = _live_micro_runtime_arg(args)
         os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
-        ok, err, audit = assert_live_micro_runtime_contract(rt, phase="live_micro_verify_contract_cli")
-        print(json.dumps({"ok": ok, "error": err, "audit": audit, "micro_runtime_enabled": live_micro_runtime_enabled()}, indent=2, default=str))
-        if live_micro_runtime_enabled() and not ok:
+        out = write_live_micro_verify_contract(rt)
+        print(json.dumps(out, indent=2, default=str))
+        if live_micro_runtime_enabled() and not bool(out.get("ok")):
             return 36
         return 0
     if args.cmd == "orchestration-status":

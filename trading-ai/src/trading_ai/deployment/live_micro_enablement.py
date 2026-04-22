@@ -34,6 +34,7 @@ ARTIFACT_SESSION_LIMITS = "data/control/live_session_limits.json"
 ARTIFACT_DISABLE_RECEIPT = "data/control/live_disable_receipt.json"
 ARTIFACT_SESSION_STATE = "data/control/live_micro_session_state.json"
 ARTIFACT_FORCE_HALT = "data/control/live_micro_force_halt.json"
+ARTIFACT_VERIFY_CONTRACT = "data/control/live_micro_verify_contract.json"
 
 REQUIRED_LIMIT_ENVS = (
     "EZRA_LIVE_MICRO_MAX_NOTIONAL_USD",
@@ -397,6 +398,29 @@ def assert_live_micro_runtime_contract(runtime_root: Path, *, phase: str) -> Tup
 
     audit["ok"] = True
     return True, "", audit
+
+
+def write_live_micro_verify_contract(runtime_root: Path) -> Dict[str, Any]:
+    """
+    Write an on-disk contract verdict for micro-live.
+
+    Always writes under data/control/ so systemd/ops can prove the gate decision that allowed
+    a live-capable process env.
+    """
+    root = Path(runtime_root).resolve()
+    ok, err, audit = assert_live_micro_runtime_contract(root, phase="live_micro_verify_contract_artifact")
+    out = {
+        "truth_version": TRUTH_VERSION,
+        "artifact": "live_micro_verify_contract",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "runtime_root": str(root),
+        "micro_runtime_enabled_env": live_micro_runtime_enabled(),
+        "ok": bool(ok),
+        "error": err,
+        "audit": audit,
+    }
+    _atomic_write(root / ARTIFACT_VERIFY_CONTRACT, out)
+    return out
 
 
 _ENTRY_ACTIONS = frozenset({"place_limit_entry", "place_market_entry", "replace_order"})

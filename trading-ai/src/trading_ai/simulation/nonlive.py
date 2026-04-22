@@ -23,6 +23,19 @@ def nonlive_env_ok(*, runtime_root: Optional[Path] = None) -> Tuple[bool, str]:
                 return True, "full_autonomy_active_artifact_authorizes_live_env_for_synthetic_sim"
         except Exception:
             pass
+        try:
+            from trading_ai.deployment.live_micro_enablement import assert_live_micro_runtime_contract, live_micro_runtime_enabled
+
+            if live_micro_runtime_enabled():
+                root = Path(runtime_root).resolve() if runtime_root is not None else None
+                ok, _err, _audit = assert_live_micro_runtime_contract(
+                    root or Path(os.environ.get("EZRAS_RUNTIME_ROOT") or ".").resolve(),
+                    phase="nonlive_env_ok",
+                )
+                if ok:
+                    return True, "live_micro_contract_authorizes_live_env"
+        except Exception:
+            pass
         return False, "live_execution_env_detected"
     return True, "ok"
 
