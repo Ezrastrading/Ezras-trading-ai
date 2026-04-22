@@ -180,6 +180,23 @@ def test_session_open_and_close_bookkeeping(
     assert st2["session_trades_completed"] == 1
 
 
+def test_session_limits_all_expands_gate_and_preserves_products_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, micro_preflight_patches: None
+) -> None:
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ENABLED", "true")
+    _seed_micro_env(monkeypatch)
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOWED_GATE", "all")
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOWED_PRODUCTS", "all")
+    from trading_ai.deployment import live_micro_enablement as lme
+
+    lim = lme.write_live_session_limits(tmp_path)
+    assert lim.get("allowed_gate_raw") == "all"
+    assert set(lim.get("allowed_gates") or []) == {"gate_a", "gate_b"}
+    assert lim.get("allowed_products_raw") == "all"
+    assert lim.get("allow_all_products") is True
+    assert lim.get("allowed_products") == []
+
+
 def test_preflight_fails_stale_smoke(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, micro_preflight_patches: None
 ) -> None:

@@ -48,6 +48,8 @@ REQUIRED_LIMIT_ENVS = (
     "EZRA_LIVE_MICRO_MAX_CONCURRENT_POSITIONS",
 )
 
+_ALL_TOKENS = frozenset({"all", "*", "any"})
+
 
 def _truthy_env(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
@@ -133,6 +135,63 @@ def validate_required_micro_env_or_errors() -> List[str]:
     return errs
 
 
+def _parse_allowed_gates(raw: str) -> Tuple[str, List[str]]:
+    """
+    Parse EZRA_LIVE_MICRO_ALLOWED_GATE.
+
+    - "gate_a" / "a" -> ["gate_a"]
+    - "gate_b" / "b" -> ["gate_b"]
+    - "all" / "*"    -> ["gate_a", "gate_b"]
+    - CSV also supported (deduped, normalized)
+    """
+    s = (raw or "").strip().lower()
+    if not s:
+        return "", []
+    if s in _ALL_TOKENS:
+        return "all", ["gate_a", "gate_b"]
+    parts = [p.strip().lower() for p in s.split(",") if p.strip()]
+    out: List[str] = []
+    for p in parts:
+        if p in ("gate_a", "a"):
+            out.append("gate_a")
+        elif p in ("gate_b", "b"):
+            out.append("gate_b")
+        else:
+            # Keep unknown gate string as-is; enforcement will require exact match.
+            out.append(p)
+    # stable dedupe
+    seen = set()
+    deduped: List[str] = []
+    for g in out:
+        if g not in seen:
+            seen.add(g)
+            deduped.append(g)
+    return s, deduped
+
+
+def _parse_allowed_products(raw: str) -> Tuple[str, List[str], bool]:
+    """
+    Parse EZRA_LIVE_MICRO_ALLOWED_PRODUCTS.
+
+    - "BTC-USD,ETH-USD" -> ["BTC-USD","ETH-USD"]
+    - "all" / "*"       -> allow_all_products=True (no product narrowing)
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "", [], False
+    if s.strip().lower() in _ALL_TOKENS:
+        return "all", [], True
+    parts = [p.strip().upper() for p in s.split(",") if p.strip()]
+    # stable dedupe
+    seen = set()
+    out: List[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return s, out, False
+
+
 def write_live_enablement_request(runtime_root: Path, *, operator: str, note: str) -> Dict[str, Any]:
     root = Path(runtime_root).resolve()
     errs = validate_required_micro_env_or_errors()
@@ -155,6 +214,10 @@ def write_live_enablement_request(runtime_root: Path, *, operator: str, note: st
 def write_live_session_limits(runtime_root: Path) -> Dict[str, Any]:
     root = Path(runtime_root).resolve()
     errs = validate_required_micro_env_or_errors()
+    gate_raw_env = os.environ.get("EZRA_LIVE_MICRO_ALLOWED_GATE") or ""
+    gate_raw, gates = _parse_allowed_gates(gate_raw_env)
+    prod_raw_env = os.environ.get("EZRA_LIVE_MICRO_ALLOWED_PRODUCTS") or ""
+    prod_raw, prods, allow_all_products = _parse_allowed_products(prod_raw_env)
     lim = {
         "truth_version": TRUTH_VERSION,
         "artifact": "live_session_limits",
@@ -163,9 +226,12 @@ def write_live_session_limits(runtime_root: Path) -> Dict[str, Any]:
         "max_notional_usd": float(os.environ.get("EZRA_LIVE_MICRO_MAX_NOTIONAL_USD") or 0),
         "max_daily_loss_usd": float(os.environ.get("EZRA_LIVE_MICRO_MAX_DAILY_LOSS_USD") or 0),
         "max_total_exposure_usd": float(os.environ.get("EZRA_LIVE_MICRO_MAX_TOTAL_EXPOSURE_USD") or 0),
-        "allowed_products": [x.strip().upper() for x in (os.environ.get("EZRA_LIVE_MICRO_ALLOWED_PRODUCTS") or "").split(",") if x.strip()],
+        "allowed_products_raw": prod_raw,
+        "allowed_products": prods,
+        "allow_all_products": bool(allow_all_products),
         "allowed_avenue": (os.environ.get("EZRA_LIVE_MICRO_ALLOWED_AVENUE") or "").strip().upper(),
-        "allowed_gate": (os.environ.get("EZRA_LIVE_MICRO_ALLOWED_GATE") or "").strip().lower(),
+        "allowed_gate_raw": gate_raw,
+        "allowed_gates": gates,
         "max_trades_per_session": int(float(os.environ.get("EZRA_LIVE_MICRO_MAX_TRADES_PER_SESSION") or 0)),
         "cooldown_sec": int(float(os.environ.get("EZRA_LIVE_MICRO_COOLDOWN_SEC") or 0)),
         "max_concurrent_positions": int(float(os.environ.get("EZRA_LIVE_MICRO_MAX_CONCURRENT_POSITIONS") or 1)),
@@ -455,14 +521,15 @@ def enforce_live_micro_order_guards(
         raise RuntimeError(f"live_micro:quote_notional_exceeds_cap:{qn}>{max_n}")
 
     pid = (product_id or "").strip().upper()
+    allow_all_products = bool(lim.get("allow_all_products"))
     allowed = [str(x).strip().upper() for x in (lim.get("allowed_products") or []) if str(x).strip()]
-    if not allowed:
-        raise RuntimeError("live_micro:allowed_products_empty")
-    if not lim.get("allow_multi_product") and len(allowed) != 1:
-        raise RuntimeError("live_micro:exactly_one_product_required_when_multi_product_disabled")
-
-    if allowed and pid not in allowed:
-        raise RuntimeError(f"live_micro:product_not_allowed:{pid}")
+    if not allow_all_products:
+        if not allowed:
+            raise RuntimeError("live_micro:allowed_products_empty")
+        if not lim.get("allow_multi_product") and len(allowed) != 1:
+            raise RuntimeError("live_micro:exactly_one_product_required_when_multi_product_disabled")
+        if allowed and pid not in allowed:
+            raise RuntimeError(f"live_micro:product_not_allowed:{pid}")
 
     av = (lim.get("allowed_avenue") or "").strip().upper()
     if av and (avenue_id or "").strip().upper() != av and not (
@@ -470,9 +537,14 @@ def enforce_live_micro_order_guards(
     ):
         raise RuntimeError(f"live_micro:avenue_not_allowed:{avenue_id}")
 
-    g = (lim.get("allowed_gate") or "").strip().lower()
-    if g and (execution_gate or "").strip().lower() != g:
-        raise RuntimeError(f"live_micro:gate_not_allowed:{execution_gate}")
+    gates = [str(x).strip().lower() for x in (lim.get("allowed_gates") or []) if str(x).strip()]
+    g0 = (lim.get("allowed_gate") or "").strip().lower()
+    if not gates and g0:
+        gates = [g0]
+    if gates:
+        eg = (execution_gate or "").strip().lower()
+        if eg not in gates:
+            raise RuntimeError(f"live_micro:gate_not_allowed:{execution_gate}")
 
     max_exp = float(lim.get("max_total_exposure_usd") or 0.0)
     max_daily = float(lim.get("max_daily_loss_usd") or 0.0)

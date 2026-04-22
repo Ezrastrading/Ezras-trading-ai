@@ -43,7 +43,11 @@ echo "== 0) Refresh deployed_environment_smoke under forced paper (preflight con
 )
 
 echo "== 1) Install ops-live.env from template (micro starts disabled)"
-install -m 0600 "${REPO}/deploy/env/ops-live.micro.template" "${RUNROOT}/env/ops-live.env"
+if [[ -f "${RUNROOT}/env/ops-live.env" && "${FORCE_TEMPLATE:-0}" != "1" ]]; then
+  echo "OK: ${RUNROOT}/env/ops-live.env already exists (preserving operator edits). Set FORCE_TEMPLATE=1 to overwrite from template."
+else
+  install -m 0600 "${REPO}/deploy/env/ops-live.micro.template" "${RUNROOT}/env/ops-live.env"
+fi
 
 echo "== 2) Persist FULL_AUTONOMY_ACTIVE artifacts (no shell env mutation)"
 "${PY}" "${REPO}/scripts/server/enable_full_autonomy_active_live.py" \
