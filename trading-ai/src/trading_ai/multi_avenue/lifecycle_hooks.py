@@ -309,6 +309,25 @@ def on_scanner_cycle_export(*, runtime_root: Optional[Path] = None) -> Dict[str,
                 mp.write_text(json.dumps(meta, indent=2, default=str) + "\n", encoding="utf-8")
             except Exception:
                 pass
+
+            # Research artifact for Gate B: mirror ranked rows into scoped best_edges.json.
+            try:
+                rr = root / "data" / "research" / "avenues" / "B" / "gates" / "gate_b"
+                rr.mkdir(parents=True, exist_ok=True)
+                ranked_rows = list(gb.get("ranked_gainer_candidates") or [])
+                selected = list(gb.get("selected_symbols") or [])
+                best = {
+                    "artifact": "best_edges",
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "avenue_id": "B",
+                    "gate_id": "gate_b",
+                    "ranked": ranked_rows[:50],
+                    "selected_symbols": selected,
+                    "honesty": "Ranked rows come from unauthenticated Coinbase market tickers; they are not forward returns.",
+                }
+                (rr / "best_edges.json").write_text(json.dumps(best, indent=2, default=str) + "\n", encoding="utf-8")
+            except Exception:
+                pass
         except Exception as exc:
             gb = {"ok": False, "error": type(exc).__name__}
 
