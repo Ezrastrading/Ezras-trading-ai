@@ -95,9 +95,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         return {"ok": True, "skipped": True, "reason": "no_candidates"}
 
     pid = str(it.get("product_id") or "").strip().upper()
-    max_notional = _load_micro_max_notional(root)
-    quote_usd = max(0.0, float(max_notional or 0.0))
-    if quote_usd <= 0:
+    max_notional = max(0.0, float(_load_micro_max_notional(root) or 0.0))
+    if max_notional <= 0:
         return {"ok": False, "blocked": True, "reason": "missing_or_invalid_max_notional_usd"}
 
     events_p = root / "data" / "control" / "live_micro_execution_events.jsonl"
@@ -112,6 +111,76 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         },
     )
     out: Dict[str, Any] = {"ok": True, "product_id": pid, "gate_id": "gate_b"}
+
+    # Hard execution lock (fail-closed): Gate B must be enabled.
+    try:
+        from trading_ai.control.system_execution_lock import require_live_execution_allowed
+
+        ok_lock, why = require_live_execution_allowed(gate="gate_b", runtime_root=root)
+        if not ok_lock:
+            _append_jsonl(
+                events_p,
+                {
+                    "ts": time.time(),
+                    "event": "blocked",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "reason": f"execution_lock:{why}",
+                },
+            )
+            return {**out, "skipped": True, "reason": f"execution_lock:{why}"}
+    except Exception as exc:
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "blocked",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "reason": f"execution_lock_error:{type(exc).__name__}",
+            },
+        )
+        return {**out, "skipped": True, "reason": f"execution_lock_error:{type(exc).__name__}"}
+
+    # System health (fail-closed): do not submit while system is marked unhealthy/blocked.
+    try:
+        from trading_ai.nte.paths import nte_system_health_path
+
+        hp = nte_system_health_path()
+        health = _read_json(hp)
+        if health and (health.get("healthy") is False or health.get("live_order_guard_blocked") is True):
+            _append_jsonl(
+                events_p,
+                {
+                    "ts": time.time(),
+                    "event": "blocked",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "reason": "system_health_blocks_execution",
+                    "health_snapshot": {
+                        k: health.get(k)
+                        for k in (
+                            "healthy",
+                            "live_order_guard_blocked",
+                            "last_block_reason",
+                            "degraded_components",
+                        )
+                    },
+                    "health_path": str(hp),
+                },
+            )
+            return {**out, "skipped": True, "reason": "system_health_blocks_execution"}
+    except Exception:
+        pass
+
+    # Ensure daily-loss guard has a baseline risk state file (safe default: 0 PnL).
+    try:
+        risk_p = root / "data" / "risk" / "risk_state.json"
+        if not risk_p.is_file():
+            risk_p.parent.mkdir(parents=True, exist_ok=True)
+            risk_p.write_text(json.dumps({"daily_pnl_usd": 0.0}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
     items = list(cq.get("items") or [])
     if 0 <= idx < len(items) and isinstance(items[idx], dict):
         items[idx] = {**items[idx], "status": "selected", "selected_ts": time.time()}
@@ -121,6 +190,76 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
     from trading_ai.shark.outlets.coinbase import CoinbaseClient
 
     client = CoinbaseClient()
+
+    # Self-sizing (fail-closed): must satisfy BOTH Coinbase min-notional and mission tier caps.
+    min_notional = 10.0
+    try:
+        min_notional = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NOTIONAL_USD") or "10").strip() or "10")
+    except Exception:
+        min_notional = 10.0
+    quote_ccy = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
+    quote_balances = None
+    try:
+        from trading_ai.runtime_proof.coinbase_accounts import get_available_quote_balances
+
+        quote_balances = get_available_quote_balances(client)
+    except Exception:
+        quote_balances = None
+    avail_quote = 0.0
+    try:
+        avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
+    except Exception:
+        avail_quote = 0.0
+    total_quote = 0.0
+    try:
+        total_quote = sum(float(v) for v in (quote_balances or {}).values())
+    except Exception:
+        total_quote = max(avail_quote, 0.0)
+
+    mission_prob = 0.55
+    try:
+        mission_prob = float((os.environ.get("EZRA_LIVE_MICRO_MISSION_PROB") or "0.55").strip() or "0.55")
+    except Exception:
+        mission_prob = 0.55
+    tier_cap = None
+    try:
+        from trading_ai.shark.mission import evaluate_trade_against_mission
+
+        m = evaluate_trade_against_mission(
+            platform="coinbase",
+            product_id=pid,
+            size_usd=min_notional,
+            probability=mission_prob,
+            total_balance=max(total_quote, 0.0),
+        )
+        tc = m.get("tier_cap")
+        tier_cap = float(tc) if tc is not None else None
+    except Exception:
+        tier_cap = None
+
+    hard_cap = min(max_notional, max(0.0, avail_quote * 0.95) if avail_quote > 0 else max_notional)
+    if tier_cap is not None:
+        hard_cap = min(hard_cap, max(0.0, float(tier_cap)))
+    quote_usd = max(0.0, float(hard_cap))
+    if quote_usd + 1e-9 < min_notional:
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "blocked",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "reason": "insufficient_quote_for_min_notional_under_caps",
+                "min_notional": min_notional,
+                "max_notional": max_notional,
+                "avail_quote": avail_quote,
+                "quote_currency": quote_ccy,
+                "tier_cap": tier_cap,
+                "mission_prob": mission_prob,
+            },
+        )
+        return {**out, "skipped": True, "reason": "insufficient_quote_for_min_notional_under_caps"}
+    quote_usd = max(min_notional, quote_usd)
     # Build the required universal candidate context (fail-closed).
     from trading_ai.global_layer.gap_models import (
         UniversalGapCandidate,
@@ -198,7 +337,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         try:
             from trading_ai.shark.mission import mission_probability_set
 
-            tok_m = mission_probability_set(float((os.environ.get("EZRA_LIVE_MICRO_MISSION_PROB") or "0.55").strip() or "0.55"))
+            tok_m = mission_probability_set(float(mission_prob))
         except Exception:
             tok_m = None
         _append_jsonl(
@@ -208,6 +347,11 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "event": "entry_decision",
                 "product_id": pid,
                 "gate_id": "gate_b",
+                "quote_usd": quote_usd,
+                "quote_currency": quote_ccy,
+                "avail_quote": avail_quote,
+                "tier_cap": tier_cap,
+                "mission_prob": mission_prob,
                 "should_trade": bool(dec.should_trade),
                 "rejection_reasons": list(dec.rejection_reasons or []),
                 "candidate": cand.to_dict(),

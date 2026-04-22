@@ -101,6 +101,27 @@ PY
 
 echo "== 5) Enable micro runtime flag in ops-live.env + restart"
 sed -i 's/^EZRA_LIVE_MICRO_ENABLED=false/EZRA_LIVE_MICRO_ENABLED=true/' "${RUNROOT}/env/ops-live.env"
+
+echo "== 5b) Enable Gate B execution lock when Gate B live is enabled"
+RUNROOT="${RUNROOT}" "${PY}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["RUNROOT"])
+ops_live = (root / "env" / "ops-live.env").read_text(encoding="utf-8") if (root / "env" / "ops-live.env").is_file() else ""
+gate_b_env = any(ln.strip().startswith("GATE_B_LIVE_EXECUTION_ENABLED=") and ln.strip().split("=",1)[1].strip().lower() in ("1","true","yes") for ln in ops_live.splitlines())
+if not gate_b_env:
+    raise SystemExit(0)
+
+p = root / "data" / "control" / "system_execution_lock.json"
+if not p.is_file():
+    raise SystemExit(0)
+obj = json.loads(p.read_text(encoding="utf-8"))
+if isinstance(obj, dict):
+    obj["gate_b_enabled"] = True
+    p.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 systemctl restart ezra-ops.service ezra-research.service
 sleep 4
 systemctl is-active ezra-ops.service ezra-research.service
