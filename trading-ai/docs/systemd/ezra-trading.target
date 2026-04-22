@@ -1,0 +1,10 @@
+[Unit]
+Description=Ezra Trading AI — production stack (ops + research supervisors)
+Documentation=file:/opt/ezra-public/trading-ai/docs/SERVICE_AND_BOOT_PROOF.md
+After=network-online.target
+Wants=network-online.target
+# Starting this target pulls up both role daemons (non-live by default; *-live.env optional).
+Wants=ezra-ops.service ezra-research.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 [Unit]
-Description=Ezra Trading AI (OPS) — non-live operating system supervisor
+Description=Ezra Trading AI (OPS) — operating system supervisor
+PartOf=ezra-trading.target
 After=network-online.target
 Wants=network-online.target
 
@@ -34,5 +35,5 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target ezra-trading.target
 

@@ -91,6 +91,15 @@ def verify_systemd_unit_contract_templates(*, repo_root: Optional[Path] = None) 
             row_ok = all(checks.values())
             ok = ok and row_ok
             findings.append({"path": str(p), "ok": row_ok, "checks": checks})
+        for p in sorted(unit_dir.glob("*.target")):
+            txt = p.read_text(encoding="utf-8")
+            checks = {
+                "has_wanted_by": "WantedBy=" in txt,
+                "wants_stack": ("ezra-ops.service" in txt) and ("ezra-research.service" in txt),
+            }
+            row_ok = all(checks.values())
+            ok = ok and row_ok
+            findings.append({"path": str(p), "ok": row_ok, "checks": checks})
     out = {
         "truth_version": "systemd_unit_contract_verify_v1",
         "generated_at": _iso(),
