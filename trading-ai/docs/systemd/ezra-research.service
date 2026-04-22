@@ -9,8 +9,6 @@ Type=simple
 WorkingDirectory=/opt/ezra-public/trading-ai
 
 Environment=EZRAS_RUNTIME_ROOT=/opt/ezra-runtime
-Environment=PYTHONPATH=/opt/ezra-public/trading-ai/src:/opt/ezra-private/trading-ai/src
-
 # Default safety: non-live. EnvironmentFile overlays may override when operator enables live stack.
 Environment=NTE_EXECUTION_MODE=paper
 Environment=NTE_LIVE_TRADING_ENABLED=false
@@ -22,6 +20,9 @@ Environment=COINBASE_ENABLED=false
 EnvironmentFile=/opt/ezra-runtime/env/common.env
 EnvironmentFile=-/opt/ezra-runtime/env/research.env
 EnvironmentFile=-/opt/ezra-runtime/env/research-live.env
+
+# Authoritative module resolution: prefer public tree (private may lag).
+Environment=PYTHONPATH=/opt/ezra-public/trading-ai/src:/opt/ezra-private/trading-ai/src
 
 ExecStart=/opt/ezra-venv/bin/python -m trading_ai.runtime daemon --role research --interval-sec 2.0 --skip-models
 Restart=always
