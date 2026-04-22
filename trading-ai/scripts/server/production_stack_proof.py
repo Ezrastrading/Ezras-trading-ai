@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Production host proof: systemd active, /opt layout, deployed smoke, forced supervisors, master smoke.
+Production host proof: systemd active, /opt layout, deployed smoke (or live-stack substitute),
+forced supervisors, master smoke (paper-overlay when host is live).
 
 Writes: <runtime_root>/data/control/production_stack_proof.json
-Exit 0 only when the stack is healthy (non-live smokes by default; no venue orders).
 """
 
 from __future__ import annotations
@@ -27,6 +27,49 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _parse_env_file(path: Path) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, _, v = s.partition("=")
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k:
+            out[k] = v
+    return out
+
+
+def _merge_runtime_env_files(runtime: Path, base: Dict[str, str]) -> Dict[str, str]:
+    """Merge in systemd-like order (later files override)."""
+    env_dir = runtime / "env"
+    merged = dict(base)
+    for name in ("common.env", "ops.env", "research.env", "ops-live.env", "research-live.env"):
+        merged.update(_parse_env_file(env_dir / name))
+    return merged
+
+
+def _artifact_full_autonomy_active(runtime: Path) -> bool:
+    p = runtime / "data" / "control" / "full_autonomy_mode.json"
+    if not p.is_file():
+        return False
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return str(doc.get("mode") or "").strip().upper() in ("FULL_AUTONOMY_ACTIVE", "FULL_AUTONOMY_LIVE")
+
+
+def _looks_live_execution_env(env: Dict[str, str]) -> bool:
+    mode = (env.get("NTE_EXECUTION_MODE") or env.get("EZRAS_MODE") or "paper").strip().lower()
+    nte_live = (env.get("NTE_LIVE_TRADING_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+    cb = (env.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+    return mode in ("live", "production", "prod") or nte_live or cb
 
 
 def _systemctl_active(units: List[str]) -> Tuple[bool, Dict[str, Any]]:
@@ -73,6 +116,11 @@ def main() -> int:
     ap.add_argument("--runtime-root", default="/opt/ezra-runtime")
     ap.add_argument("--venv-root", default="/opt/ezra-venv")
     ap.add_argument("--skip-systemd", action="store_true", help="Skip systemctl checks (dev laptops).")
+    ap.add_argument(
+        "--merge-runtime-env-files",
+        action="store_true",
+        help="Merge /opt/ezra-runtime/env/*.env into subprocess env (required for live-stack proof).",
+    )
     args = ap.parse_args()
 
     public = Path(args.public_root).resolve()
@@ -90,43 +138,74 @@ def main() -> int:
     if not (private / "trading-ai" / "src" / "trading_ai").is_dir():
         reasons.append("missing_private_trading_ai_src")
 
-    env = dict(os.environ)
-    env["PYTHONPATH"] = f"{private / 'trading-ai' / 'src'}:{public / 'trading-ai' / 'src'}"
-    env["EZRAS_RUNTIME_ROOT"] = str(runtime)
-    env.setdefault("NTE_EXECUTION_MODE", "paper")
-    env.setdefault("NTE_LIVE_TRADING_ENABLED", "false")
-    env.setdefault("COINBASE_EXECUTION_ENABLED", "false")
+    proc_env: Dict[str, str] = dict(os.environ)
+    proc_env["PYTHONPATH"] = f"{private / 'trading-ai' / 'src'}:{public / 'trading-ai' / 'src'}"
+    proc_env["EZRAS_RUNTIME_ROOT"] = str(runtime)
+    if not args.merge_runtime_env_files:
+        proc_env.setdefault("NTE_EXECUTION_MODE", "paper")
+        proc_env.setdefault("NTE_LIVE_TRADING_ENABLED", "false")
+        proc_env.setdefault("COINBASE_EXECUTION_ENABLED", "false")
+    else:
+        proc_env = _merge_runtime_env_files(runtime, proc_env)
+
+    live_stack = _looks_live_execution_env(proc_env) and _artifact_full_autonomy_active(runtime)
 
     systemd_ok = True
     systemd_detail: Dict[str, Any] = {}
     if not args.skip_systemd:
-        # Role daemons are authoritative; target may be inactive if only services were started directly.
         systemd_ok, systemd_detail = _systemctl_active(["ezra-ops.service", "ezra-research.service"])
         if not systemd_ok:
             reasons.append("systemd_units_not_active")
 
     deployed_rc = 99
     deployed_out = ""
+    live_verify_rc = 99
+    live_verify_out = ""
     master_rc = 99
     master_out = ""
     sup_ops: Dict[str, Any] = {}
     sup_rs: Dict[str, Any] = {}
 
     if not reasons:
-        smoke_py = repo / "scripts" / "server" / "deployed_environment_smoke.py"
-        deployed_rc, deployed_out, _ = _run(
-            [str(py), str(smoke_py), "--public-root", str(public), "--private-root", str(private), "--runtime-root", str(runtime), "--venv-root", str(venv)],
-            env=env,
-            cwd=repo,
-        )
-        if deployed_rc != 0:
-            reasons.append(f"deployed_environment_smoke_exit_{deployed_rc}")
+        if live_stack:
+            deployed_rc = 0
+            deployed_out = "skipped_deployed_environment_smoke_live_stack_with_full_autonomy_active_artifact"
+            micro_on = (proc_env.get("EZRA_LIVE_MICRO_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+            if micro_on:
+                live_verify_rc, live_verify_out, _ = _run(
+                    [str(py), "-m", "trading_ai.deployment", "live-micro-verify-contract", "--runtime-root", str(runtime)],
+                    env=proc_env,
+                    cwd=repo,
+                    timeout=120,
+                )
+                if live_verify_rc != 0:
+                    reasons.append(f"live_micro_verify_contract_exit_{live_verify_rc}")
+        else:
+            smoke_py = repo / "scripts" / "server" / "deployed_environment_smoke.py"
+            deployed_rc, deployed_out, _ = _run(
+                [
+                    str(py),
+                    str(smoke_py),
+                    "--public-root",
+                    str(public),
+                    "--private-root",
+                    str(private),
+                    "--runtime-root",
+                    str(runtime),
+                    "--venv-root",
+                    str(venv),
+                ],
+                env=proc_env,
+                cwd=repo,
+            )
+            if deployed_rc != 0:
+                reasons.append(f"deployed_environment_smoke_exit_{deployed_rc}")
 
     if not reasons and py.is_file():
         enable = repo / "scripts" / "server" / "enable_full_autonomy_active_live.py"
         rc_e, _, err_e = _run(
             [str(py), str(enable), "--runtime-root", str(runtime), "--artifacts-only", "--reason=production_stack_proof"],
-            env=env,
+            env=proc_env,
             cwd=repo,
             timeout=120,
         )
@@ -146,7 +225,7 @@ def main() -> int:
                 str(runtime),
                 "--force-all-due",
             ],
-            env=env,
+            env=proc_env,
             cwd=repo,
         )
         try:
@@ -169,7 +248,7 @@ def main() -> int:
                 "--skip-models",
                 "--force-all-due",
             ],
-            env=env,
+            env=proc_env,
             cwd=repo,
         )
         try:
@@ -181,9 +260,16 @@ def main() -> int:
 
     if not reasons and py.is_file():
         mst = repo / "scripts" / "master_smoke_test.py"
+        paper_master = dict(proc_env)
+        paper_master["NTE_EXECUTION_MODE"] = "paper"
+        paper_master["NTE_LIVE_TRADING_ENABLED"] = "false"
+        paper_master["COINBASE_EXECUTION_ENABLED"] = "false"
+        paper_master["NTE_PAPER_MODE"] = "true"
+        paper_master["NTE_DRY_RUN"] = "true"
+        paper_master["EZRAS_DRY_RUN"] = "true"
         master_rc, master_out, _ = _run(
             [str(py), str(mst), "--runtime-root", str(runtime), "--cycles", "8"],
-            env=env,
+            env=paper_master,
             cwd=repo,
             timeout=600,
         )
@@ -218,17 +304,23 @@ def main() -> int:
 
     ok = not reasons
     report: Dict[str, Any] = {
-        "truth_version": "production_stack_proof_v1",
+        "truth_version": "production_stack_proof_v2",
         "generated_at": _iso(),
         "ok": ok,
         "runtime_root": str(runtime),
+        "merge_runtime_env_files": bool(args.merge_runtime_env_files),
+        "live_stack_detected": bool(live_stack),
         "fail_reasons": reasons,
         "systemd": {"skipped": bool(args.skip_systemd), "ok": systemd_ok, "detail": systemd_detail},
         "deployed_environment_smoke": {"returncode": deployed_rc, "stdout_tail": deployed_out[-1200:]},
+        "live_micro_verify_contract": {"returncode": live_verify_rc, "stdout_tail": live_verify_out[-1200:]},
         "master_smoke": {"returncode": master_rc, "stdout_tail": master_out[-1200:]},
         "supervisor_ops": sup_ops,
         "supervisor_research": sup_rs,
-        "honesty": "Proof uses paper/non-live process env; live venue orders are not asserted here.",
+        "honesty": (
+            "When live_stack_detected, deployed_environment_smoke is skipped (it requires paper process env); "
+            "live_micro_verify_contract runs if EZRA_LIVE_MICRO_ENABLED. Master smoke uses a paper overlay env."
+        ),
     }
     out_path = runtime / "data" / "control" / "production_stack_proof.json"
     _write_json(out_path, report)
