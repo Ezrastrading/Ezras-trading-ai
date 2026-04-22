@@ -12,7 +12,7 @@ def _write_plan(tmp_path: Path, *, pace_state: str, goal_id: str) -> None:
     p.write_text(
         json.dumps(
             {
-                "truth_version": "mission_goals_operating_plan_v1",
+                "truth_version": "mission_goals_operating_plan_v2",
                 "pace": {"pace_state": pace_state, "required_daily_pct": 5.0, "actual_daily_pct": 3.0},
                 "active_goal": {"id": goal_id, "name": goal_id},
                 "daily_loop": {"review": ["r"], "research": ["re"], "testing": ["t"], "implementation": ["i"]},

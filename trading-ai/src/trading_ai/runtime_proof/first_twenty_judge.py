@@ -221,6 +221,35 @@ def judge_first_twenty_session(archive_dir: Path) -> Dict[str, Any]:
 
     universal_candidate_integrity = _build_universal_candidate_integrity(rr, trades)
 
+    pnls: List[float] = []
+    for t in completed_rows:
+        if not isinstance(t, dict):
+            continue
+        try:
+            pnls.append(float(t.get("pnl_usd") or t.get("realized_pnl_usd") or 0.0))
+        except (TypeError, ValueError):
+            pnls.append(0.0)
+    wins_ct = sum(1 for x in pnls if x > 0)
+    losses_ct = sum(1 for x in pnls if x < 0)
+    denom = wins_ct + losses_ct
+    early_winrate = (wins_ct / denom) if denom else None
+    if early_winrate is None:
+        edge_quality = "unknown"
+    elif early_winrate >= 0.58:
+        edge_quality = "strong"
+    elif early_winrate >= 0.48:
+        edge_quality = "moderate"
+    else:
+        edge_quality = "weak"
+    if early_winrate is None:
+        viability = "unknown"
+    elif early_winrate < 0.42 and denom >= 8:
+        viability = "halt_or_restructure"
+    elif early_winrate < 0.48 and denom >= 8:
+        viability = "auto_tighten"
+    else:
+        viability = "continue_shadow"
+
     return {
         "archive_dir": str(arch),
         "missing_artifacts": missing,
@@ -258,6 +287,10 @@ def judge_first_twenty_session(archive_dir: Path) -> Dict[str, Any]:
         },
         "strict_go_with_agnostic_lock": strict_go_agnostic,
         "universal_candidate_integrity": universal_candidate_integrity,
+        "edge_quality_tier": edge_quality,
+        "early_winrate": early_winrate,
+        "early_edge_viability": viability,
+        "edge_quality_honesty": "Winrate uses completed_rows with signed pnl fields only; no live fills implied.",
     }
 
 

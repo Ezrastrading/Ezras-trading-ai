@@ -823,6 +823,18 @@ def run_role_supervisor_once(
         "loops": loops_state,
         "honesty": "Supervisor runs the now-live autonomy stack; loops emit artifacts and route shadow tasks only (no venue orders).",
     }
+    try:
+        from trading_ai.global_layer.mission_goals_operating_layer import refresh_mission_execution_status_artifact
+
+        ms = refresh_mission_execution_status_artifact(runtime_root=root, role=str(role), supervisor_payload=payload)
+        payload["mission_execution_status_ref"] = ms.get("path")
+        payload["mission_pressure_score"] = (ms.get("million_goal") or {}).get("mission_pressure_score")
+        payload["mission_urgency_level"] = (ms.get("million_goal") or {}).get("urgency_level")
+    except Exception as exc:
+        payload["mission_execution_status_ref"] = None
+        payload["mission_pressure_score"] = None
+        payload["mission_urgency_level"] = None
+        payload["mission_execution_status_error"] = type(exc).__name__
     _write_json(status_p, payload)
     return {"ok": True, "role": role, "ran": ran, "status_path": str(status_p)}
 

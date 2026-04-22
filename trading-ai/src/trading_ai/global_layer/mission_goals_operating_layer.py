@@ -33,6 +33,171 @@ from trading_ai.runtime_paths import ezras_runtime_root
 
 PaceState = Literal["behind_pace", "on_pace", "ahead_of_pace", "unknown"]
 
+# System-level mission directive (calendar-year framing; advisory to execution, never overrides risk).
+PRIMARY_GOAL_USD = 1_000_000.0
+UrgencyLevel = Literal["low", "medium", "high", "critical"]
+
+
+def goal_deadline_utc(*, now: Optional[datetime] = None) -> datetime:
+    """End-of-year UTC deadline unless ``EZRAS_GOAL_DEADLINE_ISO`` is set (ISO-8601)."""
+    n = now or datetime.now(timezone.utc)
+    raw = (os.environ.get("EZRAS_GOAL_DEADLINE_ISO") or "").strip()
+    if raw:
+        s = raw.replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    return datetime(n.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def read_pnl_review_usd_snapshot(*, runtime_root: Path) -> Dict[str, Any]:
+    """Best-effort snapshot from ``data/control/pnl_review.json`` (written by research supervisor)."""
+    p = runtime_root / "data" / "control" / "pnl_review.json"
+    d = _read_json(p) or {}
+    return {
+        "path": str(p),
+        "present": p.is_file(),
+        "daily_net_usd": float(d.get("daily_net_usd") or 0.0),
+        "weekly_net_usd": float(d.get("weekly_net_usd") or 0.0),
+    }
+
+
+def compute_required_daily_pnl_usd(*, current_equity_usd: float, goal_usd: float, deadline: datetime) -> float:
+    """Flat USD/day required to close remaining gap to ``goal_usd`` by ``deadline`` (not compound)."""
+    now = datetime.now(timezone.utc)
+    remaining = max(0.0, float(goal_usd) - max(0.0, float(current_equity_usd)))
+    days = max(1.0, (deadline - now).total_seconds() / 86400.0)
+    return remaining / days
+
+
+def compute_velocity_gap(*, required_daily_usd: float, trailing_daily_usd: Optional[float]) -> Dict[str, Any]:
+    """Signed gap between observed trailing daily PnL and required flat daily USD."""
+    act = None if trailing_daily_usd is None else float(trailing_daily_usd)
+    req = float(required_daily_usd)
+    if act is None:
+        return {"required_daily_usd": req, "trailing_daily_usd": None, "gap_usd": None, "ratio": None}
+    gap = act - req
+    ratio = (act / req) if req > 1e-9 else None
+    return {"required_daily_usd": req, "trailing_daily_usd": act, "gap_usd": gap, "ratio": ratio}
+
+
+def compute_goal_pressure(*, remaining_fraction: float, days_fraction_elapsed: float) -> float:
+    """
+    Map (how much of the dollar gap remains) × (how deep we are into the calendar window) → [0,1].
+
+    Higher = more pressure to prioritize mission-aligned work (advisory only).
+    """
+    rf = min(1.0, max(0.0, float(remaining_fraction)))
+    tf = min(1.0, max(0.0, float(days_fraction_elapsed)))
+    # Late year + large remaining gap increases pressure fastest.
+    return min(1.0, 0.35 * rf + 0.45 * tf + 0.25 * rf * tf)
+
+
+def compute_risk_adjusted_push_level(*, mission_pressure_score: float, risk_headroom: float) -> float:
+    """
+    ``risk_headroom`` in [0,1]: 1.0 = all risk budgets comfortable; 0 = tight.
+
+    Never increases aggressiveness when headroom is low, even if mission pressure is high.
+    """
+    mp = min(1.0, max(0.0, float(mission_pressure_score)))
+    rh = min(1.0, max(0.0, float(risk_headroom)))
+    return min(1.0, mp * (0.5 + 0.5 * rh))
+
+
+def urgency_from_pressure(score: float) -> UrgencyLevel:
+    if score >= 0.85:
+        return "critical"
+    if score >= 0.65:
+        return "high"
+    if score >= 0.4:
+        return "medium"
+    return "low"
+
+
+def build_million_goal_mission_bundle(*, runtime_root: Path, current_equity_usd: float) -> Dict[str, Any]:
+    """
+    Canonical mission-pressure bundle for loops, audits, and CEO attachments.
+
+    Uses PRIMARY_GOAL_USD + calendar deadline; pulls ``pnl_review`` for recent velocity.
+    """
+    root = Path(runtime_root).resolve()
+    deadline = goal_deadline_utc()
+    now = datetime.now(timezone.utc)
+    pnl = read_pnl_review_usd_snapshot(runtime_root=root)
+    trailing = float(pnl["daily_net_usd"]) if pnl.get("present") else None
+    req_usd = compute_required_daily_pnl_usd(
+        current_equity_usd=float(current_equity_usd),
+        goal_usd=PRIMARY_GOAL_USD,
+        deadline=deadline,
+    )
+    vel = compute_velocity_gap(required_daily_usd=req_usd, trailing_daily_usd=trailing)
+    start = float((os.environ.get("EZRAS_MISSION_START_EQUITY_USD") or "200").strip() or "200")
+    gain = max(0.0, float(current_equity_usd) - start)
+    remaining_frac = max(0.0, (PRIMARY_GOAL_USD - float(current_equity_usd)) / max(1.0, PRIMARY_GOAL_USD))
+    year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    days_elapsed = max(0.0, (now - year_start).total_seconds())
+    year_span = max(86400.0, (deadline - year_start).total_seconds())
+    days_frac = min(1.0, days_elapsed / year_span)
+    pressure = compute_goal_pressure(remaining_fraction=remaining_frac, days_fraction_elapsed=days_frac)
+    # Risk headroom: distance of trailing 7d-style proxy from a hard negative floor (advisory).
+    floor = float((os.environ.get("EZRAS_MISSION_RISK_FLOOR_WEEKLY_USD") or "-500").strip() or "-500")
+    wk = float(pnl.get("weekly_net_usd") or 0.0)
+    rh = 1.0 if wk >= 0 else max(0.0, min(1.0, 1.0 - abs(min(0.0, wk - floor)) / max(1.0, abs(floor))))
+    push = compute_risk_adjusted_push_level(mission_pressure_score=pressure, risk_headroom=rh)
+    urgency = urgency_from_pressure(pressure)
+    return {
+        "truth_version": "million_goal_mission_bundle_v1",
+        "generated_at_utc": _iso(),
+        "primary_goal_usd": PRIMARY_GOAL_USD,
+        "goal_deadline_utc": deadline.isoformat(),
+        "current_equity_usd": float(current_equity_usd),
+        "cumulative_gain_vs_start_usd": round(gain, 6),
+        "mission_start_equity_usd": start,
+        "pnl_review": pnl,
+        "required_daily_pnl_usd": round(req_usd, 6),
+        "daily_target_usd": round(req_usd, 6),
+        "velocity_gap": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in vel.items()},
+        "mission_pressure_score": round(pressure, 6),
+        "risk_adjusted_push_level": round(push, 6),
+        "urgency_level": urgency,
+        "honesty": "Advisory pacing signal only; never relaxes risk caps, kill switch, or gate truth.",
+    }
+
+
+def refresh_mission_execution_status_artifact(
+    *,
+    runtime_root: Path,
+    role: str,
+    supervisor_payload: Dict[str, Any],
+    current_equity_usd: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Persist ``data/control/mission_execution_status.json`` for operators + audits."""
+    root = Path(runtime_root).resolve()
+    bal = float(current_equity_usd) if current_equity_usd is not None else float(
+        (os.environ.get("EZRAS_DEFAULT_EQUITY_USD_FOR_MISSION") or "200").strip() or "200"
+    )
+    try:
+        from trading_ai.global_layer.trade_truth import load_federated_trades
+
+        _, meta = load_federated_trades()
+        bal = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or bal)
+    except Exception:
+        pass
+    bundle = build_million_goal_mission_bundle(runtime_root=root, current_equity_usd=bal)
+    out: Dict[str, Any] = {
+        "truth_version": "mission_execution_status_v1",
+        "generated_at_utc": _iso(),
+        "system_mode": (os.environ.get("EZRAS_SYSTEM_MODE") or "AUTONOMOUS_PERPETUAL"),
+        "role": str(role),
+        "million_goal": bundle,
+        "supervisor": {
+            "ran": supervisor_payload.get("ran"),
+            "truth_version": supervisor_payload.get("truth_version"),
+        },
+        "honesty": "Mission pressure informs prioritization only; execution remains risk-gated elsewhere.",
+    }
+    dest = root / "data" / "control" / "mission_execution_status.json"
+    _write_json_atomic(dest, out)
+    return {"ok": True, "path": str(dest), "million_goal": bundle}
+
 
 @dataclass(frozen=True)
 class MissionPaceSnapshot:
@@ -186,6 +351,8 @@ def build_daily_operating_plan(
     pace: MissionPaceSnapshot,
     active_goal_id: str,
     safety_blockers: Optional[List[str]] = None,
+    runtime_root: Optional[Path] = None,
+    current_equity_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Produce concrete next actions across review/research/testing/implementation.
@@ -227,8 +394,8 @@ def build_daily_operating_plan(
         implementation.insert(0, f"resolve safety blockers first: {', '.join(blockers[:5])}")
         testing.insert(0, "verify kill-switch + fail-closed behaviors remain intact after changes")
 
-    return {
-        "truth_version": "mission_goals_operating_plan_v1",
+    plan: Dict[str, Any] = {
+        "truth_version": "mission_goals_operating_plan_v2",
         "generated_at_utc": _iso(),
         "pace": {
             "required_daily_pct": pace.required_daily_pct,
@@ -249,6 +416,15 @@ def build_daily_operating_plan(
             "fail-closed stays authoritative at every gate and venue",
         ],
     }
+    if runtime_root is not None and current_equity_usd is not None:
+        try:
+            plan["million_goal_engine"] = build_million_goal_mission_bundle(
+                runtime_root=Path(runtime_root).resolve(),
+                current_equity_usd=float(current_equity_usd),
+            )
+        except Exception as exc:
+            plan["million_goal_engine"] = {"ok": False, "error": type(exc).__name__}
+    return plan
 
 
 def refresh_mission_goals_operating_layer(
@@ -269,7 +445,12 @@ def refresh_mission_goals_operating_layer(
 
     gid = str(active_goal_id or (default_goal_order()[0] if default_goal_order() else "GOAL_A"))
     pace = compute_mission_pace_snapshot(total_balance_usd=float(total_balance_usd), runtime_root=root)
-    plan = build_daily_operating_plan(pace=pace, active_goal_id=gid)
+    plan = build_daily_operating_plan(
+        pace=pace,
+        active_goal_id=gid,
+        runtime_root=root,
+        current_equity_usd=float(total_balance_usd),
+    )
 
     # Runtime artifact (per-host run, per day).
     art = root / "data" / "control" / "mission_goals_operating_plan.json"

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from trading_ai.nte.databank.databank_health import refresh_health_from_verification, save_health
@@ -31,6 +33,55 @@ from trading_ai.nte.databank.trade_summary_engine import (
 from trading_ai.nte.databank.trade_verification_engine import record_trade_write_verification
 
 logger = logging.getLogger(__name__)
+
+
+def _roll_mission_trade_intel_window(merged: Mapping[str, Any], scores: Mapping[str, Any]) -> None:
+    """Rolling last-20 closed-trade metrics for mission feedback (advisory JSON under runtime control/)."""
+    try:
+        from trading_ai.runtime_paths import ezras_runtime_root
+
+        root = Path(ezras_runtime_root()).resolve()
+        ctrl = root / "data" / "control"
+        ctrl.mkdir(parents=True, exist_ok=True)
+        path = ctrl / "trade_intelligence_mission_window.json"
+        tid = str(merged.get("trade_id") or "")
+        pnl = float(merged.get("pnl_usd") or merged.get("realized_pnl_usd") or 0.0)
+        row = {
+            "trade_id": tid,
+            "pnl_usd": pnl,
+            "latency_ms": merged.get("latency_ms") or merged.get("execution_latency_ms"),
+            "slippage_bps": merged.get("slippage_bps") or merged.get("slippage_estimate_bps"),
+            "ev_proxy": (scores or {}).get("expectancy_proxy") if isinstance(scores, dict) else None,
+            "execution_quality": merged.get("execution_quality"),
+        }
+        rows: List[Dict[str, Any]] = []
+        total_seen = 0
+        if path.is_file():
+            try:
+                doc0 = json.loads(path.read_text(encoding="utf-8"))
+                rows = [r for r in (doc0.get("rows") or []) if isinstance(r, dict)]
+                total_seen = int(doc0.get("total_closed_seen") or 0)
+            except Exception:
+                rows = []
+        rows.append(row)
+        rows = rows[-20:]
+        total_seen += 1
+        doc_out = {"truth_version": "trade_intelligence_mission_window_v1", "rows": rows, "total_closed_seen": total_seen}
+        path.write_text(json.dumps(doc_out, indent=2, default=str) + "\n", encoding="utf-8")
+        if total_seen > 0 and total_seen % 20 == 0:
+            wins = sum(1 for r in rows if float(r.get("pnl_usd") or 0) > 0)
+            hint = {
+                "truth_version": "trade_intelligence_mission_hint_v1",
+                "window_trades": len(rows),
+                "total_closed_seen": total_seen,
+                "wins": wins,
+                "losses": len(rows) - wins,
+                "winrate": round(wins / max(1, len(rows)), 4),
+                "honesty": "Advisory histogram every 20 closes; does not mutate live strategy weights without governance paths.",
+            }
+            (ctrl / "trade_intelligence_mission_hint.json").write_text(json.dumps(hint, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug("mission trade intel window: %s", exc)
 
 
 class TradeIntelligenceDatabank:
@@ -138,6 +189,9 @@ class TradeIntelligenceDatabank:
 
         append_learning_hook(merged, scores)
         stages["learning_hook"] = True
+
+        _roll_mission_trade_intel_window(merged, scores)
+        stages["mission_trade_intel_window"] = True
 
         partial = not supabase_ok
         self._finalize_verification(trade_id, stages, errors, partial_failure=partial)

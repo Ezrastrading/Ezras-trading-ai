@@ -217,14 +217,30 @@ def on_scanner_cycle_export(*, runtime_root: Optional[Path] = None) -> Dict[str,
     root = _root(runtime_root)
     inner = on_scanner_cycle(runtime_root=root)
     seq = int(datetime.now(timezone.utc).timestamp() * 1000) % (10**9)
+    p = root / "data" / "control" / "scanner_autonomy_snapshot.json"
+    prev_gap: Optional[float] = None
+    try:
+        if p.is_file():
+            prev = json.loads(p.read_text(encoding="utf-8"))
+            raw = str((prev or {}).get("generated_at") or "").strip()
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            prev_dt = datetime.fromisoformat(raw) if raw else None
+            if prev_dt and prev_dt.tzinfo is None:
+                prev_dt = prev_dt.replace(tzinfo=timezone.utc)
+            if prev_dt is not None:
+                prev_gap = max(0.0, (datetime.now(timezone.utc) - prev_dt).total_seconds())
+    except Exception:
+        prev_gap = None
     snap = {
         "truth_version": "scanner_autonomy_snapshot_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scan_seq": seq,
         "hook_status": inner.get("status"),
+        "seconds_since_prior_snapshot": prev_gap,
+        "anti_idle_rescan_recommended": bool(prev_gap is not None and prev_gap > 60.0),
         "honesty": "Control scaffold refresh only; no live venue scanner calls.",
     }
-    p = root / "data" / "control" / "scanner_autonomy_snapshot.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(snap, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return {**inner, "scan_seq": seq}

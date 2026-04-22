@@ -181,6 +181,31 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
         }
     except Exception:
         pass
+    try:
+        if runtime_root:
+            from trading_ai.global_layer.mission_goals_operating_layer import build_million_goal_mission_bundle
+            from trading_ai.global_layer.trade_truth import load_federated_trades
+
+            trades, meta = load_federated_trades()
+            _ = trades
+            eq = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or 200.0)
+            mg = build_million_goal_mission_bundle(runtime_root=runtime_root, current_equity_usd=eq)
+            ei = out.get("execution_intelligence_operator_brief") or {}
+            out["million_goal_ceo"] = {
+                "current_equity_usd": mg.get("current_equity_usd"),
+                "required_daily_pnl_usd": mg.get("required_daily_pnl_usd"),
+                "velocity_gap": mg.get("velocity_gap"),
+                "mission_pressure_score": mg.get("mission_pressure_score"),
+                "urgency_level": mg.get("urgency_level"),
+                "best_strategies_hint": ei.get("strategy_promotions"),
+                "worst_strategies_hint": ei.get("strategy_restrictions"),
+                "recommended_adjustments": [
+                    "Increase validated throughput when pressure is high and risk headroom is healthy.",
+                    "Tighten validation cadence when weekly_net_usd is negative or velocity_gap is below zero.",
+                ],
+            }
+    except Exception as exc:
+        out["million_goal_ceo"] = {"ok": False, "error": type(exc).__name__}
     if allow_review:
         record_ceo_review_tokens(estimated_review_tokens)
         try:

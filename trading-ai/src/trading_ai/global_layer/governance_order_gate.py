@@ -274,6 +274,20 @@ def check_new_order_allowed_full(
     if route_bucket is not None:
         audit["route_bucket"] = route_bucket
 
+    try:
+        from pathlib import Path
+
+        from trading_ai.global_layer.mission_goals_operating_layer import build_million_goal_mission_bundle
+        from trading_ai.global_layer.trade_truth import load_federated_trades
+        from trading_ai.runtime_paths import ezras_runtime_root
+
+        root = Path(ezras_runtime_root()).resolve()
+        _, meta = load_federated_trades()
+        eq = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or 200.0)
+        audit["million_goal_directive"] = build_million_goal_mission_bundle(runtime_root=root, current_equity_usd=eq)
+    except Exception as exc:
+        audit["million_goal_directive"] = {"error": type(exc).__name__, "detail": str(exc)[:200]}
+
     if log_decision:
         logger.info("governance_gate_decision %s", json.dumps(audit, default=str))
 
