@@ -91,6 +91,14 @@ def test_candidate_queue_progresses_to_submit_and_fill(tmp_path: Path, monkeypat
     st.save_json("candidate_queue.json", cq)
 
     monkeypatch.setattr("trading_ai.shark.outlets.coinbase.CoinbaseClient", _FakeCoinbaseClient)
+    monkeypatch.setattr(
+        "trading_ai.shark.outlets.coinbase._brokerage_public_request",
+        lambda _p: {"best_bid": "1", "best_ask": "1.01", "price": "1.005", "time": time.time()},
+    )
+    monkeypatch.setattr(
+        "trading_ai.global_layer.gap_engine.evaluate_candidate",
+        lambda _c: type("D", (), {"should_trade": True, "rejection_reasons": []})(),
+    )
     monkeypatch.setattr("trading_ai.automation.post_trade_hub.execute_post_trade_placed", lambda *_a, **_k: {"status": "sent"})
 
     from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once

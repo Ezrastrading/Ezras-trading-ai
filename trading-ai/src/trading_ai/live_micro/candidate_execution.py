@@ -102,6 +102,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             "candidate_item": it,
         },
     )
+    out: Dict[str, Any] = {"ok": True, "product_id": pid, "gate_id": "gate_b"}
     items = list(cq.get("items") or [])
     if 0 <= idx < len(items) and isinstance(items[idx], dict):
         items[idx] = {**items[idx], "status": "selected", "selected_ts": time.time()}
@@ -111,7 +112,108 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
     from trading_ai.shark.outlets.coinbase import CoinbaseClient
 
     client = CoinbaseClient()
-    res = client.place_market_buy(pid, quote_usd, execution_gate="gate_b")
+    # Build the required universal candidate context (fail-closed).
+    from trading_ai.global_layer.gap_models import (
+        UniversalGapCandidate,
+        authoritative_live_buy_path_reset,
+        authoritative_live_buy_path_set,
+        candidate_context_reset,
+        candidate_context_set,
+        new_universal_candidate_id,
+    )
+
+    from trading_ai.global_layer.gap_engine import evaluate_candidate
+    from trading_ai.shark.outlets.coinbase import _brokerage_public_request
+
+    t = _brokerage_public_request(f"/market/products/{pid}/ticker")
+    t = t if isinstance(t, dict) else {}
+    bid = float(t.get("best_bid") or t.get("bid") or 0.0)
+    ask = float(t.get("best_ask") or t.get("ask") or 0.0)
+    mid = float(t.get("price") or 0.0)
+    if mid <= 0 and bid > 0 and ask > 0:
+        mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return {"ok": False, "blocked": True, "reason": "ticker_mid_unavailable", "product_id": pid}
+
+    # Explicit, conservative economics. No hidden defaults.
+    edge_pct = float((os.environ.get("EZRA_LIVE_MICRO_EDGE_PCT") or "0.01").strip() or "0.01")
+    edge_pct = max(0.0, min(0.05, edge_pct))
+    fees_est = float((os.environ.get("EZRA_LIVE_MICRO_FEES_EST_PCT") or "0.006").strip() or "0.006") * quote_usd
+    spread_bps = 0.0
+    if bid > 0 and ask > 0:
+        spread_bps = (ask - bid) / mid * 10000.0
+    slippage_est = float((os.environ.get("EZRA_LIVE_MICRO_SLIPPAGE_SPREAD_MULT") or "1.0").strip() or "1.0") * (
+        quote_usd * max(0.0, spread_bps) / 10000.0
+    )
+    liquidity_score = float((os.environ.get("EZRA_LIVE_MICRO_LIQUIDITY_SCORE") or "0.85").strip() or "0.85")
+    liquidity_score = max(0.0, min(1.0, liquidity_score))
+    confidence = float((os.environ.get("EZRA_LIVE_MICRO_CONFIDENCE_SCORE") or "0.55").strip() or "0.55")
+    confidence = max(0.0, min(1.0, confidence))
+
+    cand = UniversalGapCandidate(
+        candidate_id=new_universal_candidate_id(prefix="lm"),
+        edge_percent=edge_pct,
+        edge_score=edge_pct * 100.0,
+        confidence_score=confidence,
+        execution_mode="taker",
+        gap_type="behavioral_gap",
+        estimated_true_value=mid,
+        liquidity_score=liquidity_score,
+        fees_estimate=fees_est,
+        slippage_estimate=slippage_est,
+        must_trade=False,  # set after gap-engine decision
+        risk_flags=["micro_live_candidate_queue"],
+    )
+    dec = evaluate_candidate(cand)
+    must_trade = bool(dec.should_trade)
+    cand = UniversalGapCandidate(
+        candidate_id=cand.candidate_id,
+        edge_percent=cand.edge_percent,
+        edge_score=cand.edge_score,
+        confidence_score=cand.confidence_score,
+        execution_mode=cand.execution_mode,
+        gap_type=cand.gap_type,
+        estimated_true_value=cand.estimated_true_value,
+        liquidity_score=cand.liquidity_score,
+        fees_estimate=cand.fees_estimate,
+        slippage_estimate=cand.slippage_estimate,
+        must_trade=must_trade,
+        risk_flags=list(cand.risk_flags or []),
+    )
+
+    tok_c = candidate_context_set(cand)
+    tok_a = authoritative_live_buy_path_set("nte_only")
+    try:
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "entry_decision",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "should_trade": bool(dec.should_trade),
+                "rejection_reasons": list(dec.rejection_reasons or []),
+                "candidate": cand.to_dict(),
+            },
+        )
+        if not must_trade:
+            return {
+                **out,
+                "ok": True,
+                "skipped": True,
+                "reason": "gap_engine_rejected",
+                "rejection_reasons": list(dec.rejection_reasons or []),
+            }
+        res = client.place_market_buy(pid, quote_usd, execution_gate="gate_b")
+    finally:
+        try:
+            authoritative_live_buy_path_reset(tok_a)
+        except Exception:
+            pass
+        try:
+            candidate_context_reset(tok_c)
+        except Exception:
+            pass
     _append_jsonl(
         events_p,
         {
@@ -128,7 +230,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         },
     )
 
-    out: Dict[str, Any] = {"ok": True, "product_id": pid, "order_id": res.order_id, "submitted": bool(res.success)}
+    out = {**out, "order_id": res.order_id, "submitted": bool(res.success)}
     if not res.success or not str(res.order_id or "").strip():
         # Mark queue item failed.
         cq2 = st.load_json("candidate_queue.json")
