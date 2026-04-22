@@ -413,6 +413,11 @@ def _ops_loops() -> List[LoopSpec]:
         snap = on_scanner_cycle_export(runtime_root=r)
         return {"ok": True, "scan_seq": snap.get("scan_seq")}
 
+    def _live_micro_candidate_execution(r: Path) -> Dict[str, Any]:
+        from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once
+
+        return run_live_micro_candidate_execution_once(runtime_root=r)
+
     def _outcome_ingestion(r: Path) -> Dict[str, Any]:
         out = tick_ops_once(runtime_root=r)
         return out.get("steps", {}).get("outcome_ingestion") or {"ok": False, "error": "missing_outcome_ingestion"}
@@ -497,6 +502,7 @@ def _ops_loops() -> List[LoopSpec]:
     return [
         LoopSpec("validation_bootstrap", "ops", 300.0, _validation_bootstrap),
         LoopSpec("scanner_cycle", "ops", 20.0, _scanner_cycle),
+        LoopSpec("live_micro_candidate_execution", "ops", 10.0, _live_micro_candidate_execution),
         LoopSpec("simulation_cycle", "ops", 25.0, _simulation_cycle),
         LoopSpec("outcome_ingestion", "ops", 30.0, _outcome_ingestion),
         LoopSpec("fast_health_snapshot", "ops", 30.0, _fast_health_snapshot),
