@@ -19,6 +19,12 @@ class _FakeCoinbaseClient:
     def __init__(self):
         self.placed = []
 
+    def get_usd_balance(self):
+        return 100.0
+
+    def get_available_balance(self, _ccy: str):
+        return 0.0
+
     def place_market_buy(self, product_id: str, usd_amount: float, *, execution_gate: str = "gate_a"):
         self.placed.append((product_id, float(usd_amount), execution_gate))
         return _FakeOrderResult(success=True, status="placed", reason="", order_id="ord_123")

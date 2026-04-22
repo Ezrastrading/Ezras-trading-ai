@@ -205,6 +205,17 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         quote_balances = get_available_quote_balances(client)
     except Exception:
         quote_balances = None
+    if not isinstance(quote_balances, dict) or not quote_balances:
+        # Fallback: query balances directly (best-effort).
+        try:
+            usd = float(client.get_usd_balance())
+        except Exception:
+            usd = 0.0
+        try:
+            usdc = float(client.get_available_balance("USDC"))
+        except Exception:
+            usdc = 0.0
+        quote_balances = {"USD": usd, "USDC": usdc}
     avail_quote = 0.0
     try:
         avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
@@ -215,6 +226,18 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         total_quote = sum(float(v) for v in (quote_balances or {}).values())
     except Exception:
         total_quote = max(avail_quote, 0.0)
+    if total_quote <= 0:
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "blocked",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "reason": "missing_quote_balance_truth",
+            },
+        )
+        return {**out, "skipped": True, "reason": "missing_quote_balance_truth"}
 
     mission_prob = 0.55
     try:
