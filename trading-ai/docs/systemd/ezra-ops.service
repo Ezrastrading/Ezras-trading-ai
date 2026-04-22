@@ -9,20 +9,20 @@ Type=simple
 WorkingDirectory=/opt/ezra-public/trading-ai
 
 Environment=EZRAS_RUNTIME_ROOT=/opt/ezra-runtime
-Environment=PYTHONPATH=/opt/ezra-private/trading-ai/src:/opt/ezra-public/trading-ai/src
+Environment=PYTHONPATH=/opt/ezra-public/trading-ai/src:/opt/ezra-private/trading-ai/src
 
-EnvironmentFile=/opt/ezra-runtime/env/common.env
-EnvironmentFile=-/opt/ezra-runtime/env/ops.env
-# Optional operator overlay for FULL_AUTONOMY_ACTIVE (live env). File may be absent.
-EnvironmentFile=-/opt/ezra-runtime/env/ops-live.env
-
-# Default safety: non-live. ops-live.env may override when operator enables live stack.
+# Default safety: non-live. EnvironmentFile overlays may override when operator enables live stack.
 Environment=NTE_EXECUTION_MODE=paper
 Environment=NTE_LIVE_TRADING_ENABLED=false
 Environment=NTE_PAPER_MODE=true
 Environment=NTE_DRY_RUN=true
 Environment=COINBASE_EXECUTION_ENABLED=false
 Environment=COINBASE_ENABLED=false
+
+EnvironmentFile=/opt/ezra-runtime/env/common.env
+EnvironmentFile=-/opt/ezra-runtime/env/ops.env
+# Optional operator overlay for FULL_AUTONOMY_ACTIVE (live env). File may be absent.
+EnvironmentFile=-/opt/ezra-runtime/env/ops-live.env
 
 ExecStart=/opt/ezra-venv/bin/python -m trading_ai.runtime daemon --role ops --interval-sec 1.0 --skip-models
 Restart=always
