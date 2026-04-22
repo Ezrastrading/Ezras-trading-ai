@@ -36,6 +36,10 @@ echo "== 0) Refresh deployed_environment_smoke under forced paper (preflight con
     --private-root "${PRIVATE_ROOT}" \
     --runtime-root "${RUNROOT}" \
     --venv-root "${VENV}"
+  "${PY}" "${REPO}/scripts/server/micro_trade_readiness.py" \
+    --runtime-root "${RUNROOT}" \
+    --public-root "${PUBLIC_ROOT}" \
+    --private-root "${PRIVATE_ROOT}"
 )
 
 echo "== 1) Install ops-live.env from template (micro starts disabled)"
