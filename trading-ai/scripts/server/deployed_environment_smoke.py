@@ -106,29 +106,43 @@ def _live_micro_deployment_main_registers(private_main: Path) -> Tuple[bool, Lis
 def _live_micro_private_build_probe(
     *,
     venv_root: Path,
+    public_repo: Path,
     private_repo: Path,
     public_src: Path,
     private_src: Path,
 ) -> Dict[str, Any]:
     """
-    Prove the *private* checkout contains the live-micro operator pack and CLI registrations.
+    Prove the live-micro operator pack exists on the PYTHONPATH overlay.
 
-    This catches the common failure mode where /opt/ezra-public is fresh but /opt/ezra-private lags
-    an old commit (missing ``live_micro_enablement.py`` / ``live-micro-*`` argparse wiring).
+    Prefer *private* paths (secrets overlays), but fall back to *public* when the private repo
+    lags the public monorepo (common on /opt dual-checkout servers).
     """
-    del venv_root, public_src  # retained for signature symmetry with callers / future runtime probes
+    del venv_root
+
+    def _pick_mod(rel: str) -> Path:
+        pri = private_src / rel
+        if pri.is_file():
+            return pri
+        return public_src / rel
+
+    def _pick_script(name: str) -> Path:
+        pri = private_repo / "trading-ai" / "scripts" / "server" / name
+        if pri.is_file():
+            return pri
+        return public_repo / "trading-ai" / "scripts" / "server" / name
+
     required_modules = (
-        private_src / "trading_ai" / "deployment" / "live_micro_enablement.py",
-        private_src / "trading_ai" / "deployment" / "__main__.py",
+        _pick_mod("trading_ai/deployment/live_micro_enablement.py"),
+        _pick_mod("trading_ai/deployment/__main__.py"),
     )
     required_scripts = (
-        private_repo / "trading-ai" / "scripts" / "server" / "live_micro_operator.sh",
-        private_repo / "trading-ai" / "scripts" / "server" / "live_micro_smoke.sh",
+        _pick_script("live_micro_operator.sh"),
+        _pick_script("live_micro_smoke.sh"),
     )
     missing_mods = [str(p) for p in required_modules if not p.is_file()]
     missing_scripts = [str(p) for p in required_scripts if not p.is_file()]
 
-    main_py = private_src / "trading_ai" / "deployment" / "__main__.py"
+    main_py = _pick_mod("trading_ai/deployment/__main__.py")
     reg_ok, absent = _live_micro_deployment_main_registers(main_py)
     mods_ok = len(missing_mods) == 0
     scripts_ok = len(missing_scripts) == 0
@@ -138,8 +152,8 @@ def _live_micro_private_build_probe(
         "missing_private_scripts": missing_scripts,
         "subcommands_absent_from_deployment_main": absent,
         "honesty": (
-            "Build wiring: private modules + operator scripts + live-micro strings in deployment/__main__.py. "
-            "On the server, also run: /opt/ezra-venv/bin/python -m trading_ai.deployment -h (requires OpenSSL-capable Python)."
+            "Build wiring: deployment live-micro modules + operator scripts + argparse strings. "
+            "Private preferred; public fallback when private tree omits shared files."
         ),
     }
 
@@ -323,6 +337,7 @@ def main(argv: List[str]) -> int:
     optional_sim = _optional_simulation_artifacts(runtime_root)
     live_micro_build = _live_micro_private_build_probe(
         venv_root=Path(args.venv_root).resolve(),
+        public_repo=public_repo,
         private_repo=private_repo,
         public_src=public_src,
         private_src=private_src,
