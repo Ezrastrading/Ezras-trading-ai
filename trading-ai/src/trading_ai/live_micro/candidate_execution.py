@@ -29,10 +29,19 @@ def _append_jsonl(p: Path, row: Dict[str, Any]) -> None:
 
 def _load_micro_max_notional(runtime_root: Path) -> float:
     lim = _read_json(runtime_root / "data" / "control" / "live_session_limits.json")
+    file_v = 0.0
     try:
-        return float(lim.get("max_notional_usd") or 0.0)
+        file_v = float(lim.get("max_notional_usd") or 0.0)
     except Exception:
-        return 0.0
+        file_v = 0.0
+    env_v = 0.0
+    try:
+        env_v = float((os.environ.get("EZRA_LIVE_MICRO_MAX_NOTIONAL_USD") or "").strip() or 0.0)
+    except Exception:
+        env_v = 0.0
+    if file_v > 0 and env_v > 0:
+        return min(file_v, env_v)
+    return file_v if file_v > 0 else env_v
 
 
 def _pick_candidate_item(cq: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], int]:
