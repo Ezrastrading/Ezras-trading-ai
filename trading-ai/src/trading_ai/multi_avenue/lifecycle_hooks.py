@@ -197,6 +197,26 @@ def on_daily_cycle(*, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
         run_daily_edge_research_cycle(runtime_root=root)
     except Exception:
         pass
+    try:
+        from trading_ai.control.first_60_day_ops import (
+            ensure_first_60_day_control_artifacts,
+            write_first_60_day_daily_envelope,
+            write_first_60_day_weekly_envelope_if_due,
+        )
+
+        ensure_first_60_day_control_artifacts(runtime_root=root)
+        diag_path = root / "data" / "review" / "daily_diagnosis.json"
+        diag: Optional[Dict[str, Any]] = None
+        if diag_path.is_file():
+            try:
+                raw = json.loads(diag_path.read_text(encoding="utf-8"))
+                diag = raw if isinstance(raw, dict) else None
+            except (json.JSONDecodeError, OSError):
+                diag = None
+        write_first_60_day_daily_envelope(diag or {}, runtime_root=root, skip_if_same_day=False)
+        write_first_60_day_weekly_envelope_if_due(runtime_root=root)
+    except Exception:
+        pass
     return {"status": "ok", "bundle_keys": list(out.keys())}
 
 

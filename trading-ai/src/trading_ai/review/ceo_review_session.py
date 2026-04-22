@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from trading_ai.review.paths import ceo_daily_review_json_path, ceo_daily_review_txt_path
@@ -22,7 +23,7 @@ def _memory_follow_up() -> Dict[str, Any]:
         return {}
 
 
-def build_ceo_daily_review(diagnosis: Mapping[str, Any]) -> Dict[str, Any]:
+def build_ceo_daily_review(diagnosis: Mapping[str, Any], *, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
     """
     Higher-level CEO session output: what to improve, avoid, implement, pause, scale;
     risk and discipline narrative; memory cross-reference.
@@ -74,7 +75,7 @@ def build_ceo_daily_review(diagnosis: Mapping[str, Any]) -> Dict[str, Any]:
     if failed:
         memory_note.append(f"Prior fix underperformed: {failed[0]}")
 
-    out = {
+    out: Dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "date": diagnosis.get("date"),
         "executive_summary": {
@@ -99,6 +100,14 @@ def build_ceo_daily_review(diagnosis: Mapping[str, Any]) -> Dict[str, Any]:
         "external_context": diagnosis.get("external_context") or [],
         "possible_market_explanation": diagnosis.get("possible_market_explanation") or [],
     }
+    try:
+        from trading_ai.control.first_60_day_ops import attach_first_60_context_for_ceo_review
+
+        f60 = attach_first_60_context_for_ceo_review(diagnosis, runtime_root=runtime_root)
+        if f60.get("active"):
+            out["first_60_day_live_operations"] = f60
+    except Exception:
+        pass
     return out
 
 
@@ -141,11 +150,20 @@ def _txt_report(payload: Mapping[str, Any]) -> str:
     for x in payload.get("memory_follow_up") or []:
         lines.append(f"  - {x}")
     lines.append("")
+    f60 = payload.get("first_60_day_live_operations")
+    if isinstance(f60, dict) and f60.get("active"):
+        lines.append("FIRST 60-DAY LIVE OPS (CONTROL)")
+        lines.append(f"  live_day: {f60.get('calendar_day_since_live_start')}")
+        lines.append(f"  phase: {f60.get('phase_label')}")
+        lines.append(f"  objective: {f60.get('objective_today')}")
+        lines.append(f"  max_notional_usd (plan): {f60.get('max_open_notional_usd_aggregate')}")
+        lines.append(f"  max_trades (plan): {f60.get('max_trades')}")
+        lines.append("")
     return "\n".join(lines)
 
 
-def write_ceo_daily_review(diagnosis: Mapping[str, Any]) -> Dict[str, Any]:
-    payload = build_ceo_daily_review(diagnosis)
+def write_ceo_daily_review(diagnosis: Mapping[str, Any], *, runtime_root: Optional[Path] = None) -> Dict[str, Any]:
+    payload = build_ceo_daily_review(diagnosis, runtime_root=runtime_root)
     jp = ceo_daily_review_json_path()
     tp = ceo_daily_review_txt_path()
     jp.parent.mkdir(parents=True, exist_ok=True)
@@ -158,19 +176,20 @@ def run_ceo_review_session(
     diagnosis: Optional[Mapping[str, Any]] = None,
     *,
     as_of: Optional[date] = None,
+    runtime_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Standalone entry: load latest diagnosis file or build fresh."""
     from trading_ai.review.daily_diagnosis import run_daily_diagnosis
     from trading_ai.review.paths import ceo_daily_review_json_path, daily_diagnosis_path
 
     if diagnosis is not None:
-        return write_ceo_daily_review(diagnosis)
+        return write_ceo_daily_review(diagnosis, runtime_root=runtime_root)
     p = daily_diagnosis_path()
     if p.is_file():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(d, dict):
-                return write_ceo_daily_review(d)
+                return write_ceo_daily_review(d, runtime_root=runtime_root)
         except (json.JSONDecodeError, OSError):
             pass
     run_daily_diagnosis(as_of=as_of, write_files=True)
