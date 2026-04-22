@@ -30,5 +30,23 @@ EZRA_LIVE_MICRO_MAX_TRADES_PER_SESSION=3
 EZRA_LIVE_MICRO_COOLDOWN_SEC=120
 EZRA_LIVE_MICRO_MAX_CONCURRENT_POSITIONS=1
 
+# Live execution wiring: candidate_queue -> order submit.
+# Keep OFF by default; operator flips to true only after micro-live proofs are green.
+EZRA_LIVE_MICRO_AUTOTRADE_ENABLED=false
+
+# Universal gap engine thresholds (strict loader requires explicit env; fail-closed if missing).
+# Conservative defaults compatible with $10 micro-live sizing.
+GAP_MIN_EDGE_PERCENT=0.005
+GAP_MIN_CONFIDENCE_SCORE=0.50
+GAP_MIN_LIQUIDITY_SCORE=0.70
+
+# Micro-live candidate economics (explicit inputs; no hidden defaults).
+EZRA_LIVE_MICRO_EDGE_PCT=0.01
+EZRA_LIVE_MICRO_CONFIDENCE_SCORE=0.55
+EZRA_LIVE_MICRO_LIQUIDITY_SCORE=0.85
+EZRA_LIVE_MICRO_FEES_EST_PCT=0.006
+EZRA_LIVE_MICRO_SLIPPAGE_SPREAD_MULT=1.0
+EZRA_LIVE_MICRO_MISSION_PROB=0.55
+
 # Set true only after activate_micro_live_stack.sh runs preflight+readiness successfully.
 EZRA_LIVE_MICRO_ENABLED=false

@@ -99,6 +99,8 @@ def test_candidate_queue_progresses_to_submit_and_fill(tmp_path: Path, monkeypat
         "trading_ai.global_layer.gap_engine.evaluate_candidate",
         lambda _c: type("D", (), {"should_trade": True, "rejection_reasons": []})(),
     )
+    monkeypatch.setattr("trading_ai.shark.mission.mission_probability_set", lambda _p: object())
+    monkeypatch.setattr("trading_ai.shark.mission.mission_probability_reset", lambda _t: None)
     monkeypatch.setattr("trading_ai.automation.post_trade_hub.execute_post_trade_placed", lambda *_a, **_k: {"status": "sent"})
 
     from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once

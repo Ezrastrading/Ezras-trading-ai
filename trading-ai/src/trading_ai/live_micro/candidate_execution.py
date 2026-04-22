@@ -183,7 +183,15 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
 
     tok_c = candidate_context_set(cand)
     tok_a = authoritative_live_buy_path_set("nte_only")
+    tok_m = None
     try:
+        # Mission probability gate requires an explicit context value.
+        try:
+            from trading_ai.shark.mission import mission_probability_set
+
+            tok_m = mission_probability_set(float((os.environ.get("EZRA_LIVE_MICRO_MISSION_PROB") or "0.55").strip() or "0.55"))
+        except Exception:
+            tok_m = None
         _append_jsonl(
             events_p,
             {
@@ -206,6 +214,13 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             }
         res = client.place_market_buy(pid, quote_usd, execution_gate="gate_b")
     finally:
+        try:
+            if tok_m is not None:
+                from trading_ai.shark.mission import mission_probability_reset
+
+                mission_probability_reset(tok_m)
+        except Exception:
+            pass
         try:
             authoritative_live_buy_path_reset(tok_a)
         except Exception:
