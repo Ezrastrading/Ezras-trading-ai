@@ -142,8 +142,14 @@ def _live_micro_private_build_probe(
     missing_mods = [str(p) for p in required_modules if not p.is_file()]
     missing_scripts = [str(p) for p in required_scripts if not p.is_file()]
 
-    main_py = _pick_mod("trading_ai/deployment/__main__.py")
-    reg_ok, absent = _live_micro_deployment_main_registers(main_py)
+    pri_main = private_src / "trading_ai" / "deployment" / "__main__.py"
+    pub_main = public_src / "trading_ai" / "deployment" / "__main__.py"
+    reg_ok = False
+    absent: List[str] = []
+    if pri_main.is_file():
+        reg_ok, absent = _live_micro_deployment_main_registers(pri_main)
+    if not reg_ok and pub_main.is_file():
+        reg_ok, absent = _live_micro_deployment_main_registers(pub_main)
     mods_ok = len(missing_mods) == 0
     scripts_ok = len(missing_scripts) == 0
     return {
