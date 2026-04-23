@@ -49,22 +49,14 @@ def _get_mid_price_public(product_id: str) -> Optional[float]:
 
 
 def _parse_fills(fills: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Return (avg_price, base_qty) from Coinbase fills list when available.
-    """
-    total_qty = 0.0
-    total_quote = 0.0
-    for f in fills or []:
-        if not isinstance(f, dict):
-            continue
-        price = _f(f.get("price") or f.get("fill_price") or f.get("trade_price"))
-        size = _f(f.get("size") or f.get("filled_size") or f.get("base_size"))
-        if price > 0 and size > 0:
-            total_qty += size
-            total_quote += price * size
-    if total_qty <= 0:
+    """Return (avg_price, base_qty) from Coinbase fills list when available."""
+    try:
+        from trading_ai.live_micro.fills import parse_coinbase_fills
+
+        avg, base_qty, _q, _c, _diag = parse_coinbase_fills(list(fills or []))
+        return avg, base_qty
+    except Exception:
         return None, None
-    return (total_quote / total_qty), total_qty
 
 
 def _exit_thresholds(entry_price: Optional[float]) -> Dict[str, Any]:

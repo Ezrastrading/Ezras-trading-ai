@@ -718,27 +718,63 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
 
         # Durable live_micro position state (enables capital reservations + recycling on close).
         try:
+            from trading_ai.live_micro.fills import parse_coinbase_fills
             from trading_ai.live_micro.positions import append_position_journal, upsert_position
 
-            total_qty = 0.0
-            total_quote = 0.0
-            for f in list(fills or []):
-                if not isinstance(f, dict):
-                    continue
-                try:
-                    px = float(f.get("price") or f.get("fill_price") or f.get("trade_price") or 0.0)
-                except Exception:
-                    px = 0.0
-                try:
-                    sz2 = float(f.get("size") or f.get("filled_size") or f.get("base_size") or 0.0)
-                except Exception:
-                    sz2 = 0.0
-                if px > 0 and sz2 > 0:
-                    total_qty += sz2
-                    total_quote += px * sz2
-            avg_entry = (total_quote / total_qty) if total_qty > 0 else None
-            base_qty = total_qty if total_qty > 0 else None
+            avg_entry, base_qty, quote_from_fills, comm_quote, fills_diag = parse_coinbase_fills(list(fills or []))
+            fallback_base = None
+            if (base_qty is None or base_qty <= 0) and avg_entry is not None and avg_entry > 0:
+                fallback_base = float(quote_usd) / float(avg_entry)
+                base_qty = fallback_base
+
+            quote_spent_true = float(quote_from_fills) if quote_from_fills is not None else float(quote_usd)
+            fees_paid = float(comm_quote) if comm_quote is not None else 0.0
+            quote_spent_true = float(quote_spent_true) + max(0.0, float(fees_paid))
+
+            expected = None
+            ratio = None
+            if avg_entry is not None and avg_entry > 0 and quote_spent_true > 0 and base_qty is not None and base_qty > 0:
+                expected = float(quote_spent_true) / float(avg_entry)
+                if expected > 0:
+                    ratio = float(base_qty) / float(expected)
+
+            base_source = "fills"
+            if fallback_base is not None:
+                base_source = "fallback_quote_over_price"
             pos_id = str(res.order_id)
+            if ratio is not None and (ratio < 0.2 or ratio > 5.0):
+                bad = {
+                    "ts": time.time(),
+                    "event": "invalid_position_base_qty",
+                    "position_id": pos_id,
+                    "product_id": pid,
+                    "quote_spent": float(quote_spent_true),
+                    "entry_price": avg_entry,
+                    "raw_base_qty_from_exchange": None,
+                    "computed_base_qty_fallback": float(fallback_base) if fallback_base is not None else None,
+                    "stored_base_qty": float(base_qty) if base_qty is not None else None,
+                    "base_qty_source_used": base_source,
+                    "sanity_ratio_vs_quote_over_price": float(ratio),
+                    "fills_diag": fills_diag,
+                }
+                append_position_journal(root, bad)
+                pending = {
+                    "position_id": pos_id,
+                    "product_id": pid,
+                    "side": "long",
+                    "entry_order_id": str(res.order_id),
+                    "entry_ts": time.time(),
+                    "entry_price": None,
+                    "base_qty": None,
+                    "quote_spent": float(quote_spent_true),
+                    "fees_paid": float(fees_paid) if fees_paid else None,
+                    "status": "pending_entry",
+                    "pending_entry_timeout_sec": int(float((os.environ.get("EZRA_LIVE_MICRO_ENTRY_FILL_TIMEOUT_SEC") or "120").strip() or "120")),
+                }
+                upsert_position(root, pending)
+                append_position_journal(root, {"ts": time.time(), "event": "position_pending_entry", **pending})
+                # Exit here: do not create an open position with invalid base qty.
+                return out
             pos = {
                 "position_id": pos_id,
                 "product_id": pid,
@@ -746,13 +782,30 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "entry_order_id": str(res.order_id),
                 "entry_ts": time.time(),
                 "entry_price": avg_entry,
-                "base_qty": base_qty,
-                "quote_spent": float(quote_usd),
-                "fees_paid": None,
+                "base_qty": float(base_qty) if base_qty is not None else None,
+                "quote_spent": float(quote_spent_true),
+                "fees_paid": float(fees_paid) if fees_paid else None,
                 "status": "open",
                 "max_hold_sec": int(float((os.environ.get("EZRA_LIVE_MICRO_MAX_HOLD_SEC") or "1800").strip() or "1800")),
             }
             upsert_position(root, pos)
+            append_position_journal(
+                root,
+                {
+                    "ts": time.time(),
+                    "event": "position_base_qty_resolved",
+                    "position_id": pos_id,
+                    "product_id": pid,
+                    "quote_spent": float(quote_spent_true),
+                    "entry_price": avg_entry,
+                    "raw_base_qty_from_exchange": None,
+                    "computed_base_qty_fallback": float(fallback_base) if fallback_base is not None else None,
+                    "stored_base_qty": float(pos.get("base_qty") or 0.0),
+                    "base_qty_source_used": base_source,
+                    "sanity_ratio_vs_quote_over_price": float(ratio) if ratio is not None else None,
+                    "fills_diag": fills_diag,
+                },
+            )
             append_position_journal(root, {"ts": time.time(), "event": "position_opened", **pos})
             try:
                 from trading_ai.live_micro.supabase_events import maybe_write_live_micro_event
