@@ -89,3 +89,45 @@ def maybe_write_live_micro_event(
         logger.debug("live_micro supabase write failed", exc_info=True)
         return False
 
+
+def probe_live_micro_events_table(*, runtime_root: Path) -> Dict[str, Any]:
+    """
+    One-shot probe: attempts an idempotent upsert into `public.live_micro_events`.
+    Writes a durable JSON artifact under data/control for operator inspection.
+    """
+    root = Path(runtime_root).resolve()
+    client, meta = _client()
+    out: Dict[str, Any] = {
+        "truth_version": "supabase_live_micro_probe_v1",
+        "generated_at_unix": time.time(),
+        "runtime_root": str(root),
+        "meta": meta,
+        "ok": False,
+        "table": "live_micro_events",
+    }
+    if client is None or not meta.get("client_ok"):
+        out["reason"] = meta.get("reason") or "missing_supabase_credentials"
+    else:
+        event_id = f"lm:probe:{int(time.time() // 60)}"
+        row = {
+            "event_id": event_id,
+            "ts_unix": float(time.time()),
+            "event": "supabase_probe",
+            "product_id": None,
+            "order_id": None,
+            "position_id": None,
+            "payload": {"note": "idempotent minute-bucket probe from server"},
+        }
+        out["row"] = {"event_id": event_id}
+        try:
+            client.table("live_micro_events").upsert(row, on_conflict="event_id").execute()
+            out["ok"] = True
+        except Exception as exc:
+            out["ok"] = False
+            out["error"] = type(exc).__name__
+            out["detail"] = str(exc)[:200]
+
+    p = root / "data" / "control" / "supabase_live_micro_probe.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(out, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return out

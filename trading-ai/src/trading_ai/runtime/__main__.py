@@ -189,6 +189,12 @@ def main() -> int:
     )
     cad.add_argument("--runtime-root", default=None)
 
+    sml = sub.add_parser(
+        "supabase-live-micro-probe",
+        help="One-shot: upsert a probe row into public.live_micro_events (non-fatal if missing)",
+    )
+    sml.add_argument("--runtime-root", default=None)
+
     args = p.parse_args()
 
     from trading_ai.runtime.operating_system import (
@@ -207,7 +213,12 @@ def main() -> int:
     rt = Path(args.runtime_root).resolve() if getattr(args, "runtime_root", None) else ezras_runtime_root()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
 
-    if args.cmd not in ("live-guard-proof", "write-coinbase-quote-balance-truth", "coinbase-auth-diagnostic"):
+    if args.cmd not in (
+        "live-guard-proof",
+        "write-coinbase-quote-balance-truth",
+        "coinbase-auth-diagnostic",
+        "supabase-live-micro-probe",
+    ):
         ok_env, why_env = nonlive_env_ok(runtime_root=rt)
         if not ok_env:
             _print_json({"ok": False, "blocked": True, "reason": "live_trading_env_forbidden", "detail": why_env})
@@ -259,6 +270,13 @@ def main() -> int:
             diag["auth_test"] = {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:160]}
         _print_json(diag)
         return 0 if diag["auth_test"].get("ok") else 3
+
+    if args.cmd == "supabase-live-micro-probe":
+        from trading_ai.live_micro.supabase_events import probe_live_micro_events_table
+
+        rep = probe_live_micro_events_table(runtime_root=rt)
+        _print_json(rep)
+        return 0 if rep.get("ok") else 4
 
     if args.cmd == "supervisor-once":
         out = run_role_supervisor_once(
