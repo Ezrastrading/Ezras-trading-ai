@@ -22,6 +22,7 @@
 4. balance_snapshots_milestones.sql — treasury / milestone tables.  
 5. lessons_progression.sql — lessons, progression, ceo_briefings.
 6. rls_security_advisor_fix.sql — RLS + least-privilege policies (backend/service-role only) for public mirror tables; removes always-true policies.
+7. live_micro_events.sql — append-only `live_micro_events` lifecycle table (non-blocking; supports live_micro event telemetry).
 
 ## Verification
 

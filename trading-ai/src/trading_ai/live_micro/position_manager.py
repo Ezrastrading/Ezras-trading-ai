@@ -200,7 +200,7 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
             )
             # First-20 cohort update (advisory, durable)
             try:
-                update_first20_review(
+                f20 = update_first20_review(
                     runtime_root=root,
                     closed_trade_summary={
                         "trade_id": exit_order_id,
@@ -215,6 +215,20 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
                         "exit_reason": patch.get("exit_reason"),
                     },
                 )
+                # Telegram (non-spam): first close + cohort complete.
+                try:
+                    from trading_ai.automation.telegram_ops import send_telegram_with_idempotency
+
+                    pnl = patch.get("realized_pnl_usd")
+                    pnl_s = f"{float(pnl):.2f}" if pnl is not None else "n/a"
+                    txt = f"✅ LIVE MICRO CLOSED {pid}\nPnL: ${pnl_s}\nReason: {patch.get('exit_reason')}"
+                    send_telegram_with_idempotency(None, txt, dedupe_key=f"lm:tg:closed:{pos_id}", event_label="live_micro_position_closed")
+                    if int(f20.get("completed_trades_count") or 0) == 1:
+                        send_telegram_with_idempotency(None, "🟢 FIRST LIVE MICRO TRADE CLOSED (1/20). Review cohort artifact.", dedupe_key="lm:tg:first_close", event_label="live_micro_first_close")
+                    if bool(f20.get("cohort_complete")):
+                        send_telegram_with_idempotency(None, "🏁 LIVE MICRO FIRST-20 COHORT COMPLETE. Review live_micro_first20_review.json", dedupe_key="lm:tg:first20_complete", event_label="live_micro_first20_complete")
+                except Exception:
+                    pass
             except Exception:
                 pass
             closed += 1
