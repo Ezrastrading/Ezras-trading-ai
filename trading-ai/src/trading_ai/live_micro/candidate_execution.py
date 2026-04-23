@@ -191,21 +191,15 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
 
     client = CoinbaseClient()
 
-    # Self-sizing (fail-closed): must satisfy BOTH Coinbase min-notional and mission tier caps.
-    # Preserve existing env-configured minimum as a *floor*, but always compute Coinbase venue min too.
-    min_notional_env = 10.0
-    try:
-        min_notional_env = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NOTIONAL_USD") or "10").strip() or "10")
-    except Exception:
-        min_notional_env = 10.0
-    coinbase_min_notional = 10.0
+    # Execution sizing (halt-safe): never attempt orders that cannot satisfy Coinbase min notional
+    # under mission tier caps. This prevents repeated execution failure loops caused by sizing conflicts.
+    exchange_min_notional = 10.0
     try:
         from trading_ai.nte.execution.product_rules import venue_min_notional_usd
 
-        coinbase_min_notional = float(venue_min_notional_usd(pid))
+        exchange_min_notional = float(venue_min_notional_usd(pid))
     except Exception:
-        coinbase_min_notional = 10.0
-    min_notional = max(0.0, float(min_notional_env), float(coinbase_min_notional))
+        exchange_min_notional = 10.0
     quote_ccy = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
     quote_balances = None
     try:
@@ -272,71 +266,78 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             },
         )
         return {**out, "skipped": True, "reason": "mission_probability_below_min"}
-    if mission_prob < 0.77:
-        frac = 0.05
-        tier = 1
-    elif mission_prob < 0.90:
-        frac = 0.10
-        tier = 2
-    else:
-        frac = 0.20
-        tier = 3
-    tier_cap = float(total_quote) * float(frac)
-    tier_cap = min(tier_cap, float(total_quote) * 0.20)
 
-    # If the mission tier cap cannot even reach Coinbase venue minimum, do NOT attempt submission.
-    # This is a truthful sizing impossibility under current policy, not an execution failure.
-    if float(tier_cap) + 1e-9 < float(coinbase_min_notional):
-        try:
-            requested_notional = min(
-                float(max_notional),
-                max(0.0, float(avail_quote) * 0.95) if float(avail_quote) > 0 else float(max_notional),
-                max(0.0, float(tier_cap)),
-            )
-        except Exception:
-            requested_notional = max(0.0, float(tier_cap))
+    # Mission max tier percent (execution sizing cap).
+    # Default derives from mission_prob tiers (existing contract), but allows env override to tighten.
+    # - 0.63–0.77 => 5%
+    # - 0.77–0.90 => 10%
+    # - >=0.90 => 20%
+    if mission_prob < 0.77:
+        mission_max_tier_pct = 0.05
+    elif mission_prob < 0.90:
+        mission_max_tier_pct = 0.10
+    else:
+        mission_max_tier_pct = 0.20
+    try:
+        raw = (os.environ.get("EZRA_LIVE_MICRO_MISSION_MAX_TIER_PERCENT") or "").strip()
+        if raw:
+            mission_max_tier_pct = float(raw)
+    except Exception:
+        pass
+    mission_max_tier_pct = max(0.0, min(0.20, float(mission_max_tier_pct)))
+
+    balance_usd = max(0.0, float(avail_quote))
+    if balance_usd < 50.0:
         _append_jsonl(
             events_p,
             {
                 "ts": time.time(),
-                "event": "blocked_by_min_notional_vs_tier_cap",
+                "event": "balance_too_low_warning",
                 "product_id": pid,
                 "gate_id": "gate_b",
-                "reason": "blocked_by_min_notional_vs_tier_cap",
-                "available_balance": float(avail_quote),
+                "balance": float(balance_usd),
                 "quote_currency": quote_ccy,
+                "message": "Balance too low for Coinbase min notional trading",
+            },
+        )
+
+    tier_cap = float(balance_usd) * float(mission_max_tier_pct)
+    proposed_size = min(float(max_notional), float(tier_cap))
+
+    if float(proposed_size) + 1e-9 < float(exchange_min_notional):
+        _append_jsonl(
+            events_p,
+            {
+                "ts": time.time(),
+                "event": "execution_skipped",
+                "reason": "min_notional_vs_tier_conflict",
+                "product_id": pid,
+                "gate_id": "gate_b",
+                "balance": float(balance_usd),
                 "tier_cap": float(tier_cap),
-                "coinbase_min_notional": float(coinbase_min_notional),
-                "requested_notional": float(requested_notional),
+                "required_min": float(exchange_min_notional),
+                "mission_max_tier_percent": float(mission_max_tier_pct),
                 "max_notional": float(max_notional),
                 "mission_prob": float(mission_prob),
-                "mission_tier": int(tier),
             },
         )
-        return {**out, "skipped": True, "reason": "blocked_by_min_notional_vs_tier_cap"}
+        return {**out, "skipped": True, "reason": "min_notional_vs_tier_conflict"}
 
-    hard_cap = min(max_notional, max(0.0, avail_quote * 0.95) if avail_quote > 0 else max_notional)
-    hard_cap = min(hard_cap, max(0.0, float(tier_cap)))
-    quote_usd = max(0.0, float(hard_cap))
-    if quote_usd + 1e-9 < min_notional:
-        _append_jsonl(
-            events_p,
-            {
-                "ts": time.time(),
-                "event": "blocked",
-                "product_id": pid,
-                "gate_id": "gate_b",
-                "reason": "insufficient_quote_for_min_notional_under_caps",
-                "min_notional": min_notional,
-                "max_notional": max_notional,
-                "avail_quote": avail_quote,
-                "quote_currency": quote_ccy,
-                "tier_cap": tier_cap,
-                "mission_prob": mission_prob,
-            },
-        )
-        return {**out, "skipped": True, "reason": "insufficient_quote_for_min_notional_under_caps"}
-    quote_usd = max(min_notional, quote_usd)
+    quote_usd = float(proposed_size)
+    _append_jsonl(
+        events_p,
+        {
+            "ts": time.time(),
+            "event": "execution_allowed_size",
+            "product_id": pid,
+            "gate_id": "gate_b",
+            "balance": float(balance_usd),
+            "tier_cap": float(tier_cap),
+            "final_size": float(quote_usd),
+            "required_min": float(exchange_min_notional),
+            "mission_max_tier_percent": float(mission_max_tier_pct),
+        },
+    )
     # Build the required universal candidate context (fail-closed).
     from trading_ai.global_layer.gap_models import (
         UniversalGapCandidate,
@@ -428,7 +429,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "quote_currency": quote_ccy,
                 "avail_quote": avail_quote,
                 "tier_cap": tier_cap,
-                "mission_tier": tier,
+                "mission_max_tier_percent": float(mission_max_tier_pct),
                 "mission_prob": mission_prob,
                 "should_trade": bool(dec.should_trade),
                 "rejection_reasons": list(dec.rejection_reasons or []),

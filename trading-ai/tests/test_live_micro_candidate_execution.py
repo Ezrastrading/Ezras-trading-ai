@@ -180,10 +180,11 @@ def test_candidate_execution_blocks_when_tier_cap_below_coinbase_min_notional(
 
     out = run_live_micro_candidate_execution_once(runtime_root=tmp_path)
     assert out.get("skipped") is True
-    assert out.get("reason") == "blocked_by_min_notional_vs_tier_cap"
+    assert out.get("reason") == "min_notional_vs_tier_conflict"
 
     ev = tmp_path / "data" / "control" / "live_micro_execution_events.jsonl"
     tail = ev.read_text(encoding="utf-8")
-    assert "blocked_by_min_notional_vs_tier_cap" in tail
+    assert "execution_skipped" in tail
+    assert "min_notional_vs_tier_conflict" in tail
     assert "order_submitted" not in tail
 
