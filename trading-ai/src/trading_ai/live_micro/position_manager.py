@@ -232,6 +232,41 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
                 append_position_journal(root, {"ts": now, "event": "position_closed", "position_id": pos_id, "product_id": pid, "exit_reason": "invalid_state_missing_exit_order_id"})
                 closed += 1
                 continue
+            # Closing timeout: if the exit never fills, cancel and return to open so we can retry safely.
+            try:
+                timeout = float((os.environ.get("EZRA_LIVE_MICRO_EXIT_FILL_TIMEOUT_SEC") or "120").strip() or "120")
+            except Exception:
+                timeout = 120.0
+            exit_submit_ts = _f(p.get("exit_submit_ts") or 0.0)
+            if exit_submit_ts > 0 and (now - exit_submit_ts) > max(30.0, min(600.0, timeout)):
+                cancelled = False
+                try:
+                    cancelled = bool(client.cancel_order(exit_order_id))
+                except Exception:
+                    cancelled = False
+                upsert_position(
+                    root,
+                    {
+                        **p,
+                        "status": "open",
+                        "exit_order_id": "",
+                        "exit_submit_ts": now,
+                        "last_exit_error": "exit_fill_timeout_cancelled" if cancelled else "exit_fill_timeout_cancel_failed",
+                    },
+                )
+                append_position_journal(
+                    root,
+                    {
+                        "ts": now,
+                        "event": "exit_retry_allowed",
+                        "position_id": pos_id,
+                        "product_id": pid,
+                        "exit_order_id": exit_order_id,
+                        "cancelled": cancelled,
+                        "timeout_sec": timeout,
+                    },
+                )
+                continue
             try:
                 fills = client.get_fills(exit_order_id)
             except Exception:

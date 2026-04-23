@@ -19,7 +19,8 @@ def compute_live_micro_quote_size(
     mission_prob: float,
     mission_max_tier_pct: float,
     exchange_min_notional: float,
-    allow_bump_to_min: bool = True,
+    # Safety default: do NOT bump above mission tier cap unless explicitly enabled by operator.
+    allow_bump_to_min: bool = False,
 ) -> LiveMicroSizingDecision:
     """
     Single canonical sizing decision for live_micro.

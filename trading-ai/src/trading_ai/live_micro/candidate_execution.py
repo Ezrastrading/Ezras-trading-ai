@@ -522,7 +522,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         mission_prob=float(mission_prob),
         mission_max_tier_pct=float(mission_max_tier_pct),
         exchange_min_notional=float(exchange_min_notional),
-        allow_bump_to_min=(os.environ.get("EZRA_LIVE_MICRO_ALLOW_BUMP_TO_VENUE_MIN") or "true").strip().lower()
+        allow_bump_to_min=(os.environ.get("EZRA_LIVE_MICRO_ALLOW_BUMP_TO_VENUE_MIN") or "false").strip().lower()
         in ("1", "true", "yes", "on"),
     )
     tier_cap = float(sz.details.get("tier_cap") or 0.0)
@@ -869,6 +869,40 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             if fallback_base is not None:
                 base_source = "fallback_quote_over_price"
             pos_id = str(res.order_id)
+            # Hard invalids: missing fundamentals => do NOT persist as a clean open position.
+            if avg_entry is None or avg_entry <= 0 or base_qty is None or base_qty <= 0 or quote_spent_true <= 0:
+                bad = {
+                    "ts": time.time(),
+                    "event": "invalid_position_base_qty",
+                    "position_id": pos_id,
+                    "product_id": pid,
+                    "quote_spent": float(quote_spent_true),
+                    "entry_price": avg_entry,
+                    "raw_base_qty_from_exchange": None,
+                    "computed_base_qty_fallback": float(fallback_base) if fallback_base is not None else None,
+                    "stored_base_qty": float(base_qty) if base_qty is not None else None,
+                    "base_qty_source_used": base_source,
+                    "sanity_ratio_vs_quote_over_price": float(ratio) if ratio is not None else None,
+                    "fills_diag": fills_diag,
+                    "reason": "missing_fill_fundamentals",
+                }
+                append_position_journal(root, bad)
+                pending = {
+                    "position_id": pos_id,
+                    "product_id": pid,
+                    "side": "long",
+                    "entry_order_id": str(res.order_id),
+                    "entry_ts": time.time(),
+                    "entry_price": None,
+                    "base_qty": None,
+                    "quote_spent": float(quote_spent_true),
+                    "fees_paid": float(fees_paid) if fees_paid else None,
+                    "status": "pending_entry",
+                    "pending_entry_timeout_sec": int(float((os.environ.get("EZRA_LIVE_MICRO_ENTRY_FILL_TIMEOUT_SEC") or "120").strip() or "120")),
+                }
+                upsert_position(root, pending)
+                append_position_journal(root, {"ts": time.time(), "event": "position_pending_entry", **pending})
+                return out
             if ratio is not None and (ratio < 0.2 or ratio > 5.0):
                 bad = {
                     "ts": time.time(),
