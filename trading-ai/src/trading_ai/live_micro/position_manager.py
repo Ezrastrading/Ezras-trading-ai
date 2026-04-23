@@ -285,6 +285,59 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
             closed += 1
             continue
 
+        # status == open: repair base_qty if legacy bookkeeping stored quote-as-base
+        try:
+            from trading_ai.live_micro.fills import parse_coinbase_fills
+
+            entry_order_id = str(p.get("entry_order_id") or pos_id or "").strip()
+            ep0 = _f(p.get("entry_price") or 0.0)
+            qs0 = _f(p.get("quote_spent") or 0.0)
+            b0 = _f(p.get("base_qty") or 0.0)
+            expected0 = (qs0 / ep0) if (qs0 > 0 and ep0 > 0) else None
+            ratio0 = (b0 / expected0) if (expected0 is not None and expected0 > 0 and b0 > 0) else None
+            needs_repair = bool(ratio0 is not None and (ratio0 < 0.2 or ratio0 > 5.0))
+            if needs_repair and entry_order_id:
+                try:
+                    fills = client.get_fills(entry_order_id)
+                except Exception:
+                    fills = []
+                avg_entry, base_qty, quote_from_fills, comm_quote, diag = parse_coinbase_fills(list(fills or []))
+                if avg_entry is not None and base_qty is not None and avg_entry > 0 and base_qty > 0:
+                    qs1 = float(quote_from_fills) if quote_from_fills is not None else float(qs0)
+                    fees1 = float(comm_quote) if comm_quote is not None else 0.0
+                    qs1 = float(qs1) + max(0.0, float(fees1))
+                    expected1 = (qs1 / float(avg_entry)) if qs1 > 0 else None
+                    ratio1 = (float(base_qty) / float(expected1)) if (expected1 is not None and expected1 > 0) else None
+                    if ratio1 is None or (ratio1 >= 0.2 and ratio1 <= 5.0):
+                        patch = {
+                            "entry_price": float(avg_entry),
+                            "base_qty": float(base_qty),
+                            "quote_spent": float(qs1),
+                            "fees_paid": float(fees1) if fees1 else p.get("fees_paid"),
+                        }
+                        upsert_position(root, {**p, **patch})
+                        p = {**p, **patch}
+                        append_position_journal(
+                            root,
+                            {
+                                "ts": now,
+                                "event": "position_base_qty_repaired",
+                                "position_id": pos_id,
+                                "product_id": pid,
+                                "old_base_qty": float(b0),
+                                "old_entry_price": float(ep0) if ep0 else None,
+                                "old_quote_spent": float(qs0) if qs0 else None,
+                                "new_base_qty": float(base_qty),
+                                "new_entry_price": float(avg_entry),
+                                "new_quote_spent": float(qs1),
+                                "sanity_ratio_vs_quote_over_price_old": float(ratio0) if ratio0 is not None else None,
+                                "sanity_ratio_vs_quote_over_price_new": float(ratio1) if ratio1 is not None else None,
+                                "fills_diag": diag,
+                            },
+                        )
+        except Exception:
+            pass
+
         # status == open: decide whether to exit
         exit_reason: Optional[str] = None
         tp = th.get("take_profit_price")
