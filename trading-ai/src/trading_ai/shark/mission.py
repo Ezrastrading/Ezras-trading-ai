@@ -21,6 +21,7 @@ import logging
 import time
 from contextvars import Token
 from datetime import datetime
+import os
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ _mission_probability_ctx: contextvars.ContextVar[Optional[float]] = contextvars.
     "mission_probability", default=None
 )
 
+# Optional per-trade mission cap fraction override (used by live_micro to avoid hidden 20%).
+_mission_cap_fraction_ctx: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "mission_cap_fraction", default=None
+)
 # Max quote notional as fraction of total balance by Kalshi-style probability tier (1–3).
 TIER_MAX_RISK_FRACTION: Dict[int, float] = {1: 0.05, 2: 0.10, 3: 0.20}
 
@@ -45,6 +50,30 @@ def mission_probability_reset(token: Token) -> None:
 def mission_probability_get() -> Optional[float]:
     return _mission_probability_ctx.get()
 
+
+def mission_cap_fraction_set(pct: float) -> Token:
+    return _mission_cap_fraction_ctx.set(float(pct))
+
+
+def mission_cap_fraction_reset(token: Token) -> None:
+    _mission_cap_fraction_ctx.reset(token)
+
+
+def mission_cap_fraction_get() -> Optional[float]:
+    v = _mission_cap_fraction_ctx.get()
+    if v is not None:
+        try:
+            return max(0.0, min(0.50, float(v)))
+        except Exception:
+            return None
+    # Env override for live micro (single source of truth for cap).
+    raw = (os.environ.get("EZRA_LIVE_MICRO_MISSION_MAX_TIER_PERCENT") or "").strip()
+    if raw:
+        try:
+            return max(0.0, min(0.50, float(raw)))
+        except Exception:
+            return None
+    return None
 # ─── MISSION CONSTANTS ─────────────────────
 MISSION_TARGET = 1_000_000.00
 MISSION_START_CAPITAL = 200.00
@@ -217,18 +246,24 @@ def evaluate_trade_against_mission(
     _ = metadata  # reserved for future rules (sizing by gate, spot vs contract)
     violations = []
 
-    # D1: Never risk > 20% of balance
-    if size_usd > total_balance * 0.20:
+    cap_override = mission_cap_fraction_get()
+    plat = str(platform or "").lower()
+    # Only apply cap override to Coinbase/live-micro flows (do not change Kalshi tier semantics).
+    cap_frac = float(cap_override) if (cap_override is not None and plat == "coinbase") else 0.20
+    # Small tolerance to avoid string/rounding edge cases in logs (e.g. 9.03 vs 9.025).
+    tol_usd = 0.01 if plat == "coinbase" else 0.0
+
+    # D1: Never risk > cap fraction of balance (default 20%; live_micro may override)
+    if float(size_usd) > (float(total_balance) * float(cap_frac) + float(tol_usd)):
         violations.append(
             {
                 "directive": "D1",
-                "reason": f"Size ${size_usd:.2f} > " f"20% of ${total_balance:.2f}",
+                "reason": f"Size ${size_usd:.2f} > " f"{int(round(float(cap_frac)*100))}% of ${total_balance:.2f}",
             }
         )
 
     probability_tier: Optional[int] = None
     tier_cap: Optional[float] = None
-    plat = str(platform or "").lower()
     # Probability tiers and per-tier notional caps apply to Kalshi and Coinbase live sizing
     # (same thresholds — see ``live_order_guard`` tests).
     if plat in ("kalshi", "coinbase"):
@@ -244,15 +279,16 @@ def evaluate_trade_against_mission(
             )
         elif p < 0.77:
             probability_tier = 1
-            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[1]
+            tier_cap = float(total_balance) * (float(cap_override) if (cap_override is not None and plat == "coinbase") else TIER_MAX_RISK_FRACTION[1])
         elif p < 0.90:
             probability_tier = 2
-            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[2]
+            tier_cap = float(total_balance) * (float(cap_override) if (cap_override is not None and plat == "coinbase") else TIER_MAX_RISK_FRACTION[2])
         else:
             probability_tier = 3
-            tier_cap = float(total_balance) * TIER_MAX_RISK_FRACTION[3]
+            tier_cap = float(total_balance) * (float(cap_override) if (cap_override is not None and plat == "coinbase") else TIER_MAX_RISK_FRACTION[3])
         if probability_tier and probability_tier > 0 and tier_cap is not None:
-            if float(size_usd) > float(tier_cap) + 1e-9:
+            tol2 = tol_usd if (plat == "coinbase" and cap_override is not None) else 0.0
+            if float(size_usd) > float(tier_cap) + float(tol2) + 1e-9:
                 violations.append(
                     {
                         "directive": "D3",

@@ -539,14 +539,17 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
     tok_c = candidate_context_set(cand)
     tok_a = authoritative_live_buy_path_set("nte_only")
     tok_m = None
+    tok_cap = None
     try:
         # Mission probability gate requires an explicit context value.
         try:
-            from trading_ai.shark.mission import mission_probability_set
+            from trading_ai.shark.mission import mission_cap_fraction_set, mission_probability_set
 
             tok_m = mission_probability_set(float(mission_prob))
+            tok_cap = mission_cap_fraction_set(float(mission_max_tier_pct))
         except Exception:
             tok_m = None
+            tok_cap = None
         _append_jsonl(
             events_p,
             {
@@ -561,6 +564,11 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "mission_cap_used": float(mission_max_tier_pct),
                 "mission_cap_source": mission_cap_source,
                 "mission_prob": mission_prob,
+                "debug_entry_cap_resolution": {
+                    "resolved_mission_cap_pct": float(mission_max_tier_pct),
+                    "source_of_cap": mission_cap_source,
+                    "guard_layer_name": "trading_ai.shark.mission (context override)",
+                },
                 "should_trade": bool(dec.should_trade),
                 "rejection_reasons": list(dec.rejection_reasons or []),
                 "candidate": cand.to_dict(),
@@ -597,6 +605,13 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 from trading_ai.shark.mission import mission_probability_reset
 
                 mission_probability_reset(tok_m)
+        except Exception:
+            pass
+        try:
+            if tok_cap is not None:
+                from trading_ai.shark.mission import mission_cap_fraction_reset
+
+                mission_cap_fraction_reset(tok_cap)
         except Exception:
             pass
         try:

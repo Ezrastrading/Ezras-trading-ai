@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from trading_ai.shark.mission import evaluate_trade_against_mission
+from trading_ai.shark.mission import evaluate_trade_against_mission, mission_cap_fraction_set, mission_cap_fraction_reset
 
 
 def test_probability_below_63_is_blocked() -> None:
@@ -32,4 +32,13 @@ def test_tier3_allows_largest_sizing_within_hard_caps() -> None:
     r = evaluate_trade_against_mission("kalshi", "KXBTC", 30.0, 0.92, 200.0)
     assert r["approved"] is True
     assert r["probability_tier"] == 3
+
+
+def test_live_micro_cap_override_allows_25_percent_not_20() -> None:
+    tok = mission_cap_fraction_set(0.25)
+    try:
+        r = evaluate_trade_against_mission("coinbase", "BTC-USD", 9.03, 0.90, 36.10)
+        assert r["approved"] is True
+    finally:
+        mission_cap_fraction_reset(tok)
 

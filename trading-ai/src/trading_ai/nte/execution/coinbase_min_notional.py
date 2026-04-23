@@ -93,11 +93,16 @@ def refresh_coinbase_product_rules_cache(
         meta = _brokerage_public_request(f"/market/products/{pid}")
         meta = meta if isinstance(meta, dict) else {}
         min_quote, field = _extract_min_quote_from_product_meta(meta)
+        # Capture base increment/min when present (needed for exit normalization).
+        base_increment = meta.get("base_increment")
+        base_min_size = meta.get("base_min_size")
         row = {
             "product_id": pid,
             "fetched_at_unix": time.time(),
             "min_quote_usd": min_quote,
             "min_quote_field": field,
+            "base_increment": base_increment,
+            "base_min_size": base_min_size,
             "raw_keys": sorted(list(meta.keys()))[:40],
         }
         rows[pid] = row

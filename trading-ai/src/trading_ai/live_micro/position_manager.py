@@ -325,8 +325,49 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
             dedupe_key=f"lm:exit_decision:{pos_id}:{exit_reason}",
         )
 
-        # Submit market sell
-        res = client.place_market_sell(pid, base_qty, execution_gate="gate_b")
+        # Normalize exit base size (snap DOWN to Coinbase increment).
+        norm = None
+        diag = {}
+        try:
+            from trading_ai.nte.execution.coinbase_min_notional import resolve_coinbase_min_notional_usd, refresh_coinbase_product_rules_cache
+            from trading_ai.live_micro.exit_size import normalize_exit_base_size
+
+            # Ensure cache row exists so base_increment/base_min_size can be read.
+            refresh_coinbase_product_rules_cache(product_id=pid, runtime_root=root)
+            _vmin, _src, meta = resolve_coinbase_min_notional_usd(product_id=pid, runtime_root=root, refresh_if_missing=False)
+            inc = (meta or {}).get("base_increment")
+            min_b = (meta or {}).get("base_min_size")
+            norm, diag = normalize_exit_base_size(
+                base_qty=float(str(base_qty).replace(",", "")),
+                base_increment=inc,
+                base_min_size=min_b,
+            )
+            append_position_journal(root, {"ts": now, "event": "exit_size_normalized", "position_id": pos_id, "product_id": pid, **diag})
+            maybe_write_live_micro_event(
+                runtime_root=root,
+                event="exit_size_normalized",
+                product_id=pid,
+                position_id=pos_id,
+                payload=diag,
+                dedupe_key=f"lm:exit_size_normalized:{pos_id}:{exit_reason}",
+            )
+        except Exception:
+            norm = None
+
+        if not norm:
+            append_position_journal(root, {"ts": now, "event": "exit_size_invalid_after_normalization", "position_id": pos_id, "product_id": pid, **(diag or {})})
+            maybe_write_live_micro_event(
+                runtime_root=root,
+                event="exit_size_invalid_after_normalization",
+                product_id=pid,
+                position_id=pos_id,
+                payload=diag or {},
+                dedupe_key=f"lm:exit_size_invalid_after_normalization:{pos_id}:{exit_reason}",
+            )
+            continue
+
+        # Submit market sell (normalized base size).
+        res = client.place_market_sell(pid, norm, execution_gate="gate_b")
         exits_submitted += 1
         patch2 = {
             "status": "closing" if res.success else "failed",
