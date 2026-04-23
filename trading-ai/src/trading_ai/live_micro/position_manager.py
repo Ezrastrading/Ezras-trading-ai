@@ -101,7 +101,7 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
         if not isinstance(p, dict):
             continue
         status = str(p.get("status") or "").lower()
-        if status not in ("pending_entry", "open", "closing"):
+        if status not in ("pending_entry", "open", "closing", "failed"):
             continue
         pos_id = str(p.get("position_id") or "").strip()
         pid = str(p.get("product_id") or "").strip().upper()
@@ -285,7 +285,7 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
             closed += 1
             continue
 
-        # status == open: repair base_qty if legacy bookkeeping stored quote-as-base
+        # status == open/failed: repair base_qty if legacy bookkeeping stored quote-as-base
         try:
             from trading_ai.live_micro.fills import parse_coinbase_fills
 
@@ -338,7 +338,7 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
         except Exception:
             pass
 
-        # status == open: decide whether to exit
+        # status == open/failed: decide whether to exit
         exit_reason: Optional[str] = None
         tp = th.get("take_profit_price")
         sl = th.get("stop_loss_price")
@@ -415,10 +415,13 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
         res = client.place_market_sell(pid, norm, execution_gate="gate_b")
         exits_submitted += 1
         patch2 = {
-            "status": "closing" if res.success else "failed",
+            # If the exit failed, keep the position actionable (do not dead-end into "failed").
+            "status": "closing" if res.success else "open",
             "exit_reason": exit_reason,
             "exit_order_id": (str(res.order_id or "").strip() if res.success else ""),
             "exit_submit_ts": now,
+            "last_exit_error": (str(res.reason or "").strip() if not res.success else ""),
+            "exit_attempts": int(_f(p.get("exit_attempts") or 0.0)) + (0 if res.success else 1),
         }
         upsert_position(root, {**p, **patch2})
         append_position_journal(root, {"ts": now, "event": "exit_order_submitted", "position_id": pos_id, "product_id": pid, "success": bool(res.success), "exit_order_id": res.order_id, "reason": res.reason})
