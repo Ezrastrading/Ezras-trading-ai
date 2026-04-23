@@ -95,6 +95,72 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         return {"ok": True, "skipped": True, "reason": "no_candidates"}
 
     pid = str(it.get("product_id") or "").strip().upper()
+    quote_ccy_hint = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
+
+    # Candidate dedupe/cooldown/suppression BEFORE noisy logs.
+    try:
+        from trading_ai.live_micro.suppression import (
+            candidate_fingerprint,
+            check_candidate_duplicate,
+            check_suppression,
+        )
+
+        sup0 = check_suppression(runtime_root=root, product_id=pid, quote_ccy=quote_ccy_hint)
+        if sup0.suppressed:
+            _append_jsonl(
+                root / "data" / "control" / "live_micro_execution_events.jsonl",
+                {
+                    "ts": time.time(),
+                    "event": "candidate_suppressed_cooldown",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "quote_currency": quote_ccy_hint,
+                    "reason": sup0.reason,
+                    "until_ts": sup0.until_ts,
+                    "meta": sup0.meta,
+                },
+            )
+            items0 = list(cq.get("items") or [])
+            if 0 <= idx < len(items0) and isinstance(items0[idx], dict):
+                items0[idx] = {
+                    **items0[idx],
+                    "status": "suppressed",
+                    "suppressed_ts": time.time(),
+                    "reason": sup0.reason,
+                    "suppressed_until_ts": sup0.until_ts,
+                }
+                cq["items"] = items0[-300:]
+                st.save_json("candidate_queue.json", cq)
+            return {"ok": True, "skipped": True, "reason": sup0.reason, "product_id": pid}
+
+        fp = candidate_fingerprint(it)
+        cd = float((os.environ.get("EZRA_LIVE_MICRO_CANDIDATE_DEDUPE_COOLDOWN_SEC") or "20").strip() or "20")
+        isdup, until = check_candidate_duplicate(runtime_root=root, fingerprint=fp, cooldown_sec=max(1.0, cd))
+        if isdup:
+            _append_jsonl(
+                root / "data" / "control" / "live_micro_execution_events.jsonl",
+                {
+                    "ts": time.time(),
+                    "event": "candidate_duplicate_dropped",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "fingerprint": fp,
+                    "until_ts": until,
+                },
+            )
+            items0 = list(cq.get("items") or [])
+            if 0 <= idx < len(items0) and isinstance(items0[idx], dict):
+                items0[idx] = {
+                    **items0[idx],
+                    "status": "cooling_down",
+                    "cooldown_until_ts": until,
+                    "reason": "candidate_duplicate_dropped",
+                }
+                cq["items"] = items0[-300:]
+                st.save_json("candidate_queue.json", cq)
+            return {"ok": True, "skipped": True, "reason": "candidate_duplicate_dropped", "product_id": pid}
+    except Exception:
+        pass
     # Concurrency + duplicate-open guard (durable position state).
     positions = []
     try:
@@ -300,6 +366,46 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
     except Exception:
         avail_quote = 0.0
+
+    # Dust-wallet suppression (quote bucket health): stop hammering untradable dust.
+    try:
+        dust_floor = float((os.environ.get("EZRA_LIVE_MICRO_DUST_QUOTE_THRESHOLD") or "0.50").strip() or "0.50")
+    except Exception:
+        dust_floor = 0.50
+    try:
+        from trading_ai.live_micro.suppression import set_quote_wallet_cooldown
+
+        min_tradable = max(float(exchange_min_notional), float(dust_floor))
+        if float(avail_quote) + 1e-9 < float(min_tradable):
+            cd_sec = float((os.environ.get("EZRA_LIVE_MICRO_DUST_WALLET_COOLDOWN_SEC") or "600").strip() or "600")
+            set_quote_wallet_cooldown(
+                runtime_root=root,
+                quote_ccy=quote_ccy,
+                seconds=max(30.0, cd_sec),
+                reason="wallet_dust_suppressed",
+                meta={
+                    "avail_quote": float(avail_quote),
+                    "min_tradable": float(min_tradable),
+                    "required_min": float(exchange_min_notional),
+                    "dust_floor": float(dust_floor),
+                },
+            )
+            _append_jsonl(
+                events_p,
+                {
+                    "ts": time.time(),
+                    "event": "wallet_dust_suppressed",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "quote_currency": quote_ccy,
+                    "avail_quote": float(avail_quote),
+                    "min_tradable": float(min_tradable),
+                    "cooldown_sec": max(30.0, cd_sec),
+                },
+            )
+            return {**out, "skipped": True, "reason": "wallet_dust_suppressed", "quote_currency": quote_ccy}
+    except Exception:
+        pass
     total_quote = 0.0
     try:
         total_quote = sum(float(v) for v in (quote_balances or {}).values())
@@ -416,11 +522,32 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         mission_prob=float(mission_prob),
         mission_max_tier_pct=float(mission_max_tier_pct),
         exchange_min_notional=float(exchange_min_notional),
+        allow_bump_to_min=(os.environ.get("EZRA_LIVE_MICRO_ALLOW_BUMP_TO_VENUE_MIN") or "true").strip().lower()
+        in ("1", "true", "yes", "on"),
     )
     tier_cap = float(sz.details.get("tier_cap") or 0.0)
     proposed_size = float(sz.details.get("proposed") or 0.0)
 
     if not sz.ok:
+        # Product-level cooldowns for non-market skips to prevent spam loops.
+        try:
+            from trading_ai.live_micro.suppression import set_product_cooldown
+
+            if sz.reason in (
+                "insufficient_free_quote_for_min",
+                "tier_cap_below_min_and_suppressed",
+                "min_notional_vs_tier_conflict",
+            ):
+                cd = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NOTIONAL_COOLDOWN_SEC") or "300").strip() or "300")
+                set_product_cooldown(
+                    runtime_root=root,
+                    product_id=pid,
+                    seconds=max(30.0, cd),
+                    reason="product_temporarily_ineligible_due_to_sizing",
+                    meta={"skip_reason": sz.reason, "required_min": float(exchange_min_notional), "free_quote": float(free_quote), "tier_cap": float(tier_cap)},
+                )
+        except Exception:
+            pass
         _append_jsonl(
             events_p,
             {

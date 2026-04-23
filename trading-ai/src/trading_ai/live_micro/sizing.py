@@ -19,6 +19,7 @@ def compute_live_micro_quote_size(
     mission_prob: float,
     mission_max_tier_pct: float,
     exchange_min_notional: float,
+    allow_bump_to_min: bool = True,
 ) -> LiveMicroSizingDecision:
     """
     Single canonical sizing decision for live_micro.
@@ -38,9 +39,44 @@ def compute_live_micro_quote_size(
     tier_cap = fq * cap
     proposed = min(mx, tier_cap)
     if proposed + 1e-9 < min_n:
+        # Three distinct cases:
+        # 1) free quote cannot meet venue minimum (hard stop)
+        if fq + 1e-9 < min_n:
+            return LiveMicroSizingDecision(
+                False,
+                "insufficient_free_quote_for_min",
+                0.0,
+                {
+                    "free_quote": fq,
+                    "tier_cap": tier_cap,
+                    "mission_cap_used": cap,
+                    "mission_prob": mp,
+                    "max_notional_usd": mx,
+                    "required_min": min_n,
+                    "proposed": proposed,
+                },
+            )
+        # 2) tier cap is below min, but we can safely bump to venue min within hard caps
+        if allow_bump_to_min and min_n <= fq + 1e-9 and min_n <= mx + 1e-9:
+            return LiveMicroSizingDecision(
+                True,
+                "tier_cap_below_min_but_bumped_to_min",
+                float(min_n),
+                {
+                    "free_quote": fq,
+                    "tier_cap": tier_cap,
+                    "mission_cap_used": cap,
+                    "mission_prob": mp,
+                    "max_notional_usd": mx,
+                    "required_min": min_n,
+                    "proposed": proposed,
+                    "final": float(min_n),
+                },
+            )
+        # 3) cannot bump: suppress product under current tiering
         return LiveMicroSizingDecision(
             False,
-            "min_notional_vs_tier_conflict",
+            "tier_cap_below_min_and_suppressed",
             0.0,
             {
                 "free_quote": fq,

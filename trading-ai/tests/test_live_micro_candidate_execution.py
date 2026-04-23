@@ -179,6 +179,8 @@ def test_candidate_execution_blocks_when_tier_cap_below_coinbase_min_notional(
 
     # Force Coinbase min notional to bind at $10 and mission prob tier1 => cap = 5% of $25 = $1.25.
     monkeypatch.setenv("EZRA_LIVE_MICRO_MISSION_PROB", "0.70")
+    # New sizing policy may bump to venue min; disable for this test.
+    monkeypatch.setenv("EZRA_LIVE_MICRO_ALLOW_BUMP_TO_VENUE_MIN", "false")
     monkeypatch.setattr(
         "trading_ai.nte.execution.coinbase_min_notional.resolve_coinbase_min_notional_usd",
         lambda *_, **__: (10.0, "test_override", {"product_id": "BTC-USD"}),
@@ -188,11 +190,11 @@ def test_candidate_execution_blocks_when_tier_cap_below_coinbase_min_notional(
 
     out = run_live_micro_candidate_execution_once(runtime_root=tmp_path)
     assert out.get("skipped") is True
-    assert out.get("reason") == "min_notional_vs_tier_conflict"
+    assert out.get("reason") == "tier_cap_below_min_and_suppressed"
 
     ev = tmp_path / "data" / "control" / "live_micro_execution_events.jsonl"
     tail = ev.read_text(encoding="utf-8")
     assert "execution_skipped" in tail
-    assert "min_notional_vs_tier_conflict" in tail
+    assert "tier_cap_below_min_and_suppressed" in tail
     assert "order_submitted" not in tail
 

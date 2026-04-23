@@ -73,6 +73,33 @@ def _exit_thresholds(entry_price: Optional[float]) -> Dict[str, Any]:
     }
 
 
+def _estimate_net_pnl_usd(*, mid: float, base_qty: float, quote_spent: float) -> Dict[str, Any]:
+    """
+    Conservative net PnL estimate for take-profit gating.
+    Uses configurable fee + slippage buffer; does not require live fills.
+    """
+    try:
+        fee_pct = float((os.environ.get("EZRA_LIVE_MICRO_EST_TOTAL_FEES_PCT") or "0.006").strip() or "0.006")
+    except Exception:
+        fee_pct = 0.006
+    try:
+        slip_bps = float((os.environ.get("EZRA_LIVE_MICRO_EXIT_SLIPPAGE_BPS") or "2.0").strip() or "2.0")
+    except Exception:
+        slip_bps = 2.0
+    fee_pct = max(0.0, min(0.05, fee_pct))
+    slip_pct = max(0.0, min(0.01, float(slip_bps) / 10000.0))
+    gross = max(0.0, float(mid) * max(0.0, float(base_qty)))
+    net_proceeds = gross * (1.0 - fee_pct - slip_pct)
+    net = float(net_proceeds) - max(0.0, float(quote_spent))
+    return {
+        "gross_proceeds_est": gross,
+        "net_proceeds_est": net_proceeds,
+        "fees_pct_assumed": fee_pct,
+        "slippage_bps_assumed": slip_bps,
+        "net_pnl_est": net,
+    }
+
+
 def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any]:
     """
     OPS loop:
@@ -343,7 +370,28 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
         tp = th.get("take_profit_price")
         sl = th.get("stop_loss_price")
         if mid is not None and tp is not None and float(mid) >= float(tp):
-            exit_reason = "take_profit"
+            # Net-PnL take profit gate (do not label/exit as TP when net would be negative).
+            base_qty0 = _f(p.get("base_qty") or 0.0)
+            quote_spent0 = _f(p.get("quote_spent") or 0.0)
+            pnl = _estimate_net_pnl_usd(mid=float(mid), base_qty=float(base_qty0), quote_spent=float(quote_spent0))
+            try:
+                min_tp = float((os.environ.get("EZRA_LIVE_MICRO_MIN_NET_TAKE_PROFIT_USD") or "0.02").strip() or "0.02")
+            except Exception:
+                min_tp = 0.02
+            append_position_journal(root, {"ts": now, "event": "exit_pnl_estimate", "position_id": pos_id, "product_id": pid, **pnl})
+            maybe_write_live_micro_event(
+                runtime_root=root,
+                event="exit_pnl_estimate",
+                product_id=pid,
+                position_id=pos_id,
+                payload=pnl,
+                dedupe_key=f"lm:exit_pnl_estimate:{pos_id}:{int(now//30)}",
+            )
+            if float(pnl.get("net_pnl_est") or 0.0) >= float(min_tp):
+                append_position_journal(root, {"ts": now, "event": "take_profit_check_passed", "position_id": pos_id, "product_id": pid, "min_net_take_profit_usd": min_tp, "net_pnl_est": pnl.get("net_pnl_est")})
+                exit_reason = "take_profit"
+            else:
+                append_position_journal(root, {"ts": now, "event": "take_profit_check_failed_below_threshold", "position_id": pos_id, "product_id": pid, "min_net_take_profit_usd": min_tp, "net_pnl_est": pnl.get("net_pnl_est")})
         elif mid is not None and sl is not None and float(mid) <= float(sl):
             exit_reason = "stop_loss"
         elif entry_ts > 0 and max_hold > 0 and (now - entry_ts) >= float(max_hold):
