@@ -35,7 +35,11 @@ def test_coinbase_min_notional_falls_back_to_bundled_defaults(tmp_path: Path, mo
     from trading_ai.nte.execution.coinbase_min_notional import resolve_coinbase_min_notional_usd
 
     vmin, src, _meta = resolve_coinbase_min_notional_usd(product_id="BTC-USD", runtime_root=tmp_path)
-    assert src in ("bundled_defaults_fallback", "coinbase_product_metadata_live_refresh", "coinbase_product_metadata_cache")
+    assert src in (
+        "bundled_defaults_fallback_10",
+        "coinbase_product_metadata_live_refresh",
+        "coinbase_product_metadata_cache",
+    )
     # Bundled defaults for BTC-USD are 10 in current conservative defaults.
     assert float(vmin) in (10.0, 5.0)
 

@@ -46,7 +46,17 @@ def validate_order_size(
         return True, None
     min_b = meta["min_base"]
     inc = meta["base_increment"]
+    # Prefer Coinbase product metadata min-notional when available (cache/refresh),
+    # fallback to bundled defaults. This keeps the floor truthful and removes stale $10 enforcement.
     min_n = meta["min_notional_usd"]
+    try:
+        from trading_ai.nte.execution.coinbase_min_notional import resolve_coinbase_min_notional_usd
+
+        vmin, _src, _meta = resolve_coinbase_min_notional_usd(product_id=pid, runtime_root=None, refresh_if_missing=True)
+        if vmin and float(vmin) > 0:
+            min_n = _d(vmin)
+    except Exception:
+        pass
 
     if quote_notional_usd is not None:
         if _d(quote_notional_usd) < min_n:
@@ -82,7 +92,15 @@ def round_base_to_increment(product_id: str, base_float: float) -> str:
 
 
 def venue_min_notional_usd(product_id: str) -> float:
-    """Minimum quote notional (USD) for ``product_id`` using bundled defaults."""
+    """Minimum quote notional (USD) for ``product_id`` (prefers cached/live metadata when available)."""
     pid = (product_id or "").strip().upper()
+    try:
+        from trading_ai.nte.execution.coinbase_min_notional import resolve_coinbase_min_notional_usd
+
+        vmin, _src, _meta = resolve_coinbase_min_notional_usd(product_id=pid, runtime_root=None, refresh_if_missing=False)
+        if vmin and float(vmin) > 0:
+            return float(vmin)
+    except Exception:
+        pass
     meta = _DEFAULTS.get(pid) or next(iter(_DEFAULTS.values()))
     return float(meta.get("min_notional_usd", Decimal("10")))

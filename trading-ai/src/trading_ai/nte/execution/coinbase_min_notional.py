@@ -145,8 +145,6 @@ def resolve_coinbase_min_notional_usd(
             except Exception:
                 pass
 
-    # Last resort: bundled conservative defaults.
-    from trading_ai.nte.execution.product_rules import venue_min_notional_usd
-
-    return float(venue_min_notional_usd(pid)), "bundled_defaults_fallback", {"product_id": pid}
+    # Last resort: conservative fallback.
+    return 10.0, "bundled_defaults_fallback_10", {"product_id": pid}
 
