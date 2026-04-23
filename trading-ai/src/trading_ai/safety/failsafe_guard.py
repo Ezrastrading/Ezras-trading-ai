@@ -291,7 +291,8 @@ def run_failsafe_checks(
             return False, ExecutionErrorCode.GOVERNANCE_BLOCKED.value, reason_g
 
     # Duplicate guard (reload state; canonical window from env + persisted — never treat 0 as falsy unset)
-    if not ctx.skip_duplicate_guard:
+    # Never block exits/safety actions (must always remain executable).
+    if not ctx.skip_duplicate_guard and ctx.action not in _EXIT_ACTIONS:
         st = load_failsafe_state(runtime_root=rt)
         win, _dwres = persisted_seconds_for_duplicate_check(dict(st), environ=dict(os.environ))
         now = time.time()
