@@ -268,7 +268,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         return {**out, "skipped": True, "reason": "mission_probability_below_min"}
 
     # Mission max tier percent (execution sizing cap).
-    # Default derives from mission_prob tiers (existing contract), but allows env override to tighten.
+    # Default derives from mission_prob tiers (existing contract), but allows env override (bootstrap mode).
     # - 0.63–0.77 => 5%
     # - 0.77–0.90 => 10%
     # - >=0.90 => 20%
@@ -278,13 +278,16 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         mission_max_tier_pct = 0.10
     else:
         mission_max_tier_pct = 0.20
+    mission_cap_source = "mission_prob_tier_default"
     try:
         raw = (os.environ.get("EZRA_LIVE_MICRO_MISSION_MAX_TIER_PERCENT") or "").strip()
         if raw:
             mission_max_tier_pct = float(raw)
+            mission_cap_source = "env:EZRA_LIVE_MICRO_MISSION_MAX_TIER_PERCENT"
     except Exception:
-        pass
-    mission_max_tier_pct = max(0.0, min(0.20, float(mission_max_tier_pct)))
+        mission_cap_source = "mission_prob_tier_default(parse_error)"
+    # Allow bootstrap overrides up to 50% (still bounded by EZRA_LIVE_MICRO_MAX_NOTIONAL_USD and venue min-notional).
+    mission_max_tier_pct = max(0.0, min(0.50, float(mission_max_tier_pct)))
 
     balance_usd = max(0.0, float(avail_quote))
     if balance_usd < 50.0:
@@ -316,7 +319,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "balance": float(balance_usd),
                 "tier_cap": float(tier_cap),
                 "required_min": float(exchange_min_notional),
-                "mission_max_tier_percent": float(mission_max_tier_pct),
+                "mission_cap_used": float(mission_max_tier_pct),
+                "mission_cap_source": mission_cap_source,
                 "max_notional": float(max_notional),
                 "mission_prob": float(mission_prob),
             },
@@ -335,7 +339,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             "tier_cap": float(tier_cap),
             "final_size": float(quote_usd),
             "required_min": float(exchange_min_notional),
-            "mission_max_tier_percent": float(mission_max_tier_pct),
+            "mission_cap_used": float(mission_max_tier_pct),
+            "mission_cap_source": mission_cap_source,
         },
     )
     # Build the required universal candidate context (fail-closed).
@@ -429,7 +434,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "quote_currency": quote_ccy,
                 "avail_quote": avail_quote,
                 "tier_cap": tier_cap,
-                "mission_max_tier_percent": float(mission_max_tier_pct),
+                "mission_cap_used": float(mission_max_tier_pct),
+                "mission_cap_source": mission_cap_source,
                 "mission_prob": mission_prob,
                 "should_trade": bool(dec.should_trade),
                 "rejection_reasons": list(dec.rejection_reasons or []),
