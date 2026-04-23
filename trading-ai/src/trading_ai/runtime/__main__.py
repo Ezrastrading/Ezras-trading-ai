@@ -183,6 +183,12 @@ def main() -> int:
     )
     cbq.add_argument("--runtime-root", default=None)
 
+    cad = sub.add_parser(
+        "coinbase-auth-diagnostic",
+        help="One-shot: print resolved Coinbase auth config (non-secret) and test /accounts auth",
+    )
+    cad.add_argument("--runtime-root", default=None)
+
     args = p.parse_args()
 
     from trading_ai.runtime.operating_system import (
@@ -201,7 +207,7 @@ def main() -> int:
     rt = Path(args.runtime_root).resolve() if getattr(args, "runtime_root", None) else ezras_runtime_root()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
 
-    if args.cmd not in ("live-guard-proof", "write-coinbase-quote-balance-truth"):
+    if args.cmd not in ("live-guard-proof", "write-coinbase-quote-balance-truth", "coinbase-auth-diagnostic"):
         ok_env, why_env = nonlive_env_ok(runtime_root=rt)
         if not ok_env:
             _print_json({"ok": False, "blocked": True, "reason": "live_trading_env_forbidden", "detail": why_env})
@@ -223,6 +229,36 @@ def main() -> int:
         snap["artifact_path"] = str(quote_balance_truth_path(rt))
         _print_json(snap)
         return 0 if snap.get("ok") else 2
+
+    if args.cmd == "coinbase-auth-diagnostic":
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+
+        c = CoinbaseClient()
+        key_name = ""
+        try:
+            key_name = (c.resolved_key_name() or "").strip()
+        except Exception:
+            key_name = ""
+        diag: Dict[str, Any] = {
+            "truth_version": "coinbase_auth_diagnostic_v1",
+            "runtime_root": str(rt),
+            "key_name_present": bool(key_name),
+            "key_name_starts_org": bool(key_name.startswith("organizations/")) if key_name else False,
+            "key_name_suffix": (key_name[-8:] if key_name else None),
+            "pem_loaded": False,
+            "auth_test": {"ok": False},
+        }
+        try:
+            diag["pem_loaded"] = bool(getattr(c, "_private_key", None) is not None)
+        except Exception:
+            diag["pem_loaded"] = False
+        try:
+            accounts = c.list_all_accounts()
+            diag["auth_test"] = {"ok": True, "accounts_count": len(list(accounts or []))}
+        except Exception as exc:
+            diag["auth_test"] = {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:160]}
+        _print_json(diag)
+        return 0 if diag["auth_test"].get("ok") else 3
 
     if args.cmd == "supervisor-once":
         out = run_role_supervisor_once(

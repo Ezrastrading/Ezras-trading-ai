@@ -79,8 +79,12 @@ def fetch_and_persist_quote_balances(
 
     # Safe auth presence diagnostics (no secrets).
     try:
-        key_name = (getattr(client, "api_key_name", None) or "").strip()
-        has_key = bool(key_name) or bool((getattr(client, "_api_key_name", "") or "").strip())
+        key_name = ""
+        if hasattr(client, "resolved_key_name"):
+            key_name = str(client.resolved_key_name() or "").strip()
+        else:
+            key_name = str(getattr(client, "_key_name", "") or "").strip()
+        has_key = bool(key_name)
     except Exception:
         key_name = ""
         has_key = False

@@ -220,19 +220,37 @@ class CoinbaseClient:
         self._sync_credentials_from_env()
 
     def _sync_credentials_from_env(self) -> None:
-        """Load key name + PEM from ctor args or env (both naming conventions)."""
-        api_key = (
-            (self._api_key_override if self._api_key_override is not None else None)
-            or os.environ.get("COINBASE_API_KEY_NAME")
-            or os.environ.get("COINBASE_API_KEY")
-            or ""
-        ).strip()
-        raw_pem = (
-            (self._pem_override if self._pem_override is not None else None)
-            or os.environ.get("COINBASE_API_PRIVATE_KEY")
-            or os.environ.get("COINBASE_API_SECRET")
-            or ""
-        )
+        """Load key name + PEM from ctor args or env (canonical-first, explicit legacy mapping)."""
+
+        key_checked = ["COINBASE_API_KEY_NAME", "COINBASE_API_KEY"]
+        pem_checked = ["COINBASE_API_PRIVATE_KEY", "COINBASE_API_SECRET"]
+
+        used_key = "override" if self._api_key_override is not None else None
+        used_pem = "override" if self._pem_override is not None else None
+
+        api_key = ((self._api_key_override if self._api_key_override is not None else "") or "").strip()
+        if not api_key:
+            api_key = (os.environ.get("COINBASE_API_KEY_NAME") or "").strip()
+            if api_key:
+                used_key = "COINBASE_API_KEY_NAME"
+            else:
+                legacy = (os.environ.get("COINBASE_API_KEY") or "").strip()
+                if legacy:
+                    api_key = legacy
+                    used_key = "COINBASE_API_KEY(deprecated)"
+
+        raw_pem = (self._pem_override if self._pem_override is not None else "") or ""
+        raw_pem = (raw_pem or "").strip()
+        if not raw_pem:
+            raw_pem = (os.environ.get("COINBASE_API_PRIVATE_KEY") or "").strip()
+            if raw_pem:
+                used_pem = "COINBASE_API_PRIVATE_KEY"
+            else:
+                legacy = (os.environ.get("COINBASE_API_SECRET") or "").strip()
+                if legacy:
+                    raw_pem = legacy
+                    used_pem = "COINBASE_API_SECRET(deprecated)"
+
         raw_pem = (raw_pem or "").strip()
         pem = normalize_coinbase_key_material(raw_pem)
         prev_k = getattr(self, "_key_name", "")
@@ -242,6 +260,24 @@ class CoinbaseClient:
         self._key_name = api_key
         self._pem = pem
         self._private_key = None
+        # Non-secret credential resolution log (only when values change).
+        try:
+            suffix = self._key_name[-8:] if self._key_name else None
+            logger.info(
+                "Coinbase auth env checked key_vars=%s pem_vars=%s used_key=%s used_pem=%s key_present=%s key_org_prefix=%s key_suffix=%s pem_present=%s pem_has_begin=%s pem_has_escaped_newlines=%s",
+                key_checked,
+                pem_checked,
+                used_key,
+                used_pem,
+                bool(self._key_name),
+                bool(self._key_name.startswith("organizations/")) if self._key_name else False,
+                suffix,
+                bool(self._pem),
+                bool("BEGIN" in self._pem) if self._pem else False,
+                bool("\\n" in raw_pem) if raw_pem else False,
+            )
+        except Exception:
+            pass
         if not pem:
             return
         try:
@@ -258,22 +294,14 @@ class CoinbaseClient:
 
     def has_credentials(self) -> bool:
         self._sync_credentials_from_env()
-        key = (
-            os.environ.get("COINBASE_API_KEY_NAME")
-            or os.environ.get("COINBASE_API_KEY")
-            or ""
-        ).strip()
-        secret = (
-            os.environ.get("COINBASE_API_PRIVATE_KEY")
-            or os.environ.get("COINBASE_API_SECRET")
-            or ""
-        ).strip()
-        logger.info(
-            "Coinbase credentials: key=%s secret=%s",
-            bool(key),
-            bool(secret),
-        )
+        # Keep log but base it on resolved (canonical) internal fields.
+        logger.info("Coinbase credentials resolved: key=%s pem=%s", bool(self._key_name), bool(self._pem))
         return self._credentials_ready()
+
+    def resolved_key_name(self) -> str:
+        """Resolved API key name (non-secret identifier)."""
+        self._sync_credentials_from_env()
+        return self._key_name
 
     def _credentials_ready(self) -> bool:
         return bool(self._key_name) and bool(self._pem) and self._private_key is not None
