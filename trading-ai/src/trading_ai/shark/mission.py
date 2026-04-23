@@ -246,7 +246,16 @@ def evaluate_trade_against_mission(
     _ = metadata  # reserved for future rules (sizing by gate, spot vs contract)
     violations = []
 
-    cap_override = mission_cap_fraction_get()
+    cap_override = None
+    if isinstance(metadata, dict):
+        raw_cap = metadata.get("mission_cap_fraction_override")
+        if raw_cap is not None:
+            try:
+                cap_override = max(0.0, min(0.50, float(raw_cap)))
+            except Exception:
+                cap_override = None
+    if cap_override is None:
+        cap_override = mission_cap_fraction_get()
     plat = str(platform or "").lower()
     # Only apply cap override to Coinbase/live-micro flows (do not change Kalshi tier semantics).
     cap_frac = float(cap_override) if (cap_override is not None and plat == "coinbase") else 0.20

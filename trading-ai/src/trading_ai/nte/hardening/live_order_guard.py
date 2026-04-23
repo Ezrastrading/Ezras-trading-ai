@@ -296,7 +296,12 @@ def assert_live_order_permitted(
         # Mission probability tier enforcement (authoritative, fail-closed).
         # This must not weaken existing safety; it is an additional guard.
         try:
-            from trading_ai.shark.mission import evaluate_trade_against_mission, mission_probability_get, TIER_MAX_RISK_FRACTION
+            from trading_ai.shark.mission import (
+                evaluate_trade_against_mission,
+                mission_cap_fraction_get,
+                mission_probability_get,
+                TIER_MAX_RISK_FRACTION,
+            )
 
             prob = mission_probability_get()
             if prob is None:
@@ -343,19 +348,32 @@ def assert_live_order_permitted(
                 )
                 _block("mission_probability_missing_total_balance", severe=False)
             qn = float(quote_notional or 0.0)
+            cap_frac = mission_cap_fraction_get()
+            allowed_notional = None
+            if cap_frac is not None:
+                try:
+                    allowed_notional = float(tb) * float(cap_frac)
+                except Exception:
+                    allowed_notional = None
             rep = evaluate_trade_against_mission(
                 str(avenue_id or ""),
                 str(product_id or ""),
                 qn,
                 float(prob),
                 float(tb),
-                metadata={"execution_gate": str(execution_gate or ""), "action": str(action or "")},
+                metadata={
+                    "execution_gate": str(execution_gate or ""),
+                    "action": str(action or ""),
+                    "mission_cap_fraction_override": cap_frac,
+                },
             )
             tier = int(rep.get("probability_tier") or 0)
             tier_cap = None
             if tier in (1, 2, 3):
                 try:
-                    tier_cap = float(tb) * float(TIER_MAX_RISK_FRACTION.get(tier) or 0.0)
+                    # If an explicit cap override is present, prefer it over the tier table so
+                    # the rejection text and limit match the configured live_micro setting.
+                    tier_cap = float(tb) * float(cap_frac if cap_frac is not None else (TIER_MAX_RISK_FRACTION.get(tier) or 0.0))
                 except Exception:
                     tier_cap = None
             _merge_system_health(
@@ -367,6 +385,12 @@ def assert_live_order_permitted(
                         "tier": tier,
                         "quote_notional": qn,
                         "total_balance_usd": float(tb),
+                        "resolved_mission_cap_pct": float(cap_frac) if cap_frac is not None else None,
+                        "source_of_cap": "context_or_env:EZRA_LIVE_MICRO_MISSION_MAX_TIER_PERCENT" if cap_frac is not None else "tier_table_default",
+                        "guard_layer_name": "live_order_guard.mission_probability_enforcement",
+                        "balance_used_for_check": float(tb),
+                        "requested_notional": float(qn),
+                        "allowed_notional": float(allowed_notional) if allowed_notional is not None else None,
                         "tier_cap_usd": tier_cap,
                         "reason": str(rep.get("reason") or ""),
                         "violations": list(rep.get("violations") or []),
