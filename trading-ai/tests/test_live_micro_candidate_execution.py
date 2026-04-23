@@ -102,6 +102,11 @@ def test_candidate_queue_progresses_to_submit_and_fill(tmp_path: Path, monkeypat
         "trading_ai.shark.outlets.coinbase._brokerage_public_request",
         lambda _p: {"best_bid": "1", "best_ask": "1.01", "price": "1.005", "time": time.time()},
     )
+    # Ensure min-notional resolution does not block the test.
+    monkeypatch.setattr(
+        "trading_ai.nte.execution.coinbase_min_notional.resolve_coinbase_min_notional_usd",
+        lambda *_, **__: (10.0, "test_override", {"product_id": "BTC-USD"}),
+    )
     monkeypatch.setattr(
         "trading_ai.global_layer.gap_engine.evaluate_candidate",
         lambda _c: type("D", (), {"should_trade": True, "rejection_reasons": []})(),
@@ -174,7 +179,10 @@ def test_candidate_execution_blocks_when_tier_cap_below_coinbase_min_notional(
 
     # Force Coinbase min notional to bind at $10 and mission prob tier1 => cap = 5% of $25 = $1.25.
     monkeypatch.setenv("EZRA_LIVE_MICRO_MISSION_PROB", "0.70")
-    monkeypatch.setattr("trading_ai.nte.execution.product_rules.venue_min_notional_usd", lambda _pid: 10.0)
+    monkeypatch.setattr(
+        "trading_ai.nte.execution.coinbase_min_notional.resolve_coinbase_min_notional_usd",
+        lambda *_, **__: (10.0, "test_override", {"product_id": "BTC-USD"}),
+    )
 
     from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once
 

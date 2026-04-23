@@ -78,7 +78,7 @@ def reserved_quote_by_ccy(positions: List[Dict[str, Any]]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for p in positions:
         st = str(p.get("status") or "").lower()
-        if st not in ("open", "closing"):
+        if st not in ("pending_entry", "open", "closing"):
             continue
         qccy = quote_currency_for_product(str(p.get("product_id") or ""))
         spent = 0.0
@@ -95,13 +95,13 @@ def open_position_exists_for_product(positions: List[Dict[str, Any]], product_id
     for p in positions:
         if str(p.get("product_id") or "").strip().upper() != pid:
             continue
-        if str(p.get("status") or "").lower() in ("open", "closing"):
+        if str(p.get("status") or "").lower() in ("pending_entry", "open", "closing"):
             return True
     return False
 
 
 def count_open_positions(positions: List[Dict[str, Any]]) -> int:
-    return sum(1 for p in positions if str(p.get("status") or "").lower() in ("open", "closing"))
+    return sum(1 for p in positions if str(p.get("status") or "").lower() in ("pending_entry", "open", "closing"))
 
 
 def upsert_position(runtime_root: Path, position: Dict[str, Any]) -> None:

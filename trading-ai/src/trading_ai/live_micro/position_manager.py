@@ -109,7 +109,7 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
         if not isinstance(p, dict):
             continue
         status = str(p.get("status") or "").lower()
-        if status not in ("open", "closing"):
+        if status not in ("pending_entry", "open", "closing"):
             continue
         pos_id = str(p.get("position_id") or "").strip()
         pid = str(p.get("product_id") or "").strip().upper()
@@ -144,6 +144,65 @@ def run_live_micro_position_manager_once(*, runtime_root: Path) -> Dict[str, Any
             payload={"mid": mid, "status": status, "thresholds": th},
             dedupe_key=f"lm:position_monitored:{pos_id}:{int(now//30)}",
         )
+
+        # Pending entry: probe entry fills, promote to open, or cancel+release on timeout.
+        if status == "pending_entry":
+            entry_order_id = str(p.get("entry_order_id") or p.get("position_id") or "").strip()
+            timeout = int(_f(p.get("pending_entry_timeout_sec") or os.environ.get("EZRA_LIVE_MICRO_ENTRY_FILL_TIMEOUT_SEC") or 120))
+            timeout = max(30, min(600, timeout))
+            entry_ts = _f(p.get("entry_ts") or 0.0)
+            try:
+                fills = client.get_fills(entry_order_id)
+            except Exception:
+                fills = []
+            avg_entry, base_qty = _parse_fills(list(fills or []))
+            append_position_journal(root, {"ts": now, "event": "entry_fill_probe", "position_id": pos_id, "product_id": pid, "entry_order_id": entry_order_id, "fills_n": len(list(fills or []))})
+            maybe_write_live_micro_event(
+                runtime_root=root,
+                event="entry_fill_probe",
+                product_id=pid,
+                order_id=entry_order_id,
+                position_id=pos_id,
+                payload={"fills_n": len(list(fills or [])), "avg_entry_price": avg_entry},
+                dedupe_key=f"lm:entry_fill_probe:{entry_order_id}:{int(now//30)}",
+            )
+            if fills and base_qty is not None:
+                upsert_position(
+                    root,
+                    {
+                        **p,
+                        "status": "open",
+                        "entry_price": avg_entry,
+                        "base_qty": float(base_qty),
+                    },
+                )
+                append_position_journal(root, {"ts": now, "event": "position_opened", "position_id": pos_id, "product_id": pid, "entry_price": avg_entry, "base_qty": base_qty})
+                continue
+            if entry_ts > 0 and (now - entry_ts) >= float(timeout):
+                cancelled = False
+                try:
+                    cancelled = bool(client.cancel_order(entry_order_id))
+                except Exception:
+                    cancelled = False
+                patch = {
+                    "status": "closed",
+                    "exit_reason": "entry_fill_timeout_cancelled" if cancelled else "entry_fill_timeout_cancel_failed",
+                    "exit_ts": now,
+                    "realized_pnl_usd": None,
+                }
+                mark_position_closed(root, pos_id, patch)
+                append_position_journal(root, {"ts": now, "event": "position_closed", "position_id": pos_id, "product_id": pid, **patch})
+                maybe_write_live_micro_event(
+                    runtime_root=root,
+                    event="position_closed",
+                    product_id=pid,
+                    order_id=entry_order_id,
+                    position_id=pos_id,
+                    payload=patch,
+                    dedupe_key=f"lm:position_closed:{pos_id}",
+                )
+                closed += 1
+            continue
 
         # If we're already closing, probe exit fills.
         if status == "closing":

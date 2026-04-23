@@ -236,13 +236,26 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
 
     # Execution sizing (halt-safe): never attempt orders that cannot satisfy Coinbase min notional
     # under mission tier caps. This prevents repeated execution failure loops caused by sizing conflicts.
+    # Venue minimum notional (truthful): prefer Coinbase product metadata cache/refresh, fallback to bundled defaults.
     exchange_min_notional = 10.0
+    exchange_min_source = "unknown"
+    venue_allows_5 = None
     try:
-        from trading_ai.nte.execution.product_rules import venue_min_notional_usd
+        from trading_ai.nte.execution.coinbase_min_notional import resolve_coinbase_min_notional_usd
 
-        exchange_min_notional = float(venue_min_notional_usd(pid))
+        exchange_min_notional, exchange_min_source, _meta = resolve_coinbase_min_notional_usd(product_id=pid, runtime_root=root)
+        venue_allows_5 = bool(float(exchange_min_notional) <= 5.0)
     except Exception:
-        exchange_min_notional = 10.0
+        try:
+            from trading_ai.nte.execution.product_rules import venue_min_notional_usd
+
+            exchange_min_notional = float(venue_min_notional_usd(pid))
+            exchange_min_source = "bundled_defaults_fallback(exception)"
+            venue_allows_5 = bool(float(exchange_min_notional) <= 5.0)
+        except Exception:
+            exchange_min_notional = 10.0
+            exchange_min_source = "hardcoded_fallback_10"
+            venue_allows_5 = None
     quote_ccy = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
     quote_balances = None
     quote_truth = {}
@@ -307,6 +320,21 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         )
         return {**out, "skipped": True, "reason": "missing_quote_balance_truth"}
 
+    # DEBUG (structured): required_min resolution provenance.
+    _append_jsonl(
+        events_p,
+        {
+            "ts": time.time(),
+            "event": "debug_required_min_resolution",
+            "product_id": pid,
+            "gate_id": "gate_b",
+            "quote_currency": quote_ccy,
+            "resolved_required_min": float(exchange_min_notional),
+            "required_min_source": exchange_min_source,
+            "venue_allows_5_usd": venue_allows_5,
+            "execution_mode": "market_ioc_quote_size",
+        },
+    )
     mission_prob = 0.55
     try:
         mission_prob = float((os.environ.get("EZRA_LIVE_MICRO_MISSION_PROB") or "0.55").strip() or "0.55")
@@ -407,6 +435,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "free_quote": float(free_quote),
                 "tier_cap": float(tier_cap),
                 "required_min": float(exchange_min_notional),
+                "required_min_source": exchange_min_source,
+                "venue_allows_5_usd": venue_allows_5,
                 "mission_cap_used": float(mission_max_tier_pct),
                 "mission_cap_source": mission_cap_source,
                 "max_notional": float(max_notional),
@@ -431,6 +461,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             "tier_cap": float(tier_cap),
             "final_size": float(quote_usd),
             "required_min": float(exchange_min_notional),
+            "required_min_source": exchange_min_source,
+            "venue_allows_5_usd": venue_allows_5,
             "mission_cap_used": float(mission_max_tier_pct),
             "mission_cap_source": mission_cap_source,
         },
@@ -730,6 +762,30 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             its3[idx] = {**its3[idx], "status": "filled", "filled_ts": time.time(), "order_id": str(res.order_id)}
         cq3["items"] = its3[-300:]
         st.save_json("candidate_queue.json", cq3)
+
+    else:
+        # Track pending entry so capital reservations remain truthful and can be released on timeout/cancel.
+        try:
+            from trading_ai.live_micro.positions import append_position_journal, upsert_position
+
+            pos_id = str(res.order_id)
+            pending = {
+                "position_id": pos_id,
+                "product_id": pid,
+                "side": "long",
+                "entry_order_id": str(res.order_id),
+                "entry_ts": time.time(),
+                "entry_price": None,
+                "base_qty": None,
+                "quote_spent": float(quote_usd),
+                "fees_paid": None,
+                "status": "pending_entry",
+                "pending_entry_timeout_sec": int(float((os.environ.get("EZRA_LIVE_MICRO_ENTRY_FILL_TIMEOUT_SEC") or "120").strip() or "120")),
+            }
+            upsert_position(root, pending)
+            append_position_journal(root, {"ts": time.time(), "event": "position_pending_entry", **pending})
+        except Exception:
+            pass
 
     return out
 
