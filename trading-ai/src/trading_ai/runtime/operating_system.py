@@ -413,6 +413,28 @@ def _ops_loops() -> List[LoopSpec]:
         snap = on_scanner_cycle_export(runtime_root=r)
         return {"ok": True, "scan_seq": snap.get("scan_seq")}
 
+    def _live_micro_quote_balance_truth(r: Path) -> Dict[str, Any]:
+        """
+        Persist Coinbase USD/USDC balance truth before live_micro candidate execution.
+        Never places orders; safe to run at high cadence.
+        """
+        import logging
+
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+        from trading_ai.live_micro.quote_balance_truth import fetch_and_persist_quote_balances
+
+        log = logging.getLogger("ops.live_micro_quote_balance_truth")
+        log.info("quote balance loop start")
+        client = CoinbaseClient()
+        snap = fetch_and_persist_quote_balances(runtime_root=r, client=client)
+        log.info(
+            "quote balance loop done ok=%s balances=%s source=%s",
+            bool(snap.get("ok")),
+            snap.get("balances"),
+            snap.get("source"),
+        )
+        return {"ok": bool(snap.get("ok")), "source": snap.get("source"), "balances": snap.get("balances")}
+
     def _live_micro_candidate_execution(r: Path) -> Dict[str, Any]:
         from trading_ai.live_micro.candidate_execution import run_live_micro_candidate_execution_once
 
@@ -502,6 +524,7 @@ def _ops_loops() -> List[LoopSpec]:
     return [
         LoopSpec("validation_bootstrap", "ops", 300.0, _validation_bootstrap),
         LoopSpec("scanner_cycle", "ops", 20.0, _scanner_cycle),
+        LoopSpec("live_micro_quote_balance_truth", "ops", 8.0, _live_micro_quote_balance_truth),
         LoopSpec("live_micro_candidate_execution", "ops", 10.0, _live_micro_candidate_execution),
         LoopSpec("simulation_cycle", "ops", 25.0, _simulation_cycle),
         LoopSpec("outcome_ingestion", "ops", 30.0, _outcome_ingestion),

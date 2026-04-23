@@ -202,23 +202,50 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         exchange_min_notional = 10.0
     quote_ccy = (pid.split("-")[1] if "-" in pid else "USD").strip().upper()
     quote_balances = None
+    quote_truth = {}
     try:
-        from trading_ai.runtime_proof.coinbase_accounts import get_available_quote_balances
+        from trading_ai.live_micro.quote_balance_truth import required_quote_available
 
-        quote_balances = get_available_quote_balances(client)
+        ok_q, avail_q, snap = required_quote_available(runtime_root=root, quote_currency=quote_ccy, max_age_sec=45.0)
+        quote_truth = snap if isinstance(snap, dict) else {}
+        if isinstance(quote_truth.get("balances"), dict):
+            quote_balances = dict(quote_truth.get("balances") or {})
+        if ok_q:
+            # Fast path: durable truth is fresh and has the required quote currency.
+            avail_quote = float(avail_q)
+        else:
+            avail_quote = 0.0
     except Exception:
         quote_balances = None
+        avail_quote = 0.0
+
+    # Fallback (should be rare): query balances directly (best-effort). This preserves
+    # backward compatibility if the ops supervisor loop isn't running yet.
     if not isinstance(quote_balances, dict) or not quote_balances:
-        # Fallback: query balances directly (best-effort).
         try:
-            usd = float(client.get_usd_balance())
+            from trading_ai.runtime_proof.coinbase_accounts import get_available_quote_balances
+
+            quote_balances = get_available_quote_balances(client)
         except Exception:
-            usd = 0.0
-        try:
-            usdc = float(client.get_available_balance("USDC"))
-        except Exception:
-            usdc = 0.0
-        quote_balances = {"USD": usd, "USDC": usdc}
+            quote_balances = None
+        if not isinstance(quote_balances, dict) or not quote_balances:
+            try:
+                usd = float(client.get_usd_balance())
+            except Exception:
+                usd = 0.0
+            try:
+                usdc = float(client.get_available_balance("USDC"))
+            except Exception:
+                usdc = 0.0
+            quote_balances = {"USD": usd, "USDC": usdc}
+
+    if "avail_quote" not in locals():
+        avail_quote = 0.0
+    try:
+        if float(avail_quote) <= 0.0:
+            avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
+    except Exception:
+        avail_quote = 0.0
     avail_quote = 0.0
     try:
         avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
@@ -238,6 +265,8 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 "product_id": pid,
                 "gate_id": "gate_b",
                 "reason": "missing_quote_balance_truth",
+                "missing_quote_currency": quote_ccy,
+                "quote_balance_truth": quote_truth or None,
             },
         )
         return {**out, "skipped": True, "reason": "missing_quote_balance_truth"}

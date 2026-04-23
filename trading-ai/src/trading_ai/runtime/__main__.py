@@ -177,6 +177,12 @@ def main() -> int:
     f60d.add_argument("--runtime-root", default=None)
     f60d.add_argument("--interval-sec", type=float, default=None)
 
+    cbq = sub.add_parser(
+        "write-coinbase-quote-balance-truth",
+        help="One-shot: fetch Coinbase USD/USDC spendable and write coinbase_quote_balance_truth.json",
+    )
+    cbq.add_argument("--runtime-root", default=None)
+
     args = p.parse_args()
 
     from trading_ai.runtime.operating_system import (
@@ -195,7 +201,7 @@ def main() -> int:
     rt = Path(args.runtime_root).resolve() if getattr(args, "runtime_root", None) else ezras_runtime_root()
     os.environ["EZRAS_RUNTIME_ROOT"] = str(rt)
 
-    if args.cmd != "live-guard-proof":
+    if args.cmd not in ("live-guard-proof", "write-coinbase-quote-balance-truth"):
         ok_env, why_env = nonlive_env_ok(runtime_root=rt)
         if not ok_env:
             _print_json({"ok": False, "blocked": True, "reason": "live_trading_env_forbidden", "detail": why_env})
@@ -207,6 +213,16 @@ def main() -> int:
             return 0
         _print_json(tick_research_once(runtime_root=rt, skip_models=bool(args.skip_models)))
         return 0
+
+    if args.cmd == "write-coinbase-quote-balance-truth":
+        from trading_ai.shark.outlets.coinbase import CoinbaseClient
+        from trading_ai.live_micro.quote_balance_truth import fetch_and_persist_quote_balances, quote_balance_truth_path
+
+        client = CoinbaseClient()
+        snap = fetch_and_persist_quote_balances(runtime_root=rt, client=client)
+        snap["artifact_path"] = str(quote_balance_truth_path(rt))
+        _print_json(snap)
+        return 0 if snap.get("ok") else 2
 
     if args.cmd == "supervisor-once":
         out = run_role_supervisor_once(
