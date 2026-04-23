@@ -95,6 +95,49 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         return {"ok": True, "skipped": True, "reason": "no_candidates"}
 
     pid = str(it.get("product_id") or "").strip().upper()
+    # Concurrency + duplicate-open guard (durable position state).
+    positions = []
+    try:
+        from trading_ai.live_micro.positions import (
+            count_open_positions,
+            load_open_positions,
+            open_position_exists_for_product,
+        )
+
+        positions = load_open_positions(root)
+        raw_max = (os.environ.get("EZRA_LIVE_MICRO_MAX_OPEN_POSITIONS") or "1").strip() or "1"
+        try:
+            max_open = int(float(raw_max))
+        except Exception:
+            max_open = 1
+        max_open = max(1, min(5, max_open))
+        if count_open_positions(positions) >= max_open:
+            _append_jsonl(
+                root / "data" / "control" / "live_micro_execution_events.jsonl",
+                {
+                    "ts": time.time(),
+                    "event": "blocked",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "reason": "max_open_positions_reached",
+                    "max_open_positions": max_open,
+                },
+            )
+            return {"ok": True, "skipped": True, "reason": "max_open_positions_reached", "max_open_positions": max_open}
+        if open_position_exists_for_product(positions, pid):
+            _append_jsonl(
+                root / "data" / "control" / "live_micro_execution_events.jsonl",
+                {
+                    "ts": time.time(),
+                    "event": "blocked",
+                    "product_id": pid,
+                    "gate_id": "gate_b",
+                    "reason": "duplicate_candidate_open",
+                },
+            )
+            return {"ok": True, "skipped": True, "reason": "duplicate_candidate_open"}
+    except Exception:
+        positions = []
     max_notional = max(0.0, float(_load_micro_max_notional(root) or 0.0))
     if max_notional <= 0:
         return {"ok": False, "blocked": True, "reason": "missing_or_invalid_max_notional_usd"}
@@ -239,14 +282,7 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
                 usdc = 0.0
             quote_balances = {"USD": usd, "USDC": usdc}
 
-    if "avail_quote" not in locals():
-        avail_quote = 0.0
-    try:
-        if float(avail_quote) <= 0.0:
-            avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
-    except Exception:
-        avail_quote = 0.0
-    avail_quote = 0.0
+    # Wallet quote (raw). Free quote (usable) is computed after reservations below.
     try:
         avail_quote = float((quote_balances or {}).get(quote_ccy) or 0.0)
     except Exception:
@@ -318,7 +354,18 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
     # Allow bootstrap overrides up to 50% (still bounded by EZRA_LIVE_MICRO_MAX_NOTIONAL_USD and venue min-notional).
     mission_max_tier_pct = max(0.0, min(0.50, float(mission_max_tier_pct)))
 
-    balance_usd = max(0.0, float(avail_quote))
+    # Reservation-aware free quote
+    reserved = 0.0
+    try:
+        from trading_ai.live_micro.positions import reserved_quote_by_ccy
+
+        reserved_map = reserved_quote_by_ccy(list(positions or []))
+        reserved = float(reserved_map.get(quote_ccy) or 0.0)
+    except Exception:
+        reserved = 0.0
+    free_quote = max(0.0, float(avail_quote) - max(0.0, float(reserved)))
+
+    balance_usd = max(0.0, float(free_quote))
     if balance_usd < 50.0:
         _append_jsonl(
             events_p,
@@ -333,30 +380,43 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             },
         )
 
-    tier_cap = float(balance_usd) * float(mission_max_tier_pct)
-    proposed_size = min(float(max_notional), float(tier_cap))
+    from trading_ai.live_micro.sizing import compute_live_micro_quote_size
 
-    if float(proposed_size) + 1e-9 < float(exchange_min_notional):
+    sz = compute_live_micro_quote_size(
+        free_quote=float(free_quote),
+        max_notional_usd=float(max_notional),
+        mission_prob=float(mission_prob),
+        mission_max_tier_pct=float(mission_max_tier_pct),
+        exchange_min_notional=float(exchange_min_notional),
+    )
+    tier_cap = float(sz.details.get("tier_cap") or 0.0)
+    proposed_size = float(sz.details.get("proposed") or 0.0)
+
+    if not sz.ok:
         _append_jsonl(
             events_p,
             {
                 "ts": time.time(),
                 "event": "execution_skipped",
-                "reason": "min_notional_vs_tier_conflict",
+                "reason": sz.reason,
                 "product_id": pid,
                 "gate_id": "gate_b",
                 "balance": float(balance_usd),
+                "wallet_quote": float(avail_quote),
+                "reserved_quote": float(reserved),
+                "free_quote": float(free_quote),
                 "tier_cap": float(tier_cap),
                 "required_min": float(exchange_min_notional),
                 "mission_cap_used": float(mission_max_tier_pct),
                 "mission_cap_source": mission_cap_source,
                 "max_notional": float(max_notional),
                 "mission_prob": float(mission_prob),
+                "sizing_details": sz.details,
             },
         )
-        return {**out, "skipped": True, "reason": "min_notional_vs_tier_conflict"}
+        return {**out, "skipped": True, "reason": sz.reason}
 
-    quote_usd = float(proposed_size)
+    quote_usd = float(sz.quote_size_usd)
     _append_jsonl(
         events_p,
         {
@@ -365,6 +425,9 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             "product_id": pid,
             "gate_id": "gate_b",
             "balance": float(balance_usd),
+            "wallet_quote": float(avail_quote),
+            "reserved_quote": float(reserved),
+            "free_quote": float(free_quote),
             "tier_cap": float(tier_cap),
             "final_size": float(quote_usd),
             "required_min": float(exchange_min_notional),
@@ -528,6 +591,19 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
         },
     )
     try:
+        from trading_ai.live_micro.supabase_events import maybe_write_live_micro_event
+
+        maybe_write_live_micro_event(
+            runtime_root=root,
+            event="order_submitted",
+            product_id=pid,
+            order_id=str(res.order_id or ""),
+            payload={"success": bool(res.success), "status": res.status, "reason": res.reason, "quote_usd": quote_usd},
+            dedupe_key=f"lm:order_submitted:{str(res.order_id or '').strip()}",
+        )
+    except Exception:
+        pass
+    try:
         from trading_ai.intelligence.crypto_intelligence.recorder import link_trade_to_candidate
 
         link_trade_to_candidate(
@@ -592,6 +668,61 @@ def run_live_micro_candidate_execution_once(*, runtime_root: Path) -> Dict[str, 
             out["telegram_placed"] = tg.get("status")
         except Exception as exc:
             out["telegram_placed"] = f"error:{type(exc).__name__}"
+
+        # Durable live_micro position state (enables capital reservations + recycling on close).
+        try:
+            from trading_ai.live_micro.positions import append_position_journal, upsert_position
+
+            total_qty = 0.0
+            total_quote = 0.0
+            for f in list(fills or []):
+                if not isinstance(f, dict):
+                    continue
+                try:
+                    px = float(f.get("price") or f.get("fill_price") or f.get("trade_price") or 0.0)
+                except Exception:
+                    px = 0.0
+                try:
+                    sz2 = float(f.get("size") or f.get("filled_size") or f.get("base_size") or 0.0)
+                except Exception:
+                    sz2 = 0.0
+                if px > 0 and sz2 > 0:
+                    total_qty += sz2
+                    total_quote += px * sz2
+            avg_entry = (total_quote / total_qty) if total_qty > 0 else None
+            base_qty = total_qty if total_qty > 0 else None
+            pos_id = str(res.order_id)
+            pos = {
+                "position_id": pos_id,
+                "product_id": pid,
+                "side": "long",
+                "entry_order_id": str(res.order_id),
+                "entry_ts": time.time(),
+                "entry_price": avg_entry,
+                "base_qty": base_qty,
+                "quote_spent": float(quote_usd),
+                "fees_paid": None,
+                "status": "open",
+                "max_hold_sec": int(float((os.environ.get("EZRA_LIVE_MICRO_MAX_HOLD_SEC") or "1800").strip() or "1800")),
+            }
+            upsert_position(root, pos)
+            append_position_journal(root, {"ts": time.time(), "event": "position_opened", **pos})
+            try:
+                from trading_ai.live_micro.supabase_events import maybe_write_live_micro_event
+
+                maybe_write_live_micro_event(
+                    runtime_root=root,
+                    event="position_opened",
+                    product_id=pid,
+                    order_id=str(res.order_id),
+                    position_id=pos_id,
+                    payload=pos,
+                    dedupe_key=f"lm:position_opened:{pos_id}",
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         cq3 = st.load_json("candidate_queue.json")
         its3 = list(cq3.get("items") or [])

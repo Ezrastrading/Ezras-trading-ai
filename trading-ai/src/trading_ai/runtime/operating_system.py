@@ -440,6 +440,11 @@ def _ops_loops() -> List[LoopSpec]:
 
         return run_live_micro_candidate_execution_once(runtime_root=r)
 
+    def _live_micro_position_manager(r: Path) -> Dict[str, Any]:
+        from trading_ai.live_micro.position_manager import run_live_micro_position_manager_once
+
+        return run_live_micro_position_manager_once(runtime_root=r)
+
     def _outcome_ingestion(r: Path) -> Dict[str, Any]:
         out = tick_ops_once(runtime_root=r)
         return out.get("steps", {}).get("outcome_ingestion") or {"ok": False, "error": "missing_outcome_ingestion"}
@@ -526,6 +531,7 @@ def _ops_loops() -> List[LoopSpec]:
         LoopSpec("scanner_cycle", "ops", 20.0, _scanner_cycle),
         LoopSpec("live_micro_quote_balance_truth", "ops", 8.0, _live_micro_quote_balance_truth),
         LoopSpec("live_micro_candidate_execution", "ops", 10.0, _live_micro_candidate_execution),
+        LoopSpec("live_micro_position_manager", "ops", 6.0, _live_micro_position_manager),
         LoopSpec("simulation_cycle", "ops", 25.0, _simulation_cycle),
         LoopSpec("outcome_ingestion", "ops", 30.0, _outcome_ingestion),
         LoopSpec("fast_health_snapshot", "ops", 30.0, _fast_health_snapshot),
