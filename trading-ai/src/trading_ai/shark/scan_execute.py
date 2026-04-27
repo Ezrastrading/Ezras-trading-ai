@@ -385,9 +385,12 @@ def run_scan_execution_cycle(
 
             if outlet.lower() == "metaculus":
                 continue
-            if outlet.lower() != "kalshi":
+            # Allow Coinbase execution when COINBASE_ENABLED is true (Avenue A)
+            # Otherwise restrict to Kalshi only for live execution
+            coinbase_enabled = (os.environ.get("COINBASE_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+            if outlet.lower() != "kalshi" and not (outlet.lower() == "coinbase" and coinbase_enabled):
                 logger.info(
-                    "%s: live execution skipped (Kalshi only) outlet=%s market=%s",
+                    "%s: live execution skipped (Kalshi only, Coinbase requires COINBASE_ENABLED=true) outlet=%s market=%s",
                     tag,
                     outlet,
                     m.market_id,
