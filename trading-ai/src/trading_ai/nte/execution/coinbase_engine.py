@@ -20,9 +20,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Add src directory to Python path for module imports
-src_path = Path(__file__).resolve().parents[3]
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+# Handle both local and Railway directory structures
+file_path = Path(__file__).resolve()
+possible_src_paths = [
+    file_path.parents[3],  # Local: trading-ai/src
+    file_path.parents[4],  # Railway: /app/trading-ai/src
+]
+for src_path in possible_src_paths:
+    if src_path.exists() and (src_path / "trading_ai").exists():
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+        break
 
 from trading_ai.nte.execution.coinbase_sizing import (
     _PRODUCT_BASE_PRECISION,
