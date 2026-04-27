@@ -1,12 +1,24 @@
-import sys
-from pathlib import Path
+"""
+NTE data module for Avenue A Coinbase execution.
 
-# Add src directory to Python path for module imports
-src_path = Path(__file__).resolve().parents[3]
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+Exports:
+- FeatureSnapshot, compute_features from feature_engine
+- classify_market from market_classifier
+- ProductMarketState from market_state
+- AdvancedTradeWSFeed from ws_advanced_trade
+"""
 
-# Import from sibling module to avoid circular import
+from __future__ import annotations
+
 from .feature_engine import FeatureSnapshot, compute_features
+from .market_classifier import classify_market
+from .market_state import ProductMarketState
+from .ws_advanced_trade import AdvancedTradeWSFeed
 
-__all__ = ["FeatureSnapshot", "compute_features"]
+__all__ = [
+    "FeatureSnapshot",
+    "compute_features",
+    "classify_market",
+    "ProductMarketState",
+    "AdvancedTradeWSFeed",
+]

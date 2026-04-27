@@ -178,6 +178,20 @@ def main() -> None:
     print(banner)
     log.info("%s", banner)
 
+    # ── NTE import self-test ─────────────────────────────────────────────────────
+    log.info("Running NTE import self-test...")
+    try:
+        import trading_ai
+        import trading_ai.nte.data
+        import trading_ai.nte.execution.coinbase_engine
+        log.info("NTE_IMPORT_SELFTEST_OK=true")
+    except ImportError as e:
+        log.error("NTE_IMPORT_SELFTEST_OK=false - Import failed: %s", e)
+        sys.exit(1)
+
+    # ── Coinbase 24/7 market status ─────────────────────────────────────────────
+    log.info("Avenue A Coinbase market status: OPEN_24_7")
+
     try:
         from trading_ai.shark.scheduler import build_shark_scheduler
     except ImportError:
@@ -1292,7 +1306,7 @@ def main() -> None:
                     _idle_state["last_idle_alert"] = now
                 if now - _idle_state["last_market_hint"] >= 300.0:
                     log.info(
-                        "Waiting for markets... Market hours: crypto opens 9am ET, sports active during games"
+                        "Waiting for markets... Market hours: Coinbase crypto 24/7, Kalshi sports active during games"
                     )
                     _idle_state["last_market_hint"] = now
             except Exception as exc:
