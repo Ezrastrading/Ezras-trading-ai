@@ -120,7 +120,7 @@ def _post_scan_balance_sync() -> None:
 
         sync_all_platforms()
     except Exception as exc:
-        logger.warning("balance sync after scan failed (non-blocking): %s", exc)
+        logger.info("balance sync after scan failed (non-blocking): %s", exc)
     try:
         from trading_ai.core.portfolio_engine import PortfolioEngine, maybe_rebalance_if_due
         from trading_ai.shark.state_store import load_capital

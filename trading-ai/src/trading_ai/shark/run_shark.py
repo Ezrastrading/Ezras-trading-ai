@@ -147,6 +147,17 @@ def main() -> None:
     except Exception as exc:
         log.warning("Coinbase accumulator init failed (non-blocking): %s", exc)
 
+    # ── Avenue A startup report ───────────────────────────────────────────────────
+    try:
+        from trading_ai.shark.avenue_a_startup_report import print_avenue_a_startup_report
+
+        avenue_a_report = print_avenue_a_startup_report()
+        blockers = avenue_a_report.get("AVENUE_A_RUNTIME", {}).get("blockers", [])
+        if blockers:
+            log.warning("Avenue A startup blockers detected: %s", blockers)
+    except Exception as exc:
+        log.warning("Avenue A startup report failed (non-blocking): %s", exc)
+
     rec = load_capital()
     g = load_gaps()
     gaps_n = len(g.get("gaps_under_observation") or [])

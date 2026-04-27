@@ -218,10 +218,36 @@ def _submit_order_impl(intent: ExecutionIntent) -> OrderResult:
     Manifold: ``MANIFOLD_API_KEY`` (``submit_manifold_bet``).
     """
     o = (intent.outlet or "").lower()
+
+    # ── Avenue A enforcement: Coinbase only, block Kalshi ─────────────────────
+    # Avenue A = Coinbase only. Kalshi = Avenue B only. No mixed outlet routing.
+    if o == "kalshi":
+        # Check if Coinbase Avenue A is enabled - if so, block Kalshi execution
+        coinbase_enabled = (
+            (os.environ.get("COINBASE_EXECUTION_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+            or (os.environ.get("COINBASE_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+        )
+        if coinbase_enabled:
+            logger.info(
+                "Avenue A enforcement: Kalshi execution blocked (Avenue A = Coinbase only, Kalshi = Avenue B only)"
+            )
+            return OrderResult(
+                order_id="",
+                filled_price=0.0,
+                filled_size=0.0,
+                timestamp=time.time(),
+                status="avenue_a_blocked",
+                outlet="kalshi",
+                raw={},
+                success=False,
+                reason="Avenue A requires Coinbase only; Kalshi is Avenue B only",
+            )
+    # ── End Avenue A enforcement ───────────────────────────────────────────────
+
     if o == "polymarket":
         poly_exec = (os.getenv("POLY_EXECUTION_ENABLED") or "false").strip().lower()
         if poly_exec != "true":
-            logger.warning("Polymarket execution disabled — intelligence-only (POLY_EXECUTION_ENABLED not true)")
+            logger.info("Polymarket execution disabled — intelligence-only (POLY_EXECUTION_ENABLED not true)")
             return OrderResult(
                 order_id="",
                 filled_price=0.0,
@@ -233,7 +259,7 @@ def _submit_order_impl(intent: ExecutionIntent) -> OrderResult:
                 success=False,
                 reason="Polymarket execution disabled",
             )
-        logger.warning("Polymarket order blocked — US geoblock (scan-only intelligence)")
+        logger.info("Polymarket order blocked — US geoblock (scan-only intelligence)")
         return OrderResult(
             order_id="",
             filled_price=0.0,
