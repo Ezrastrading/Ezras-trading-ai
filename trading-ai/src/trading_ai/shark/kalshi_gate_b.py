@@ -425,7 +425,7 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
                     yes_ask /= 100.0
                 if no_ask > 1.0:
                     no_ask /= 100.0
-                logger.debug("Market %d rejected: ticker=%s yes_ask=%s no_ask=%s", debug_count, ticker, yes_ask, no_ask)
+                logger.info("Market %d rejected: ticker=%s yes_ask=%s no_ask=%s", debug_count, ticker, yes_ask, no_ask)
             continue
         candidates.append(
             {
