@@ -275,6 +275,8 @@ class CoinbaseClient:
         self._key_name = api_key
         self._pem = pem
         self._private_key = None
+        # Log single auth source enforcement
+        logger.info("COINBASE_AUTH_PATH=python_primary")
         # Non-secret credential resolution log (only when values change).
         try:
             suffix = self._key_name[-8:] if self._key_name else None
