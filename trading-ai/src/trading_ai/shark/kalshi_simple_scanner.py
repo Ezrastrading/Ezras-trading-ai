@@ -32,17 +32,9 @@ def _kalshi_crypto_series(ticker: str) -> bool:
 
 
 def _kalshi_crypto_market_hours_ok(ticker: str) -> bool:
-    """Day A: BTC/ETH Kalshi series only trade 9am–5pm ET Mon–Fri."""
-    if not _kalshi_crypto_series(ticker):
-        return True
-    from datetime import datetime
-
-    from zoneinfo import ZoneInfo
-
-    et = datetime.now(ZoneInfo("America/New_York"))
-    if et.weekday() >= 5:
-        return False
-    return 9 <= et.hour < 17
+    """Kalshi crypto: market-dependent (event-based), scanning continuously."""
+    # Kalshi crypto markets are event-based, not fixed 9-5 hours
+    return True
 
 
 def _parse_kalshi_threshold_usd(ticker: str) -> Optional[float]:

@@ -8,6 +8,22 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+# Position exit alert dedupe: position_id -> last_alert_timestamp
+_POSITION_EXIT_ALERTS: Dict[str, float] = {}
+
+
+def _should_send_exit_alert(position_id: str, min_interval_sec: float = 300) -> bool:
+    """Check if exit alert should be sent (max 1 alert per position lifecycle)."""
+    if not position_id:
+        return False
+    last_sent = _POSITION_EXIT_ALERTS.get(position_id, 0)
+    now = time.time()
+    if now - last_sent < min_interval_sec:
+        logger.debug("exit alert deduped for position %s (last sent %.0f seconds ago)", position_id, now - last_sent)
+        return False
+    _POSITION_EXIT_ALERTS[position_id] = now
+    return True
+
 
 def _env_truthy(name: str, default: str = "false") -> bool:
     import os
@@ -137,9 +153,11 @@ def run_kalshi_profit_exit_scan() -> None:
                 cur_c,
                 gpct,
             )
-            send_telegram(
-                f"💰 PROFIT EXIT — {tid} +{gpct:.1f}% in {mins}min, ${pnl_est:.2f} profit"
-            )
+            # Debounce: max 1 alert per position lifecycle
+            if pid and _should_send_exit_alert(pid):
+                send_telegram(
+                    f"💰 PROFIT EXIT — {tid} +{gpct:.1f}% in {mins}min, ${pnl_est:.2f} profit"
+                )
         else:
             logger.info(
                 "🛑 STOP LOSS: [%s] entry=%sc current=%sc gain=%.2f%%",
@@ -149,9 +167,11 @@ def run_kalshi_profit_exit_scan() -> None:
                 gpct,
             )
             loss_amt = abs(pnl_est) if pnl_est < 0 else 0.0
-            send_telegram(
-                f"🛑 STOP LOSS — {tid} {gpct:.1f}%, cutting loss ${loss_amt:.2f}"
-            )
+            # Debounce: max 1 alert per position lifecycle
+            if pid and _should_send_exit_alert(pid):
+                send_telegram(
+                    f"🛑 STOP LOSS — {tid} {gpct:.1f}%, cutting loss ${loss_amt:.2f}"
+                )
 
         try:
             apply_win_loss_to_capital(pnl_est)

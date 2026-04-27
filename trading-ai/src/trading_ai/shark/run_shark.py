@@ -647,18 +647,9 @@ def main() -> None:
     # ── Schedule-awareness helpers ─────────────────────────────────────────────
 
     def is_crypto_market_hours() -> bool:
-        """Legacy helper for hourly Telegram: US weekday 9–5 ET (Kalshi crypto runs 24/7)."""
-        try:
-            from datetime import datetime
-
-            from zoneinfo import ZoneInfo
-
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-            if now_et.weekday() >= 5:
-                return False
-            return 9 <= now_et.hour < 17
-        except Exception:
-            return True
+        """Kalshi: market-dependent (event-based), scanning continuously."""
+        # Kalshi crypto markets are event-based, not fixed 9-5 hours
+        return True
 
     def kalshi_index_blitz() -> None:
         if (os.environ.get("KALSHI_INDEX_BLITZ_ENABLED") or "false").strip().lower() not in ("1", "true", "yes"):
@@ -1306,7 +1297,7 @@ def main() -> None:
                     _idle_state["last_idle_alert"] = now
                 if now - _idle_state["last_market_hint"] >= 300.0:
                     log.info(
-                        "Waiting for markets... Market hours: Coinbase crypto 24/7, Kalshi sports active during games"
+                        "Kalshi: market-dependent (event-based), scanning continuously"
                     )
                     _idle_state["last_market_hint"] = now
             except Exception as exc:

@@ -157,13 +157,13 @@ def send_job_exit_alert_throttled(
     traceback_summary: str,
     next_action: str,
 ) -> bool:
-    """Send job exit alert with 30-minute hard dedupe (survives restarts)."""
+    """Send job exit alert with 60-second dedupe (suppress repeated identical failures)."""
     # Create dedupe key from job + exit_code + reason + traceback
     dedupe_key = f"{job_name}:{exit_code}:{reason}:{traceback_summary[:100]}"
     
-    # Check hard dedupe (30 minutes = 1800 seconds)
-    if not _should_send_alert(dedupe_key, min_interval_sec=1800):
-        logger.debug("job exit alert hard-deduped for %s", job_name)
+    # Check dedupe (60 seconds)
+    if not _should_send_alert(dedupe_key, min_interval_sec=60):
+        logger.debug("job exit alert deduped for %s (within 60s)", job_name)
         return False
     
     # Extract actual exception line from traceback (not just "Traceback")
