@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,48 @@ def require_telegram_credentials() -> tuple[str, str]:
 _LAST_ALERTS: List[Dict[str, Any]] = []
 _FATAL_TELEGRAM_SENT = False
 _JOB_EXIT_ALERTS: Dict[str, float] = {}  # job_name -> last_alert_timestamp
+_ALERT_DEDUPE_FILE = Path(os.environ.get("EZRAS_RUNTIME_ROOT", "/app/ezras-runtime")) / "shark/state/alert_dedupe.json"
+
+
+def telegram_alerts_enabled() -> bool:
+    """Global kill switch for all Telegram alerts."""
+    return (os.environ.get("EZRA_TELEGRAM_ALERTS_ENABLED") or "true").strip().lower() in ("1", "true", "yes")
+
+
+def _load_alert_dedupe() -> Dict[str, float]:
+    """Load alert dedupe state from file."""
+    try:
+        if _ALERT_DEDUPE_FILE.exists():
+            data = json.loads(_ALERT_DEDUPE_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_alert_dedupe(data: Dict[str, float]) -> None:
+    """Save alert dedupe state to file."""
+    try:
+        _ALERT_DEDUPE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ALERT_DEDUPE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as e:
+        logger.warning("failed to save alert dedupe state: %s", e)
+
+
+def _should_send_alert(dedupe_key: str, min_interval_sec: float = 1800) -> bool:
+    """Check if alert should be sent based on dedupe file state (survives restarts)."""
+    dedupe_state = _load_alert_dedupe()
+    last_sent = dedupe_state.get(dedupe_key, 0)
+    now = time.time()
+    
+    if now - last_sent < min_interval_sec:
+        logger.debug("alert deduped: %s (last sent %.0f seconds ago)", dedupe_key, now - last_sent)
+        return False
+    
+    # Update dedupe state
+    dedupe_state[dedupe_key] = now
+    _save_alert_dedupe(dedupe_state)
+    return True
 
 
 def log_telegram_failure(message: str, err: str) -> None:
@@ -47,6 +90,11 @@ def log_telegram_failure(message: str, err: str) -> None:
 
 
 def send_telegram(message: str) -> bool:
+    # Global kill switch
+    if not telegram_alerts_enabled():
+        logger.debug("telegram alert disabled (EZRA_TELEGRAM_ALERTS_ENABLED=false)")
+        return False
+    
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
@@ -109,24 +157,30 @@ def send_job_exit_alert_throttled(
     traceback_summary: str,
     next_action: str,
 ) -> bool:
-    """Send job exit alert with 15-minute throttling per job."""
-    global _JOB_EXIT_ALERTS
-    now = time.time()
-    last_alert = _JOB_EXIT_ALERTS.get(job_name, 0)
+    """Send job exit alert with 30-minute hard dedupe (survives restarts)."""
+    # Create dedupe key from job + exit_code + reason + traceback
+    dedupe_key = f"{job_name}:{exit_code}:{reason}:{traceback_summary[:100]}"
     
-    # Throttle: max 1 alert per 15 minutes per job
-    if now - last_alert < 900:  # 15 minutes = 900 seconds
-        logger.debug("job exit alert throttled for %s (last alert %.0f seconds ago)", job_name, now - last_alert)
+    # Check hard dedupe (30 minutes = 1800 seconds)
+    if not _should_send_alert(dedupe_key, min_interval_sec=1800):
+        logger.debug("job exit alert hard-deduped for %s", job_name)
         return False
     
-    _JOB_EXIT_ALERTS[job_name] = now
+    # Extract actual exception line from traceback (not just "Traceback")
+    tb_lines = traceback_summary.split('\n')
+    exception_line = "no exception details"
+    for line in tb_lines:
+        line = line.strip()
+        if line and not line.startswith("Traceback") and not line.startswith("File") and not line.startswith("  "):
+            exception_line = line
+            break
     
     message = (
         "🛑 SHARK JOB FAILED\n"
         f"job={job_name}\n"
         f"exit_code={exit_code}\n"
         f"reason={reason}\n"
-        f"traceback_first_line={traceback_summary}\n"
+        f"exception={exception_line}\n"
         f"next_action={next_action}"
     )
     
