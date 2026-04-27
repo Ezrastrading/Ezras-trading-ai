@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-DATABANK_SCHEMA_VERSION = "1.2.1"
+DATABANK_SCHEMA_VERSION = "1.2.2"
 
 # Locked globally — do not alias elsewhere (Section 8).
 AVENUE_REGISTRY: Dict[str, str] = {
@@ -86,8 +86,16 @@ def merge_defaults(raw: Dict[str, Any]) -> Dict[str, Any]:
         "exit_slippage_bps": 0.0,
         "hold_seconds": 0.0,
         "gross_pnl": 0.0,
-        "fees_paid": 0.0,
+        "entry_fee": 0.0,
+        "exit_fee": 0.0,
+        "total_fees": 0.0,
+        "estimated_slippage": 0.0,
+        "spread_cost": 0.0,
         "net_pnl": 0.0,
+        "net_roi": 0.0,
+        "fee_dominance_ratio": 0.0,
+        "expected_edge_before_cost": 0.0,
+        "expected_edge_after_cost": 0.0,
         "shadow_price": None,
         "shadow_diff_bps": None,
         "discipline_ok": True,
@@ -179,8 +187,16 @@ def row_for_supabase_trade_events(merged: Dict[str, Any], scores: Mapping[str, A
         "exit_slippage_bps",
         "hold_seconds",
         "gross_pnl",
-        "fees_paid",
+        "entry_fee",
+        "exit_fee",
+        "total_fees",
+        "estimated_slippage",
+        "spread_cost",
         "net_pnl",
+        "net_roi",
+        "fee_dominance_ratio",
+        "expected_edge_before_cost",
+        "expected_edge_after_cost",
         "shadow_price",
         "shadow_diff_bps",
         "discipline_ok",

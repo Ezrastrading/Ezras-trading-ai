@@ -47,6 +47,17 @@ def coinbase_nt_close_to_databank_raw(
     fees = float(record.get("fees_usd") or record.get("fees") or 0.0)
     gross = float(record.get("gross_pnl_usd") or 0.0)
     net = float(record.get("net_pnl_usd") or 0.0)
+    
+    # Calculate fee breakdown
+    entry_fee = fees * 0.5  # Assume 50/50 split for entry/exit if not specified
+    exit_fee = fees * 0.5
+    total_fees = fees
+    estimated_slippage = abs(float(record.get("entry_slippage_bps") or 0.0) / 10000.0) * (gross if gross != 0 else 1.0)
+    spread_cost = abs(float(record.get("spread_bps_entry") or 0.0) / 10000.0) * (gross if gross != 0 else 1.0)
+    net_roi = (net / abs(gross)) * 100.0 if gross != 0 else 0.0
+    fee_dominance_ratio = (total_fees / abs(gross)) if gross != 0 else 0.0
+    expected_edge_before_cost = float(record.get("expected_edge_bps") or 0.0)
+    expected_edge_after_cost = expected_edge_before_cost - (total_fees / abs(gross) * 10000.0) if gross != 0 else expected_edge_before_cost
 
     rm = record.get("realized_move_bps")
     entry_slip = None
@@ -79,7 +90,15 @@ def coinbase_nt_close_to_databank_raw(
         "expected_edge_bps": float(record.get("expected_edge_bps") or 0.0),
         "net_pnl": net,
         "gross_pnl": gross,
-        "fees_paid": fees,
+        "entry_fee": entry_fee,
+        "exit_fee": exit_fee,
+        "total_fees": total_fees,
+        "estimated_slippage": estimated_slippage,
+        "spread_cost": spread_cost,
+        "net_roi": net_roi,
+        "fee_dominance_ratio": fee_dominance_ratio,
+        "expected_edge_before_cost": expected_edge_before_cost,
+        "expected_edge_after_cost": expected_edge_after_cost,
         "exit_reason": str(exit_reason),
         "maker_taker": "taker" if str(record.get("execution_type") or "").find("market") >= 0 else "maker",
     }
