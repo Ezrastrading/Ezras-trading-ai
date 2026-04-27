@@ -54,6 +54,28 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
     if not cb_enabled:
         blockers.append("COINBASE_EXECUTION_ENABLED_or_COINBASE_ENABLED_not_true")
     
+    # Check Coinbase credentials presence (without printing secrets)
+    cb_key = (os.environ.get("COINBASE_API_KEY_NAME") or os.environ.get("COINBASE_API_KEY") or "").strip()
+    cb_secret = (os.environ.get("COINBASE_API_PRIVATE_KEY") or os.environ.get("COINBASE_API_SECRET") or "").strip()
+    cb_auth_env_present = bool(cb_key and cb_secret)
+    
+    # Try Coinbase balance check
+    cb_balance_check = "ok"
+    if cb_auth_env_present:
+        try:
+            from trading_ai.shark.coinbase_tracker import get_coinbase_balance
+            
+            balance = get_coinbase_balance()
+            if not balance or balance.get("error"):
+                cb_balance_check = "unauthorized_or_error"
+                blockers.append("coinbase_balance_check_failed")
+        except Exception as e:
+            cb_balance_check = f"check_failed:{str(e)[:50]}"
+            blockers.append(f"coinbase_balance_check_exception:{str(e)[:50]}")
+    else:
+        cb_balance_check = "no_credentials"
+        blockers.append("coinbase_credentials_missing")
+    
     # Check dry-run mode
     dry_run = is_dry_run()
     if dry_run:
@@ -80,7 +102,8 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
             "daemon": "ok" if cb_enabled else "fail",
             "scheduler": "ok",  # Scheduler is always running in shark daemon
             "coinbase_auth": "ok" if cb_enabled else "fail",
-            "coinbase_balance": "ok",  # Balance checked by CoinbaseAccumulator
+            "coinbase_auth_env_present": cb_auth_env_present,
+            "coinbase_balance_check": cb_balance_check,
             "coinbase_entry_path": "ok" if cb_enabled else "fail",
             "coinbase_exit_path": "ok" if cb_enabled else "fail",
             "kalshi_disabled_for_A": not kalshi_enabled,
@@ -96,7 +119,8 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
     print(f"daemon: {report['AVENUE_A_RUNTIME']['daemon']}")
     print(f"scheduler: {report['AVENUE_A_RUNTIME']['scheduler']}")
     print(f"coinbase_auth: {report['AVENUE_A_RUNTIME']['coinbase_auth']}")
-    print(f"coinbase_balance: {report['AVENUE_A_RUNTIME']['coinbase_balance']}")
+    print(f"coinbase_auth_env_present: {report['AVENUE_A_RUNTIME']['coinbase_auth_env_present']}")
+    print(f"coinbase_balance_check: {report['AVENUE_A_RUNTIME']['coinbase_balance_check']}")
     print(f"coinbase_entry_path: {report['AVENUE_A_RUNTIME']['coinbase_entry_path']}")
     print(f"coinbase_exit_path: {report['AVENUE_A_RUNTIME']['coinbase_exit_path']}")
     print(f"kalshi_disabled_for_A: {report['AVENUE_A_RUNTIME']['kalshi_disabled_for_A']}")
