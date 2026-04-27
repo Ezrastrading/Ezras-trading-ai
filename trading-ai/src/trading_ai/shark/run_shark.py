@@ -1334,9 +1334,19 @@ def _safe_main() -> None:
         code = e.code
         if code not in (0, None, False):
             try:
-                from trading_ai.shark.reporting import send_telegram_fatal_once
+                from trading_ai.shark.reporting import send_job_exit_alert_throttled
 
-                send_telegram_fatal_once(f"🛑 SHARK EXIT\nnon-zero exit: {code!r}")
+                # Extract traceback first line for context
+                tb_lines = traceback.format_exc().split('\n')
+                tb_first = tb_lines[0] if tb_lines else "no traceback"
+                
+                send_job_exit_alert_throttled(
+                    job_name="shark_main",
+                    exit_code=code or 1,
+                    reason=f"SystemExit with code {code}",
+                    traceback_summary=tb_first[:200],
+                    next_action="check logs for job failure",
+                )
             except Exception:
                 pass
         raise

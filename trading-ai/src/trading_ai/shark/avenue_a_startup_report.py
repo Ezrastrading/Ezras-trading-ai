@@ -57,22 +57,23 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
     # Check dry-run mode
     dry_run = is_dry_run()
     if dry_run:
-        blockers.append("dry_run_mode_active")
+        # Dry-run mode is OK for testing - not a blocker
+        logger.info("dry_run_mode_active (ok for testing)")
+    else:
+        # For live mode, check live trading flag
+        live_enabled = (os.environ.get("NTE_LIVE_TRADING_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+        if not live_enabled:
+            blockers.append("NTE_LIVE_TRADING_ENABLED_not_true")
+        
+        # Check execution mode
+        exec_mode = os.environ.get("NTE_EXECUTION_MODE", "unknown")
+        if exec_mode.lower() != "live":
+            blockers.append(f"NTE_EXECUTION_MODE_not_live_{exec_mode}")
     
-    # Check if Kalshi is accidentally enabled for Avenue A
+    # Check if Kalshi is accidentally enabled for Avenue A (always block regardless of mode)
     kalshi_enabled = kalshi_avenue_execution_enabled()
     if kalshi_enabled:
         blockers.append("GATE_B_LIVE_EXECUTION_ENABLED_true_for_Avenue_A")
-    
-    # Check live trading flag
-    live_enabled = (os.environ.get("NTE_LIVE_TRADING_ENABLED") or "").strip().lower() in ("1", "true", "yes")
-    if not live_enabled:
-        blockers.append("NTE_LIVE_TRADING_ENABLED_not_true")
-    
-    # Check execution mode
-    exec_mode = os.environ.get("NTE_EXECUTION_MODE", "unknown")
-    if exec_mode.lower() != "live":
-        blockers.append(f"NTE_EXECUTION_MODE_not_live_{exec_mode}")
     
     report = {
         "AVENUE_A_RUNTIME": {

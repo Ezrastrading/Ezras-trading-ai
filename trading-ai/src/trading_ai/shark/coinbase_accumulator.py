@@ -68,6 +68,12 @@ class CoinbaseAccumulator:
 
     def _run_exits_only(self) -> None:
         """Scheduled ~NTE_FAST_TICK_SECONDS: exits + stale limit cancels."""
+        # Guard: if no open positions, skip cleanly with log
+        summary = self.get_summary()
+        open_positions = summary.get("open_positions", [])
+        if not open_positions or len(open_positions) == 0:
+            logger.info("no open positions; exit check skipped cleanly")
+            return
         self._engine.run_fast_tick()
 
     def dawn_sweep_gate_a(self) -> int:

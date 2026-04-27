@@ -39,6 +39,7 @@ def require_telegram_credentials() -> tuple[str, str]:
 
 _LAST_ALERTS: List[Dict[str, Any]] = []
 _FATAL_TELEGRAM_SENT = False
+_JOB_EXIT_ALERTS: Dict[str, float] = {}  # job_name -> last_alert_timestamp
 
 
 def log_telegram_failure(message: str, err: str) -> None:
@@ -97,6 +98,39 @@ def send_telegram_fatal_once(message: str) -> bool:
         logger.debug("fatal telegram skipped (already sent this process)")
         return False
     _FATAL_TELEGRAM_SENT = True
+    return send_telegram(message)
+
+
+def send_job_exit_alert_throttled(
+    *,
+    job_name: str,
+    exit_code: int,
+    reason: str,
+    traceback_summary: str,
+    next_action: str,
+) -> bool:
+    """Send job exit alert with 15-minute throttling per job."""
+    global _JOB_EXIT_ALERTS
+    now = time.time()
+    last_alert = _JOB_EXIT_ALERTS.get(job_name, 0)
+    
+    # Throttle: max 1 alert per 15 minutes per job
+    if now - last_alert < 900:  # 15 minutes = 900 seconds
+        logger.debug("job exit alert throttled for %s (last alert %.0f seconds ago)", job_name, now - last_alert)
+        return False
+    
+    _JOB_EXIT_ALERTS[job_name] = now
+    
+    message = (
+        "🛑 SHARK JOB FAILED\n"
+        f"job={job_name}\n"
+        f"exit_code={exit_code}\n"
+        f"reason={reason}\n"
+        f"traceback_first_line={traceback_summary}\n"
+        f"next_action={next_action}"
+    )
+    
+    logger.info("sending job exit alert for %s: exit_code=%s", job_name, exit_code)
     return send_telegram(message)
 
 
