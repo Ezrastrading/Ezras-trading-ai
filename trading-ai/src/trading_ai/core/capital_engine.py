@@ -150,12 +150,16 @@ def capital_preflight_block(
     daily_pnl_usd: float = 0.0,
     day_start_balance_usd: float = 0.0,
     limits: Optional[CapitalLimits] = None,
+    avenue: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Returns ``(blocked, reason)`` for a proposed order.
 
     Hydrate ``day_utc`` to today before calling so ``daily_pnl_usd`` / ``day_start_balance_usd``
     from an external ledger are not cleared by day roll.
+    
+    Args:
+        avenue: Optional avenue identifier (e.g., "coinbase", "kalshi") for avenue-specific capital checks.
     """
     ce = CapitalEngine(limits=limits or CapitalLimits())
     d = str(_today_utc())
@@ -169,4 +173,10 @@ def capital_preflight_block(
         proposed_trade_usd=float(proposed_trade_usd),
         account_balance_usd=float(account_balance_usd),
     )
+    
+    # Log avenue-specific capital if provided
+    if avenue:
+        logger.info("CapitalPreflight (Avenue: %s): balance=$%.2f, proposed=$%.2f, blocked=%s, reason=%s",
+                   avenue, account_balance_usd, proposed_trade_usd, blocked, reason or "ok")
+    
     return blocked, reason

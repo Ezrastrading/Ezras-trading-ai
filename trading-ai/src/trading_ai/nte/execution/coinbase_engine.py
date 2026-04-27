@@ -1537,6 +1537,7 @@ class CoinbaseNTEngine:
             open_exposure_usd=open_exp,
             daily_pnl_usd=day_pnl,
             day_start_balance_usd=day_start,
+            avenue="coinbase",
         )
         if blocked_ce:
             logger.info("NTE skip entry: capital preflight (%s)", cr)

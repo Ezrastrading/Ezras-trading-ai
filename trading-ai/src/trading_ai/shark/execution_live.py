@@ -177,6 +177,7 @@ def _core_execution_preflight(intent: ExecutionIntent) -> Optional[OrderResult]:
             open_exposure_usd=exposure,
             daily_pnl_usd=0.0,
             day_start_balance_usd=bal,
+            avenue="kalshi",
         )
         if blocked:
             return OrderResult(

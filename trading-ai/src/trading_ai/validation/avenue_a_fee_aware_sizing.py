@@ -47,12 +47,13 @@ class FirstTradeSizingResult:
 
 def fee_aware_first_trade_size(
     *,
-    equity_usd: float,
+    equity_usd: Optional[float] = None,
     venue_min_notional: float,
     expected_edge_bps: float,
     fee_model: Optional[CoinbaseFeeModel] = None,
     min_net_profit_buffer_usd: float = 0.50,
     assume_maker_entry: bool = True,
+    avenue: str = "coinbase",
 ) -> FirstTradeSizingResult:
     """
     Calculate fee-aware first-trade size for Avenue A.
@@ -60,18 +61,45 @@ def fee_aware_first_trade_size(
     Rejects trades that are fee-dominated (fees/slippage likely exceed edge).
     
     Args:
-        equity_usd: Account equity in USD
+        equity_usd: Account equity in USD (if None, fetched from avenue)
         venue_min_notional: Minimum order size from venue (e.g., $2.00)
         expected_edge_bps: Expected edge in basis points
         fee_model: Coinbase fee/slippage model
         min_net_profit_buffer_usd: Minimum net profit after all costs
         assume_maker_entry: Whether entry is maker (limit) or taker (market)
+        avenue: The avenue to fetch capital from (default: "coinbase")
     
     Returns:
         FirstTradeSizingResult with sizing decision and detailed metadata
     """
     if fee_model is None:
         fee_model = CoinbaseFeeModel()
+    
+    # Fetch equity from avenue if not provided
+    if equity_usd is None:
+        try:
+            from trading_ai.core.avenue_capital import get_capital_for_trade
+            equity_usd = get_capital_for_trade(avenue)
+            if equity_usd == 0.0:
+                return FirstTradeSizingResult(
+                    False,
+                    0.0,
+                    "capital_not_available",
+                    {
+                        "avenue": avenue,
+                        "message": f"Capital not available for avenue {avenue}",
+                    },
+                )
+        except Exception as exc:
+            return FirstTradeSizingResult(
+                False,
+                0.0,
+                "capital_fetch_error",
+                {
+                    "avenue": avenue,
+                    "error": str(exc),
+                },
+            )
     
     try:
         eq = float(equity_usd)
@@ -169,6 +197,7 @@ def fee_aware_first_trade_size(
         quote,
         "ok",
         {
+            "avenue": avenue,
             "equity_usd": eq,
             "baseline_quote": baseline_quote,
             "venue_min_notional": float(venue_min_notional),

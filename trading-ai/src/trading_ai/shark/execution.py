@@ -273,6 +273,7 @@ def run_execution_chain(
                 open_exposure_usd=exposure,
                 daily_pnl_usd=0.0,
                 day_start_balance_usd=float(capital),
+                avenue=str(intent.outlet or "").lower(),
             )
             if blocked:
                 _append(audit, "1d_capital_engine", ok=False, reason=creason)
