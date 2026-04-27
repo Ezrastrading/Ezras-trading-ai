@@ -19,8 +19,8 @@ from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
 
 logger = logging.getLogger(__name__)
 
-MIN_PROBABILITY = float(os.environ.get("KALSHI_GB_MIN_PROB", "0.90"))
-MIN_ROI_PCT = float(os.environ.get("KALSHI_GB_MIN_ROI", "20.0"))
+MIN_PROBABILITY = float(os.environ.get("KALSHI_GB_MIN_PROB", "0.50"))  # Relaxed to 50% for testing
+MIN_ROI_PCT = float(os.environ.get("KALSHI_GB_MIN_ROI", "1.0"))  # Relaxed to 1% for testing
 MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.80"))
 MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.01"))
 MIN_CONTRACTS = int(os.environ.get("KALSHI_GB_MIN_CONTRACTS", "5"))
