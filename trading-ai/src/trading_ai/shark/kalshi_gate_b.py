@@ -30,6 +30,8 @@ ALLOCATION_PCT = float(os.environ.get("KALSHI_GB_ALLOCATION_PCT", "0.15"))
 MAX_CONCURRENT = int(os.environ.get("KALSHI_GB_MAX_CONCURRENT", "20"))
 SCAN_INTERVAL = float(os.environ.get("KALSHI_GB_SCAN_INTERVAL", "60"))
 
+logger.info("Gate B config: MIN_PROB=%s MIN_ROI=%s TTR_MIN=%s TTR_MAX=%s", MIN_PROBABILITY, MIN_ROI_PCT, TTR_MIN, TTR_MAX)
+
 SKIP_SUBSTR = tuple(
     x.strip().upper()
     for x in (os.environ.get("KALSHI_GB_SKIP_TICKER_SUBSTR") or "KXNBA-26,KXMLB-26").split(",")
