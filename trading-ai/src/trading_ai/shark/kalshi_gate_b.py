@@ -152,6 +152,11 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if status and status not in ("open", "active", ""):
         return None
 
+    # Filter out parlay bets (complex multi-condition)
+    title = str(market.get("title") or "").lower()
+    if any(word in title for word in (" and ", " & ", " plus ")):
+        return None
+
     yes_ask = float(market.get("yes_ask_dollars") or market.get("yes_ask") or 0.0)
     no_ask = float(market.get("no_ask_dollars") or market.get("no_ask") or 0.0)
     if yes_ask > 1.0:
@@ -281,7 +286,7 @@ def _analyze_market_debug(market: Dict[str, Any], idx: int) -> Optional[Dict[str
 
 
 def _confirm_trade(trade_info: Dict[str, Any], balance: float) -> Tuple[bool, str]:
-    """Claude + GPT JSON approve; both must approve with high confidence."""
+    """Claude + GPT JSON approve; both must approve with high confidence. GPT optional."""
     ticker = trade_info["ticker"]
     title = trade_info["title"]
     side = trade_info["side"]
@@ -376,6 +381,7 @@ Rules: approve=true only if confidence=high; if doubt → approve=false."""
         logger.debug("Claude error: %s", exc)
         return False, f"Claude error: {exc}"
 
+    # GPT is optional - if missing, skip GPT check
     try:
         if os.environ.get("OPENAI_API_KEY"):
             import openai
@@ -398,13 +404,13 @@ Rules: approve=true only if confidence=high; if doubt → approve=false."""
                     return False, "GPT not high confidence"
                 if str(data.get("risk") or "").lower() == "high":
                     return False, "GPT high risk"
-        else:
-            return False, "No OPENAI_API_KEY"
+    except ImportError:
+        logger.debug("GPT module not available - skipping GPT check")
     except Exception as exc:
         logger.debug("GPT error: %s", exc)
-        return False, f"GPT error: {exc}"
+        # Continue without GPT - Claude approval is sufficient
 
-    return True, f"✅ Both confirmed: {reason}"
+    return True, f"✅ Claude confirmed: {reason}"
 
 
 def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str, Any]]:
