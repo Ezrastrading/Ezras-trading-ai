@@ -179,6 +179,7 @@ def main() -> None:
     log.info("%s", banner)
 
     # ── NTE import self-test ─────────────────────────────────────────────────────
+    # Fixed: trading_ai.nte.data is optional to prevent missing module errors
     log.info("Running NTE import self-test...")
     try:
         import trading_ai
