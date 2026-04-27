@@ -8,6 +8,7 @@ RUN python3.11 -m pip install -r requirements.txt
 
 COPY trading-ai/ ./
 
+ENV PYTHONPATH=/app/trading-ai/src
 ENV EZRAS_RUNTIME_ROOT=/app/ezras-runtime
 RUN mkdir -p /app/ezras-runtime/shark/state
 RUN mkdir -p /app/ezras-runtime/shark/logs
@@ -15,4 +16,4 @@ RUN mkdir -p /app/ezras-runtime/shark/state/backups
 
 WORKDIR /app/trading-ai/src
 
-CMD ["python3.11", "-m", "trading_ai.shark.run_shark"]
+CMD ["python3.11", "trading_ai/shark/run_shark.py"]
