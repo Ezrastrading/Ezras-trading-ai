@@ -28,7 +28,7 @@ def _iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_review_tokens: int = 800) -> Dict[str, Any]:
+def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_review_tokens: int = 400) -> Dict[str, Any]:
     ensure_automation_queues_initialized()
     allow_review, review_why = can_run_ceo_review(estimated_tokens=estimated_review_tokens)
     reg = load_registry(registry_path)
@@ -36,7 +36,6 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
     runtime_root: Optional[Path] = None
     try:
         from trading_ai.runtime_paths import ezras_runtime_root
-
         runtime_root = Path(ezras_runtime_root()).resolve()
     except Exception:
         runtime_root = None
@@ -44,71 +43,34 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
     edge_snap = build_edge_discovery_snapshot(registry_path=registry_path, runtime_root=runtime_root)
     ttc_snap = build_time_to_convergence_snapshot(registry_path=registry_path)
     ensure_implementation_governor_state()
-    by_avenue: Dict[str, List[str]] = defaultdict(list)
-    by_gate: Dict[str, List[str]] = defaultdict(list)
-    by_class: Dict[str, List[str]] = defaultdict(list)
+    
     strongest: List[Dict[str, Any]] = []
-    weakest: List[Dict[str, Any]] = []
-    promotion_histogram: Dict[str, int] = defaultdict(int)
-    capital_histogram: Dict[str, int] = defaultdict(int)
     for b in bots:
-        aid = str(b.get("avenue") or "?")
-        g = str(b.get("gate") or "?")
-        bc = str(b.get("bot_class") or "?")
         bid = str(b.get("bot_id") or "?")
-        promotion_histogram[str(b.get("promotion_tier") or "?")] += 1
-        capital_histogram[str(b.get("capital_authority_tier") or "?")] += 1
-        by_avenue[aid].append(bid)
-        by_gate[f"{aid}|{g}"].append(bid)
-        by_class[bc].append(bid)
         rel = float((b.get("performance") or {}).get("composite", {}).get("trust_score") or b.get("reliability_score") or 0.0)
         strongest.append({"bot_id": bid, "reliability": rel})
     strongest.sort(key=lambda x: x["reliability"], reverse=True)
-    weakest = sorted(strongest, key=lambda x: x["reliability"])[: min(5, len(strongest))]
-    strongest = strongest[: min(5, len(strongest))]
+    strongest = strongest[:3]  # Limit to top 3
+    weakest = sorted(strongest, key=lambda x: x["reliability"])[:2]  # Limit to bottom 2
+    
     bud = load_budget_state()
     shadow_ids = [str(b.get("bot_id")) for b in bots if str(b.get("permission_level") or "") != PermissionLevel.EXECUTION_AUTHORITY.value]
     live_perm_ids = [str(b.get("bot_id")) for b in bots if str(b.get("permission_level") or "") == PermissionLevel.EXECUTION_AUTHORITY.value]
-    objective_weights = {
-        "upside_velocity_vs_truth": 0.35,
-        "time_to_convergence": 0.25,
-        "capital_efficiency": 0.15,
-        "token_efficiency": 0.15,
-        "live_safety_compliance": 0.1,
-    }
-    top_edge = (edge_snap.get("bots_ranked") or [])[:5]
-    top_ttc = (ttc_snap.get("paths_ranked") or [])[:5]
-    gap_detection = _coverage_gaps(bots) + (
-        ["low_edge_diversity"] if len(top_edge) < 2 else []
-    )
+    
+    top_edge = (edge_snap.get("bots_ranked") or [])[:3]  # Limit to top 3
+    top_ttc = (ttc_snap.get("paths_ranked") or [])[:3]  # Limit to top 3
+    gap_detection = _coverage_gaps(bots)[:2]  # Limit to 2 gaps
     decision_outputs = _decision_outputs(bots, top_edge, top_ttc, gap_detection)
     traj = _trajectory_note(bots, edge_snap)
 
     out = {
-        "truth_version": "ceo_daily_orchestration_review_v2",
+        "truth_version": "ceo_daily_orchestration_review_v3",
         "generated_at": _iso(),
-        "system_mission": system_mission_dict(),
-        "mission_prompt_injection": mission_prompt_injection_block(),
-        "ceo_objective_weights": objective_weights,
         "profitability_acceleration_ranking": [x.get("bot_id") for x in top_edge],
         "convergence_acceleration_ranking": [x.get("bot_id") for x in top_ttc],
-        "implementation_priority_ranking": [x.get("bot_id") for x in top_ttc[:8]],
-        "edge_discovery_snapshot_ref": "data/governance/orchestration/edge_discovery_snapshot.json",
-        "time_to_convergence_snapshot_ref": "data/governance/orchestration/time_to_convergence_snapshot.json",
-        "global_performance_review": {
-            "bots_ranked_by_edge": top_edge,
-            "paths_ranked_by_time_to_usefulness": top_ttc,
-        },
         "gap_detection": gap_detection,
         "decision_outputs": decision_outputs,
         "trajectory_vs_aggressive_upside_target": traj,
-        "capital_readiness_notes": [
-            "Live capital ramps require promotion contracts + execution authority slots — unchanged.",
-        ],
-        "live_safety_notes": [
-            "No automatic live permission elevation from this review.",
-            "Fail-closed if orchestration_truth_chain reports blockers.",
-        ],
         "review_budget": {
             "allowed": allow_review,
             "reason": review_why,
@@ -116,110 +78,42 @@ def write_daily_ceo_review(*, registry_path: Optional[Path] = None, estimated_re
             "ceo_review_tokens_used_today": bud.get("ceo_review_tokens_used_today"),
         },
         "bot_total": len(bots),
-        "summary_by_avenue": {k: {"count": len(v), "bot_ids": v} for k, v in sorted(by_avenue.items())},
-        "summary_by_gate": {k: {"count": len(v), "bot_ids": v} for k, v in sorted(by_gate.items())},
-        "summary_by_bot_class": {k: {"count": len(v), "bot_ids": v} for k, v in sorted(by_class.items())},
         "strongest_bots": strongest,
         "weakest_bots": weakest,
-        "missing_coverage_notes": _coverage_gaps(bots),
-        "duplicate_scope_risks": _dup_notes(bots),
-        "cost_snapshot": {
-            "global_daily_token_budget": bud.get("global_daily_token_budget"),
-            "ai_calls_this_hour": bud.get("ai_calls_this_hour"),
-        },
-        "promotion_tier_histogram": dict(sorted(promotion_histogram.items())),
-        "capital_authority_tier_histogram": dict(sorted(capital_histogram.items())),
-        "recommendations": _recommendations(bots),
+        "recommendations": _recommendations(bots)[:5],  # Limit to 5
         "shadow_non_execution_bot_ids": shadow_ids,
         "execution_authority_permission_bot_ids": live_perm_ids,
         "system_risk_notes": _risk_notes(bots, bud),
-        "honesty": "Deterministic summary grounded in registry + measured artifacts; aggressive upside is a scored trajectory — not a promised return. Does not grant live authority.",
+        "honesty": "Deterministic summary; does not grant live authority.",
     }
+    
     try:
         if runtime_root:
             from trading_ai.safety.kill_switch_engine import ceo_kill_switch_dashboard
-
-            out["kill_switch_ceo_snapshot"] = ceo_kill_switch_dashboard(runtime_root=runtime_root, max_events=30)
+            out["kill_switch_ceo_snapshot"] = ceo_kill_switch_dashboard(runtime_root=runtime_root, max_events=10)  # Limit to 10 events
     except Exception:
         pass
-    try:
-        from trading_ai.global_layer.bot_hierarchy.integration import build_ceo_hierarchy_attachment
-
-        out["bot_hierarchy_ceo_attachment"] = build_ceo_hierarchy_attachment(registry_path=registry_path)
-    except Exception as exc:
-        out["bot_hierarchy_ceo_attachment"] = {"truth_version": "bot_hierarchy_ceo_attachment_v1", "honesty": f"unavailable:{exc}"}
+    
     try:
         rst = ReviewStorage()
         ei = rst.load_json("global_execution_intelligence_snapshot.json")
         gp = rst.load_json("goal_progress_snapshot.json")
         out["execution_intelligence_operator_brief"] = {
-            "truth_version": ei.get("truth_version"),
             "strongest_avenue": (ei.get("avenue_performance") or {}).get("strongest_avenue")
-            if isinstance(ei.get("avenue_performance"), dict)
-            else None,
+            if isinstance(ei.get("avenue_performance"), dict) else None,
             "weakest_avenue": (ei.get("avenue_performance") or {}).get("weakest_avenue")
-            if isinstance(ei.get("avenue_performance"), dict)
-            else None,
-            "recommended_capital_split": (ei.get("capital_allocation") or {}).get("allocation_map")
-            if isinstance(ei.get("capital_allocation"), dict)
-            else {},
-            "scaling_posture": ei.get("scaling"),
-            "strategy_promotions": (ei.get("strategy_state") or {}).get("promoted_ids")
-            if isinstance(ei.get("strategy_state"), dict)
-            else [],
-            "strategy_restrictions": (ei.get("strategy_state") or {}).get("restricted_ids")
-            if isinstance(ei.get("strategy_state"), dict)
-            else [],
+            if isinstance(ei.get("avenue_performance"), dict) else None,
+            "strategy_promotions": (ei.get("strategy_state") or {}).get("promoted_ids")[:3] if isinstance(ei.get("strategy_state"), dict) else [],
             "goal_progress": gp.get("goal_progress"),
-            "best_steps_today": list(((gp.get("goal_progress") or {}).get("recommended_next_steps_today") or [])[:10]),
-            "best_steps_tomorrow": list(((gp.get("goal_progress") or {}).get("recommended_next_steps_tomorrow") or [])[:10]),
-            "biggest_blocker": list(((gp.get("goal_progress") or {}).get("blockers") or [])[:3]),
-            "missing_evidence": (ei.get("data_sufficiency") or {}).get("notes")
-            if isinstance(ei.get("data_sufficiency"), dict)
-            else [],
+            "biggest_blocker": list(((gp.get("goal_progress") or {}).get("blockers") or [])[:1]),  # Limit to 1
             "advisory_only": True,
         }
     except Exception:
         pass
-    try:
-        if runtime_root:
-            from trading_ai.global_layer.mission_goals_operating_layer import build_million_goal_mission_bundle
-            from trading_ai.global_layer.trade_truth import load_federated_trades
-
-            trades, meta = load_federated_trades()
-            _ = trades
-            eq = float((meta or {}).get("total_balance_usd") or (meta or {}).get("total_balance") or 200.0)
-            mg = build_million_goal_mission_bundle(runtime_root=runtime_root, current_equity_usd=eq)
-            ei = out.get("execution_intelligence_operator_brief") or {}
-            out["million_goal_ceo"] = {
-                "current_equity_usd": mg.get("current_equity_usd"),
-                "required_daily_pnl_usd": mg.get("required_daily_pnl_usd"),
-                "velocity_gap": mg.get("velocity_gap"),
-                "mission_pressure_score": mg.get("mission_pressure_score"),
-                "urgency_level": mg.get("urgency_level"),
-                "best_strategies_hint": ei.get("strategy_promotions"),
-                "worst_strategies_hint": ei.get("strategy_restrictions"),
-                "recommended_adjustments": [
-                    "Increase validated throughput when pressure is high and risk headroom is healthy.",
-                    "Tighten validation cadence when weekly_net_usd is negative or velocity_gap is below zero.",
-                ],
-            }
-    except Exception as exc:
-        out["million_goal_ceo"] = {"ok": False, "error": type(exc).__name__}
+    
     if allow_review:
         record_ceo_review_tokens(estimated_review_tokens)
-        try:
-            impl_q = implementation_queue_path()
-            n_impl = len(json.loads(impl_q.read_text(encoding="utf-8")).get("items") or [])
-            if n_impl == 0 and len(bots) > 0:
-                queue_implementation_item(
-                    title="Refresh trade_cycle_intelligence + edge snapshots after next supervised cycle",
-                    change_class="shadow_only",
-                    evidence_refs=["edge_discovery_snapshot.json", "trade_cycle_intelligence.json"],
-                    risk_notes="No live mutation",
-                )
-        except OSError:
-            pass
+    
     p = ceo_daily_review_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -265,10 +159,10 @@ def _recommendations(bots: List[Dict[str, Any]]) -> List[str]:
     recs = []
     for b in bots:
         if str(b.get("permission_level")) == PermissionLevel.OBSERVE_ONLY.value and float(b.get("reliability_score") or 0) > 0.8:
-            recs.append(f"consider_promotion_review:{b.get('bot_id')}")
+            recs.append(f"promote:{b.get('bot_id')}")
         if b.get("demotion_risk"):
-            recs.append(f"demotion_review:{b.get('bot_id')}")
-    return recs[:32]
+            recs.append(f"demote:{b.get('bot_id')}")
+    return recs[:10]  # Limit to 10
 
 
 def _decision_outputs(

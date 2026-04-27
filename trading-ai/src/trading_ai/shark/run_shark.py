@@ -1072,7 +1072,7 @@ def main() -> None:
         try:
             if not _coinbase_env_on:
                 return
-            from trading_ai.nte.ceo.twice_daily_ceo_session import run_twice_daily_session
+            from trading_ai.ceo import run_twice_daily_session
             from trading_ai.nte.memory.store import MemoryStore
 
             st = MemoryStore()
@@ -1095,7 +1095,7 @@ def main() -> None:
         try:
             if not _coinbase_env_on:
                 return
-            from trading_ai.nte.ceo.twice_daily_ceo_session import run_twice_daily_session
+            from trading_ai.ceo import run_twice_daily_session
             from trading_ai.nte.memory.store import MemoryStore
 
             st = MemoryStore()
@@ -1111,7 +1111,7 @@ def main() -> None:
                     "actions": "Update goals_state; trim weak strategies in research sandbox.",
                 },
             )
-            from trading_ai.nte.ceo.iteration_engine import IterationEngine
+            from trading_ai.ceo import IterationEngine
 
             IterationEngine(st).after_day({"kind": "nte_eod", "source": "scheduler"})
         except Exception as exc:

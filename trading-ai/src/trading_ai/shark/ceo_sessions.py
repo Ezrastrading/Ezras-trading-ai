@@ -327,131 +327,44 @@ def build_ceo_session_prompt(
     journal_summary: dict,
     session_history: list,
 ) -> str:
-    history_text = ""
-    if session_history:
-        last = session_history[-3:]
-        history_text = "\n\nPREVIOUS SESSIONS:\n"
-        for s in last:
-            a = str(s.get("assessment", ""))[:200]
-            history_text += f"[{s.get('timestamp')}] {a}\n"
-
-    week_block = ""
-    if journal_summary.get("week_in_review"):
-        w = journal_summary.get("weekly_stats") or {}
-        week_block = (
-            f"\n\nWEEK IN REVIEW (Sunday):\n"
-            f"Trades (7d): {w.get('trades', 0)} wins={w.get('wins', 0)} "
-            f"P&L week: ${float(w.get('pnl_week', 0)):+.2f}\n"
-        )
-
-    pipeline_txt = _pipeline_summary_text()
-
-    from trading_ai.shark.capital_phase import growth_path_summary_lines
-
-    growth_block = growth_path_summary_lines(float(stats["net_worth"]), month_index=1)
-
+    # Minimal context - only essential A-Z data points
+    week_stats = journal_summary.get("weekly_stats") or {}
+    
+    # Only last 3 trades to save tokens
+    recent = recent_trades[-3:] if recent_trades else []
+    
+    # Only top 2 best/worst hunt types
+    best = dict(list((stats.get("best_hunt_types") or {}).items())[:2])
+    worst = dict(list((stats.get("worst_hunt_types") or {}).items())[:2])
+    
+    # Only active strategy names, not full details
     from trading_ai.shark.avenues import load_avenues
-    from trading_ai.shark.master_strategies import get_active_strategies, get_strategy_performance_summary
-
+    from trading_ai.shark.master_strategies import get_active_strategies
     active_avenues = [k for k, a in load_avenues().items() if (a.status or "").lower() == "active"]
     active_strategies = get_active_strategies(float(stats["net_worth"]), active_avenues)
-    active_names = [s.name for s in active_strategies]
-    perf = get_strategy_performance_summary()
-    perf_json = json.dumps(perf, indent=2, default=str)[:1000]
+    active_names = [s.name for s in active_strategies][:5]  # Max 5 strategies
 
-    beast_block = ""
-    try:
-        from trading_ai.shark.avenue_activator import format_avenue_status_for_ceo
-        from trading_ai.shark.master_wallet import load_master_wallet
+    return f"""CEO BRIEF - {session_type}
 
-        beast_block = (
-            "\n\nSIX AVENUES + MASTER WALLET (Beast architecture):\n"
-            f"{format_avenue_status_for_ceo()}\n\nmaster_wallet.json snapshot:\n"
-            f"{json.dumps(load_master_wallet(), indent=2)[:3500]}\n"
-            "\nMorning brief checklist: active vs pending venues, overnight hunt fires, "
-            "cross-venue signals (Kalshi↔Metaculus↔Polymarket), which credential to add next, "
-            "and one concrete strategy experiment per avenue type.\n"
-        )
-    except Exception:
-        beast_block = ""
+CAPITAL: ${stats["net_worth"]:.2f} | P&L TODAY: ${stats["pnl_today"]:+.2f} | WIN RATE: {stats["win_rate_today"]:.1%}
+TRADES: {stats["trades_today"]} | SCANNED: {stats["markets_scanned"]}
 
-    return f"""You are the CEO of Ezras Capital — a ruthlessly effective prediction market hedge fund.
+WEEK: {week_stats.get('trades', 0)} trades, {week_stats.get('wins', 0)} wins, ${float(week_stats.get('pnl_week', 0)):+.2f} P&L
 
-Primary execution venue: **Kalshi** (US-legal). Polymarket + Metaculus are **intelligence layers**
-(no orders from those outlets in this stack). Manifold: mana sandbox unless ``MANIFOLD_REAL_MONEY``.
-Coinbase / Robinhood / Tastytrade: enable with API keys + execution env flags when ready.
-Also monitor: sports pipelines as configured.
-{beast_block}
+BEST HUNTS: {json.dumps(best, separators=(',', ':'))}
+WORST HUNTS: {json.dumps(worst, separators=(',', ':'))}
 
-Current capital: ${stats["net_worth"]:.2f}
-Starting capital: ${stats["starting"]:.2f}
-Days running: {stats["days_running"]}
-Target: $1,200,000 by year end
+RECENT TRADES: {json.dumps(recent, separators=(',', ':'), default=str)}
 
-SIX-MONTH MINIMUM GROWTH PATH (motivation — targets are floors, not ceilings):
-{growth_block}
+ACTIVE STRATEGIES: {json.dumps(active_names, separators=(',', ':'))}
 
-TODAY SO FAR ({session_type}):
-Trades taken: {stats["trades_today"]}
-Wins: {stats["wins_today"]}
-Losses: {stats["losses_today"]}
-Win rate: {stats["win_rate_today"]:.1%}
-P&L today: ${stats["pnl_today"]:+.2f}
-
-BEST PERFORMING (hunt types, win rate):
-{json.dumps(stats.get("best_hunt_types") or {}, indent=2)}
-
-WORST PERFORMING (hunt types, win rate):
-{json.dumps(stats.get("worst_hunt_types") or {}, indent=2)}
-
-CATEGORY WIN RATES:
-{json.dumps(stats.get("category_win_rates") or {}, indent=2)}
-
-RECENT TRADES:
-{json.dumps(recent_trades[-10:], indent=2, default=str)}
-
-MARKETS SCANNED: {stats["markets_scanned"]}
-EXECUTION RATE: {stats["execution_rate"]:.1%}
-{history_text}
-STRATEGY PIPELINE (recent):
-{pipeline_txt}
-{week_block}
-
-ACTIVE STRATEGIES (eligible given capital + avenues):
-{json.dumps(active_names, indent=2)}
-
-STRATEGY PERFORMANCE (journal-backed, by master strategy id):
-{perf_json}
-
-Which strategies should we double down on?
-Which should we pause?
-What new strategies should we test?
-
-As CEO give me:
-1. Honest 2-sentence assessment
-2. What is working — keep doing it
-3. What is failing — stop or fix it
-4. 1-2 new hunt strategies to test
-5. Exact parameter changes to make
-6. Target for next session
-
-Be direct. No flattery.
-Think like a billion dollar fund.
-We are small now but building.
-
-Respond in JSON:
+RESPOND IN JSON:
 {{
-  "assessment": "2 sentences max",
-  "working": ["thing1", "thing2"],
-  "failing": ["thing1", "thing2"],
+  "assessment": "1 sentence",
+  "working": ["item"],
+  "failing": ["item"],
   "new_strategies": [
-    {{
-      "name": "strategy name",
-      "description": "how it works",
-      "implementation": "what to code",
-      "expected_edge": 0.00,
-      "priority": "high|medium|low"
-    }}
+    {{"name": "name", "description": "desc", "implementation": "code", "expected_edge": 0.0, "priority": "high"}}
   ],
   "parameter_changes": {{
     "hunt_type_adjustments": {{}},
@@ -460,7 +373,7 @@ Respond in JSON:
     "focus_markets": [],
     "strategy_enabled": {{}}
   }},
-  "next_session_target": "one sentence",
+  "next_session_target": "1 sentence",
   "confidence": 0.5
 }}"""
 

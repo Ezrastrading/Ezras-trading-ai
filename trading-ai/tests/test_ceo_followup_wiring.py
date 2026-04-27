@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from trading_ai.nte.ceo.action_tracker import append_action
-from trading_ai.nte.ceo.followup import prepare_ceo_followup_briefing
+from trading_ai.ceo import append_action, prepare_ceo_followup_briefing
 
 
 def test_prepare_followup_lists_open_actions(tmp_path, monkeypatch):

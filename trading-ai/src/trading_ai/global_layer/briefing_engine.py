@@ -78,7 +78,7 @@ class BriefingEngine:
             ]
         )
         try:
-            from trading_ai.nte.ceo.followup import prepare_ceo_followup_briefing
+            from trading_ai.ceo import prepare_ceo_followup_briefing
 
             fu = prepare_ceo_followup_briefing(
                 session_id=f"briefing_{int(time.time())}",
