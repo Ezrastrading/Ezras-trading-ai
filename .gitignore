@@ -3,15 +3,44 @@
 .env.runtime.transfer
 .venv/
 venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+data/
+*.sqlite
+*.db
 .DS_Store
+.pytest_cache/
+.ezras-test-runtime/
+.mypy_cache/
+.ruff_cache/
 
-# Legacy flat layout / local runtime at repo root only (not trading-ai/src)
-/src/
-/tests/
-UNKNOWN.egg-info/
-.lock_confirm_outputs/
 .post_trade_runtime/
-.smoke_last_run.json
+
+# Local runtime roots (do not commit)
+.ezras-runtime/
+
+# Optional local memory snapshots under repo root (use EZRAS_RUNTIME_ROOT in prod)
+/memory/
+
+# Stray duplicate of runtime layout (use EZRAS_RUNTIME_ROOT/shark instead)
+shark/nte/
+
+# Local runtime proof harness output (regenerate with scripts under runtime_proof/)
+runtime_proof_runs/
+
+# Large files and directories
+*.sparsebundle
+ezras trading vault.sparsebundle
+
+# Embedded repositories and private code
+ezras-trading-ai-private/
+polymarket-mcp-server/
+
+# Frontend (deployed separately)
+frontend/.json
 connectivity.txt
 /data/
 /logs/
