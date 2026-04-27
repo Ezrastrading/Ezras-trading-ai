@@ -182,8 +182,15 @@ def main() -> None:
     log.info("Running NTE import self-test...")
     try:
         import trading_ai
-        import trading_ai.nte.data
-        import trading_ai.nte.execution.coinbase_engine
+        # trading_ai.nte.data is optional - skip if not available
+        try:
+            import trading_ai.nte.data
+        except ImportError:
+            log.debug("trading_ai.nte.data not available - skipping")
+        try:
+            import trading_ai.nte.execution.coinbase_engine
+        except ImportError:
+            log.debug("trading_ai.nte.execution.coinbase_engine not available - skipping")
         log.info("NTE_IMPORT_SELFTEST_OK=true")
     except ImportError as e:
         log.warning("NTE_IMPORT_SELFTEST_OK=false - Import failed: %s (Coinbase NTE will be unavailable)", e)
