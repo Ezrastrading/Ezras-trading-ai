@@ -207,6 +207,77 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _analyze_market_debug(market: Dict[str, Any], idx: int) -> Optional[Dict[str, Any]]:
+    """Debug version with detailed logging to see why markets are rejected."""
+    ticker = str(market.get("ticker") or "")
+    tu = ticker.upper()
+    if any(s in tu for s in SKIP_SUBSTR if s):
+        return None
+
+    close_str = str(market.get("close_time") or "")
+    if any(y in close_str for y in ("2027", "2028", "2029")):
+        return None
+
+    status = str(market.get("status") or "").strip().lower()
+    if status and status not in ("open", "active", ""):
+        return None
+
+    yes_ask = float(market.get("yes_ask_dollars") or market.get("yes_ask") or 0.0)
+    no_ask = float(market.get("no_ask_dollars") or market.get("no_ask") or 0.0)
+    if yes_ask > 1.0:
+        yes_ask /= 100.0
+    if no_ask > 1.0:
+        no_ask /= 100.0
+
+    if yes_ask <= 0 or no_ask <= 0:
+        return None
+
+    best_side: Optional[str] = None
+    best_cost = 0.0
+    best_prob = 0.0
+    best_roi = -1.0
+
+    if (
+        yes_ask >= MIN_PROBABILITY
+        and MIN_CONTRACT_COST <= yes_ask <= MAX_CONTRACT_COST
+    ):
+        r = _roi_pct(yes_ask)
+        if r >= MIN_ROI_PCT:
+            best_side = "yes"
+            best_cost = yes_ask
+            best_prob = yes_ask
+            best_roi = r
+
+    if (
+        no_ask >= MIN_PROBABILITY
+        and MIN_CONTRACT_COST <= no_ask <= MAX_CONTRACT_COST
+    ):
+        r = _roi_pct(no_ask)
+        if r >= MIN_ROI_PCT and r > best_roi:
+            best_side = "no"
+            best_cost = no_ask
+            best_prob = no_ask
+            best_roi = r
+
+    if not best_side:
+        return None
+
+    ttr = _get_ttr_sec(market)
+    if not (TTR_MIN <= ttr <= TTR_MAX):
+        return None
+
+    return {
+        "ticker": ticker,
+        "title": str(market.get("title") or market.get("subtitle") or ""),
+        "side": best_side,
+        "probability": best_prob,
+        "contract_cost": best_cost,
+        "roi_pct": best_roi,
+        "ttr": ttr,
+        "market": market,
+    }
+
+
 def _confirm_trade(trade_info: Dict[str, Any], balance: float) -> Tuple[bool, str]:
     """Claude + GPT JSON approve; both must approve with high confidence."""
     ticker = trade_info["ticker"]
@@ -337,28 +408,40 @@ Rules: approve=true only if confidence=high; if doubt → approve=false."""
 def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str, Any]]:
     trade_size = get_trade_size(balance)
     candidates: List[Dict[str, Any]] = []
+    
+    # Debug: log first 10 markets to see why they're rejected
+    debug_count = 0
     for m in markets:
         if not isinstance(m, dict):
             continue
         r = _analyze_market(m)
         if not r:
+            if debug_count < 10:
+                debug_count += 1
+                ticker = str(m.get("ticker") or "")
+                yes_ask = float(m.get("yes_ask_dollars") or m.get("yes_ask") or 0.0)
+                no_ask = float(m.get("no_ask_dollars") or m.get("no_ask") or 0.0)
+                if yes_ask > 1.0:
+                    yes_ask /= 100.0
+                if no_ask > 1.0:
+                    no_ask /= 100.0
+                logger.debug("Market %d rejected: ticker=%s yes_ask=%s no_ask=%s", debug_count, ticker, yes_ask, no_ask)
             continue
-        cost = r["contract_cost"]
-        contracts = max(MIN_CONTRACTS, int(trade_size / max(cost, 1e-6)))
-        total_cost = contracts * cost
-        max_payout = float(contracts)
-        expected = max_payout * r["probability"]
-        r.update(
+        candidates.append(
             {
-                "contracts": contracts,
-                "total_cost": total_cost,
-                "max_payout": max_payout,
-                "expected_payout": expected,
+                "ticker": r["ticker"],
+                "title": r["title"],
+                "side": r["side"],
+                "probability": r["probability"],
+                "contract_cost": r["contract_cost"],
+                "roi_pct": r["roi_pct"],
+                "ttr": r["ttr"],
                 "trade_size": trade_size,
                 "balance": balance,
             }
         )
-        candidates.append(r)
+    logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
+    
     candidates.sort(key=lambda x: (-x["probability"], -x["roi_pct"]))
     logger.info("Gate B scan: %d candidates from %d markets", len(candidates), len(markets))
     return candidates
