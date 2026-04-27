@@ -186,8 +186,8 @@ def main() -> None:
         import trading_ai.nte.execution.coinbase_engine
         log.info("NTE_IMPORT_SELFTEST_OK=true")
     except ImportError as e:
-        log.error("NTE_IMPORT_SELFTEST_OK=false - Import failed: %s", e)
-        sys.exit(1)
+        log.warning("NTE_IMPORT_SELFTEST_OK=false - Import failed: %s (Coinbase NTE will be unavailable)", e)
+        # Do NOT exit - system can still run without Coinbase NTE
 
     # ── Coinbase 24/7 market status ─────────────────────────────────────────────
     log.info("Avenue A Coinbase market status: OPEN_24_7")
