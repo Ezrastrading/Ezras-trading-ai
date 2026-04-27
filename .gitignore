@@ -46,3 +46,6 @@ connectivity.txt
 /logs/
 repo_readiness.txt
 smoke_results.txt
+
+# Exception: trading_ai.nte.data is required for Avenue A Coinbase execution
+!trading-ai/src/trading_ai/nte/data/
