@@ -440,6 +440,9 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
                 "ttr": r["ttr"],
                 "trade_size": trade_size,
                 "balance": balance,
+                "contracts": int(trade_size / r["contract_cost"]) if r["contract_cost"] > 0 else 1,
+                "total_cost": trade_size,
+                "expected_payout": trade_size * (1 + r["roi_pct"] / 100),
             }
         )
     logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
