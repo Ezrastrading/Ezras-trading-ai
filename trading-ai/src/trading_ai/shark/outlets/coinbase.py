@@ -77,10 +77,25 @@ _PUBLIC_SPOT = "https://api.coinbase.com/v2/prices/{product_id}/spot"
 
 
 def normalize_coinbase_key_material(raw: str) -> str:
-    """Turn .env / Railway single-line PEM (with ``\\n`` escapes) into real PEM."""
+    """
+    Turn .env / Railway single-line PEM (with ``\\n`` escapes) into real PEM.
+    
+    Handles:
+    - Escaped newlines (\\n) converted to real newlines
+    - Extra quotes/spaces stripped
+    - BEGIN/END EC PRIVATE KEY headers preserved
+    """
     if not raw:
         return raw
-    return raw.replace("\\n", "\n").strip()
+    # Remove surrounding quotes if present
+    cleaned = raw.strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1]
+    # Convert escaped newlines to real newlines
+    cleaned = cleaned.replace("\\n", "\n")
+    # Strip again to remove any extra whitespace after quote removal
+    cleaned = cleaned.strip()
+    return cleaned
 
 
 def _b64url_encode(data: bytes) -> str:

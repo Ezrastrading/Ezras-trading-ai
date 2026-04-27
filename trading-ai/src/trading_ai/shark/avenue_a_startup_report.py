@@ -61,14 +61,28 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
     
     # Try Coinbase balance check
     cb_balance_check = "ok"
+    cb_balance_available = False
+    cb_available_usd = 0.0
     if cb_auth_env_present:
         try:
             from trading_ai.shark.coinbase_tracker import get_coinbase_balance
             
             balance = get_coinbase_balance()
-            if not balance or balance.get("error"):
-                cb_balance_check = "unauthorized_or_error"
+            if not balance:
+                cb_balance_check = "balance_fetch_returned_none"
                 blockers.append("coinbase_balance_check_failed")
+            else:
+                source = balance.get("source", "")
+                if source in ("no_credentials", "fetch_failed", "http_error_401", "http_error_403"):
+                    cb_balance_check = f"balance_fetch_failed_source_{source}"
+                    blockers.append("coinbase_balance_check_failed")
+                else:
+                    usdc = float(balance.get("usdc", 0.0) or 0.0)
+                    eth_usd = float(balance.get("eth_usd_value", 0.0) or 0.0)
+                    total_usd = usdc + eth_usd
+                    cb_balance_available = True
+                    cb_available_usd = total_usd
+                    cb_balance_check = "ok"
         except Exception as e:
             cb_balance_check = f"check_failed:{str(e)[:50]}"
             blockers.append(f"coinbase_balance_check_exception:{str(e)[:50]}")
@@ -104,6 +118,8 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
             "coinbase_auth": "ok" if cb_enabled else "fail",
             "coinbase_auth_env_present": cb_auth_env_present,
             "coinbase_balance_check": cb_balance_check,
+            "coinbase_balance_available": cb_balance_available,
+            "coinbase_available_usd": cb_available_usd,
             "coinbase_entry_path": "ok" if cb_enabled else "fail",
             "coinbase_exit_path": "ok" if cb_enabled else "fail",
             "kalshi_disabled_for_A": not kalshi_enabled,
@@ -121,6 +137,8 @@ def print_avenue_a_startup_report() -> Dict[str, Any]:
     print(f"coinbase_auth: {report['AVENUE_A_RUNTIME']['coinbase_auth']}")
     print(f"coinbase_auth_env_present: {report['AVENUE_A_RUNTIME']['coinbase_auth_env_present']}")
     print(f"coinbase_balance_check: {report['AVENUE_A_RUNTIME']['coinbase_balance_check']}")
+    print(f"coinbase_balance_available: {report['AVENUE_A_RUNTIME']['coinbase_balance_available']}")
+    print(f"coinbase_available_usd: ${report['AVENUE_A_RUNTIME']['coinbase_available_usd']:.2f}")
     print(f"coinbase_entry_path: {report['AVENUE_A_RUNTIME']['coinbase_entry_path']}")
     print(f"coinbase_exit_path: {report['AVENUE_A_RUNTIME']['coinbase_exit_path']}")
     print(f"kalshi_disabled_for_A: {report['AVENUE_A_RUNTIME']['kalshi_disabled_for_A']}")
