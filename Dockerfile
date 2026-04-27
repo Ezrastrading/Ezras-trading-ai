@@ -4,10 +4,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY trading-ai/requirements.txt .
-RUN python3.11 -m pip install -r requirements.txt
+RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
 
-COPY trading-ai/ ./
+COPY trading-ai/src ./src
 
+ENV PYTHONPATH=/app/src
 ENV EZRAS_RUNTIME_ROOT=/app/ezras-runtime
 RUN mkdir -p /app/ezras-runtime/shark/state
 RUN mkdir -p /app/ezras-runtime/shark/logs
