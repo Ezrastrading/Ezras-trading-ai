@@ -1,4 +1,11 @@
-"""Coinbase Avenue 1 — limit-first execution, WS+REST data, fixed risk, NTE hooks."""
+"""
+Coinbase **Avenue A — NexTrading Engine (NTE)**.
+
+Legacy gate/swing execution (Gates A–C) has been removed. All Coinbase logic lives in
+``trading_ai.nte`` (execution, memory, learning, CEO, rewards, goals, research).
+
+State: ``shark/state/nte_coinbase_positions.json``; memory: ``shark/nte/memory/``.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +13,26 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Add src directory to Python path for module imports
+src_path = Path(__file__).resolve().parents[3]
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
+from trading_ai.nte.execution.coinbase_sizing import (
+    _PRODUCT_BASE_PRECISION,
+    _enforce_min_base_for_sell,
+    _fmt_base_size,
+    _min_base_size_for_product,
+)
 from trading_ai.nte.config.coinbase_avenue1_launch import (
+    CoinbaseAvenue1Launch,
+    entry_offset_bps,
     load_coinbase_avenue1_launch,
     spread_cap_pct,
     vol_cap_bps,
