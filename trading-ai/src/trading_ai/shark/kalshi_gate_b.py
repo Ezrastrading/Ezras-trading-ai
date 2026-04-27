@@ -25,7 +25,7 @@ MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.80"))
 MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.01"))
 MIN_CONTRACTS = int(os.environ.get("KALSHI_GB_MIN_CONTRACTS", "5"))
 TTR_MIN = int(os.environ.get("KALSHI_GB_TTR_MIN", "60"))
-TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "86400"))
+TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "604800"))  # 1 week (7 days)
 ALLOCATION_PCT = float(os.environ.get("KALSHI_GB_ALLOCATION_PCT", "0.15"))
 MAX_CONCURRENT = int(os.environ.get("KALSHI_GB_MAX_CONCURRENT", "20"))
 SCAN_INTERVAL = float(os.environ.get("KALSHI_GB_SCAN_INTERVAL", "60"))
@@ -144,8 +144,9 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     close_str = str(market.get("close_time") or "")
-    if any(y in close_str for y in ("2027", "2028", "2029")):
-        return None
+    # Removed year filter - we want short-term markets regardless of year
+    # if any(y in close_str for y in ("2027", "2028", "2029")):
+    #     return None
 
     status = str(market.get("status") or "").strip().lower()
     if status and status not in ("open", "active", ""):
@@ -215,8 +216,9 @@ def _analyze_market_debug(market: Dict[str, Any], idx: int) -> Optional[Dict[str
         return None
 
     close_str = str(market.get("close_time") or "")
-    if any(y in close_str for y in ("2027", "2028", "2029")):
-        return None
+    # Removed year filter - we want short-term markets regardless of year
+    # if any(y in close_str for y in ("2027", "2028", "2029")):
+    #     return None
 
     status = str(market.get("status") or "").strip().lower()
     if status and status not in ("open", "active", ""):
@@ -442,7 +444,7 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
         )
     logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
     
-    candidates.sort(key=lambda x: (-x["probability"], -x["roi_pct"]))
+    candidates.sort(key=lambda x: (x["ttr"], -x["probability"], -x["roi_pct"]))  # Sort by TTR (shorter first), then prob, then ROI
     logger.info("Gate B scan: %d candidates from %d markets", len(candidates), len(markets))
     return candidates
 
