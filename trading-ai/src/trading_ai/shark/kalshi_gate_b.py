@@ -287,9 +287,8 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not best_side or best_classification != TradeClassification.TRUE_EDGE.value:
         return None
 
+    # TTR constraint removed - allow all durations if EV criteria met
     ttr = _get_ttr_sec(market)
-    if not (TTR_MIN <= ttr <= TTR_MAX):
-        return None
 
     # Log detailed EV calculation
     roi_pct = _roi_pct(best_cost)
