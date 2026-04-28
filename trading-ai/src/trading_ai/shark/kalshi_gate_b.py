@@ -19,18 +19,25 @@ from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
 
 logger = logging.getLogger(__name__)
 
-MIN_PROBABILITY = float(os.environ.get("KALSHI_GB_MIN_PROB", "0.50"))  # Relaxed to 50% for testing
-MIN_ROI_PCT = float(os.environ.get("KALSHI_GB_MIN_ROI", "1.0"))  # Relaxed to 1% for testing
-MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.80"))
-MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.01"))
-MIN_CONTRACTS = int(os.environ.get("KALSHI_GB_MIN_CONTRACTS", "5"))
-TTR_MIN = int(os.environ.get("KALSHI_GB_TTR_MIN", "60"))
-TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "604800"))  # 1 week (7 days)
-ALLOCATION_PCT = float(os.environ.get("KALSHI_GB_ALLOCATION_PCT", "0.15"))
-MAX_CONCURRENT = int(os.environ.get("KALSHI_GB_MAX_CONCURRENT", "20"))
-SCAN_INTERVAL = float(os.environ.get("KALSHI_GB_SCAN_INTERVAL", "60"))
+# Locked trade template: crypto 15-minute + weather markets, high ROI
+MIN_PROBABILITY = float(os.environ.get("KALSHI_GB_MIN_PROB", "0.50"))  # 50% min probability
+MIN_ROI_PCT = float(os.environ.get("KALSHI_GB_MIN_ROI", "70.0"))  # High ROI threshold (70%+)
+MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.65"))  # ~$0.65 per contract
+MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.50"))  # ~$0.50 per contract
+MIN_CONTRACTS = int(os.environ.get("KALSHI_GB_MIN_CONTRACTS", "5"))  # Locked at 5 contracts
+TTR_MIN = int(os.environ.get("KALSHI_GB_TTR_MIN", "900"))  # 15 minutes minimum
+TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "900"))  # 15 minutes maximum (focus on 15min markets)
+ALLOCATION_PCT = float(os.environ.get("KALSHI_GB_ALLOCATION_PCT", "0.20"))  # 20% per trade for $40-45 target
+MAX_CONCURRENT = int(os.environ.get("KALSHI_GB_MAX_CONCURRENT", "10"))  # Max 10 concurrent trades
+SCAN_INTERVAL = float(os.environ.get("KALSHI_GB_SCAN_INTERVAL", "60"))  # Scan every 60 seconds
 
 logger.info("Gate B config: MIN_PROB=%s MIN_ROI=%s TTR_MIN=%s TTR_MAX=%s", MIN_PROBABILITY, MIN_ROI_PCT, TTR_MIN, TTR_MAX)
+
+# Crypto 15-minute market series (BTC, ETH)
+CRYPTO_SERIES = ("KXBTC15", "BTC15", "KXBTCZ", "BTCZ", "KXBTCD", "KXETH15", "ETH15", "KXETHD", "KXETHZ", "ETHZ")
+
+# Weather market series
+WEATHER_SERIES = ("KXWX", "KXTEMP", "KXWEATHER", "KXCLIMATE", "WX", "TEMP")
 
 SKIP_SUBSTR = tuple(
     x.strip().upper()
@@ -91,7 +98,14 @@ def _available_balance() -> float:
 
 
 def get_trade_size(balance: float) -> float:
-    return min(balance * ALLOCATION_PCT, 100.0)
+    """Locked trade template: target $2.96 per trade (5 contracts × ~$0.59)."""
+    # Target $2.96 per trade for 5 contracts at ~$0.59 each
+    target_per_trade = 2.96
+    # Ensure we have enough balance for the target
+    if balance >= target_per_trade:
+        return target_per_trade
+    # If balance is too low, use 20% of balance (minimum $1)
+    return max(balance * ALLOCATION_PCT, 1.0)
 
 
 def get_max_per_hour(balance: float) -> int:
@@ -143,6 +157,12 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if any(s in tu for s in SKIP_SUBSTR if s):
         return None
 
+    # Filter for crypto 15-minute markets OR weather markets only
+    is_crypto = any(cs in tu for cs in CRYPTO_SERIES)
+    is_weather = any(ws in tu for ws in WEATHER_SERIES)
+    if not (is_crypto or is_weather):
+        return None
+
     close_str = str(market.get("close_time") or "")
     # Removed year filter - we want short-term markets regardless of year
     # if any(y in close_str for y in ("2027", "2028", "2029")):
@@ -153,7 +173,7 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     # Filter out parlay bets (complex multi-condition)
-    title = str(market.get("title") or "").lower()
+    title = str(market.get("title") or market.get("subtitle") or "").lower()
     if any(word in title for word in (" and ", " & ", " plus ")):
         return None
 
@@ -203,13 +223,14 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     return {
         "ticker": ticker,
-        "title": str(market.get("title") or market.get("subtitle") or ""),
+        "title": title,
         "side": best_side,
         "probability": best_prob,
         "contract_cost": best_cost,
         "roi_pct": best_roi,
         "ttr": ttr,
         "market": market,
+        "market_type": "crypto" if is_crypto else "weather",
     }
 
 
@@ -435,6 +456,12 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
                     no_ask /= 100.0
                 logger.info("Market %d rejected: ticker=%s yes_ask=%s no_ask=%s", debug_count, ticker, yes_ask, no_ask)
             continue
+        
+        # Locked template: 5 contracts per trade
+        contracts = MIN_CONTRACTS
+        total_cost = contracts * r["contract_cost"]
+        expected_payout = total_cost * (1 + r["roi_pct"] / 100)
+        
         candidates.append(
             {
                 "ticker": r["ticker"],
@@ -446,15 +473,17 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
                 "ttr": r["ttr"],
                 "trade_size": trade_size,
                 "balance": balance,
-                "contracts": int(trade_size / r["contract_cost"]) if r["contract_cost"] > 0 else 1,
-                "total_cost": trade_size,
-                "expected_payout": trade_size * (1 + r["roi_pct"] / 100),
+                "contracts": contracts,
+                "total_cost": total_cost,
+                "expected_payout": expected_payout,
+                "market_type": r.get("market_type", "unknown"),
             }
         )
     logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
     
-    candidates.sort(key=lambda x: (x["ttr"], -x["probability"], -x["roi_pct"]))  # Sort by TTR (shorter first), then prob, then ROI
-    logger.info("Gate B scan: %d candidates from %d markets", len(candidates), len(markets))
+    # Sort by ROI (highest first), then TTR (shorter first), then probability
+    candidates.sort(key=lambda x: (-x["roi_pct"], x["ttr"], -x["probability"]))
+    logger.info("Gate B scan: %d candidates from %d markets (crypto 15min + weather only)", len(candidates), len(markets))
     return candidates
 
 
