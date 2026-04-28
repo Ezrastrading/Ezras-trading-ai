@@ -1,7 +1,9 @@
-"""Kalshi Gate B — any market, YES or NO, min probability & ROI; Claude+GPT confirmation.
+"""Kalshi Gate B — EV-based selection for short-duration markets (crypto, weather, commodities).
 
 State: ``shark/state/kalshi_gate_b_state.json``. Enable ``KALSHI_GATE_B_ENABLED=true``.
 Open positions are tracked for resolution checks shared with Gate A.
+
+CRITICAL: Selection based on REAL expected value, not ROI illusion.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,31 +22,90 @@ from trading_ai.llm.anthropic_defaults import DEFAULT_ANTHROPIC_MESSAGES_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Locked trade template: crypto 15-minute + weather markets, high ROI
-MIN_PROBABILITY = float(os.environ.get("KALSHI_GB_MIN_PROB", "0.50"))  # 50% min probability
-MIN_ROI_PCT = float(os.environ.get("KALSHI_GB_MIN_ROI", "70.0"))  # High ROI threshold (70%+)
-MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.65"))  # ~$0.65 per contract
-MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.50"))  # ~$0.50 per contract
+# EV-based trade template: short-duration markets only
+MIN_EV = float(os.environ.get("KALSHI_GB_MIN_EV", "0.05"))  # Minimum EV $0.05 per contract
+EV_SAFETY_BUFFER = float(os.environ.get("KALSHI_GB_EV_SAFETY_BUFFER", "0.02"))  # Safety buffer $0.02
+FEE_PER_CONTRACT = float(os.environ.get("KALSHI_GB_FEE", "0.02"))  # Fee per contract $0.02
+SLIPPAGE_PER_CONTRACT = float(os.environ.get("KALSHI_GB_SLIPPAGE", "0.01"))  # Slippage $0.01
+MAX_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MAX_CONTRACT_COST", "0.70"))  # ~$0.70 per contract
+MIN_CONTRACT_COST = float(os.environ.get("KALSHI_GB_MIN_CONTRACT_COST", "0.30"))  # ~$0.30 per contract
 MIN_CONTRACTS = int(os.environ.get("KALSHI_GB_MIN_CONTRACTS", "5"))  # Locked at 5 contracts
-TTR_MIN = int(os.environ.get("KALSHI_GB_TTR_MIN", "900"))  # 15 minutes minimum
-TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "900"))  # 15 minutes maximum (focus on 15min markets)
+TTR_MIN = int(os.environ.get("KALSHI_GB_TTR_MIN", "300"))  # 5 minutes minimum (enter 5-10 min before close)
+TTR_MAX = int(os.environ.get("KALSHI_GB_TTR_MAX", "3600"))  # 1 hour maximum (short-duration only)
 ALLOCATION_PCT = float(os.environ.get("KALSHI_GB_ALLOCATION_PCT", "0.20"))  # 20% per trade for $40-45 target
 MAX_CONCURRENT = int(os.environ.get("KALSHI_GB_MAX_CONCURRENT", "10"))  # Max 10 concurrent trades
 SCAN_INTERVAL = float(os.environ.get("KALSHI_GB_SCAN_INTERVAL", "60"))  # Scan every 60 seconds
 
-logger.info("Gate B config: MIN_PROB=%s MIN_ROI=%s TTR_MIN=%s TTR_MAX=%s", MIN_PROBABILITY, MIN_ROI_PCT, TTR_MIN, TTR_MAX)
+logger.info("Gate B EV config: MIN_EV=%s SAFETY_BUFFER=%s FEE=%s SLIPPAGE=%s TTR_MIN=%s TTR_MAX=%s", 
+           MIN_EV, EV_SAFETY_BUFFER, FEE_PER_CONTRACT, SLIPPAGE_PER_CONTRACT, TTR_MIN, TTR_MAX)
 
-# Crypto 15-minute market series (BTC, ETH)
+# Short-duration market series (ENABLE)
 CRYPTO_SERIES = ("KXBTC15", "BTC15", "KXBTCZ", "BTCZ", "KXBTCD", "KXETH15", "ETH15", "KXETHD", "KXETHZ", "ETHZ")
-
-# Weather market series
 WEATHER_SERIES = ("KXWX", "KXTEMP", "KXWEATHER", "KXCLIMATE", "WX", "TEMP")
+COMMODITY_SERIES = ("KXOIL", "KXGOLD", "KXGAS", "OIL", "GOLD", "GAS")
+
+# Long-duration market series (DISABLE - slow capital lock)
+LONG_DURATION_SERIES = ("KXMVESPORTSMULTIGAMEEXTENDED", "KXMVESPORTSMULTIGAME", "KXNBAGAME", "KXMLBGAME", "KXNHLGAME")
 
 SKIP_SUBSTR = tuple(
     x.strip().upper()
     for x in (os.environ.get("KALSHI_GB_SKIP_TICKER_SUBSTR") or "KXNBA-26,KXMLB-26").split(",")
     if x.strip()
 )
+
+
+class TradeClassification(Enum):
+    """Classification of trade quality based on EV analysis."""
+    ROI_ONLY = "ROI_ONLY"  # Reject: selected only by ROI, no EV check
+    FAKE_EDGE = "FAKE_EDGE"  # Reject: high ROI but negative EV
+    TRUE_EDGE = "TRUE_EDGE"  # Allow: positive EV with safety buffer
+
+
+def compute_ev(
+    contract_price: float,
+    payout: float = 1.0,
+    estimated_true_probability: Optional[float] = None,
+    fee: float = FEE_PER_CONTRACT,
+    slippage: float = SLIPPAGE_PER_CONTRACT,
+) -> Tuple[float, float, str]:
+    """
+    Compute real expected value for a trade.
+    
+    Args:
+        contract_price: Entry price per contract
+        payout: Payout per contract (usually $1.00)
+        estimated_true_probability: Estimated true probability (if None, use implied)
+        fee: Fee per contract
+        slippage: Slippage per contract
+    
+    Returns:
+        (ev, implied_probability, classification)
+    """
+    implied_probability = contract_price / payout
+    
+    # If no estimated true probability provided, use implied (conservative)
+    if estimated_true_probability is None:
+        estimated_true_probability = implied_probability
+    
+    # EV = (true_probability × payout) - contract_price - fee - slippage
+    ev = (estimated_true_probability * payout) - contract_price - fee - slippage
+    
+    # Classification
+    if ev > MIN_EV + EV_SAFETY_BUFFER:
+        classification = TradeClassification.TRUE_EDGE.value
+    elif ev > 0:
+        classification = TradeClassification.FAKE_EDGE.value  # Positive but below safety buffer
+    else:
+        classification = TradeClassification.FAKE_EDGE.value  # Negative EV
+    
+    return ev, implied_probability, classification
+
+
+def _roi_pct(cost: float) -> float:
+    """Legacy ROI calculation for comparison only (not for selection)."""
+    if cost <= 0:
+        return 0.0
+    return (1.0 - cost) / cost * 100.0
 
 
 def _state_path() -> Path:
@@ -157,10 +219,19 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if any(s in tu for s in SKIP_SUBSTR if s):
         return None
 
-    # Prioritize crypto 15-minute markets and weather markets, but allow all markets if none found
+    # Filter out long-duration sports multi-game markets (slow capital lock)
+    if any(ls in tu for ls in LONG_DURATION_SERIES):
+        return None
+
+    # Only allow short-duration markets (crypto, weather, commodities)
     is_crypto = any(cs in tu for cs in CRYPTO_SERIES)
     is_weather = any(ws in tu for ws in WEATHER_SERIES)
-    market_type = "crypto" if is_crypto else "weather" if is_weather else "other"
+    is_commodity = any(cs in tu for cs in COMMODITY_SERIES)
+    
+    if not (is_crypto or is_weather or is_commodity):
+        return None
+    
+    market_type = "crypto" if is_crypto else "weather" if is_weather else "commodity"
 
     close_str = str(market.get("close_time") or "")
     # Removed year filter - we want short-term markets regardless of year
@@ -188,45 +259,54 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     best_side: Optional[str] = None
     best_cost = 0.0
-    best_prob = 0.0
-    best_roi = -1.0
+    best_ev = -999.0
+    best_implied_prob = 0.0
+    best_classification = TradeClassification.FAKE_EDGE.value
 
-    if (
-        yes_ask >= MIN_PROBABILITY
-        and MIN_CONTRACT_COST <= yes_ask <= MAX_CONTRACT_COST
-    ):
-        r = _roi_pct(yes_ask)
-        if r >= MIN_ROI_PCT:
+    # Evaluate YES side using EV
+    if MIN_CONTRACT_COST <= yes_ask <= MAX_CONTRACT_COST:
+        ev, implied_prob, classification = compute_ev(yes_ask)
+        if ev > MIN_EV + EV_SAFETY_BUFFER:
             best_side = "yes"
             best_cost = yes_ask
-            best_prob = yes_ask
-            best_roi = r
+            best_ev = ev
+            best_implied_prob = implied_prob
+            best_classification = classification
 
-    if (
-        no_ask >= MIN_PROBABILITY
-        and MIN_CONTRACT_COST <= no_ask <= MAX_CONTRACT_COST
-    ):
-        r = _roi_pct(no_ask)
-        if r >= MIN_ROI_PCT and r > best_roi:
+    # Evaluate NO side using EV
+    if MIN_CONTRACT_COST <= no_ask <= MAX_CONTRACT_COST:
+        ev, implied_prob, classification = compute_ev(no_ask)
+        if ev > MIN_EV + EV_SAFETY_BUFFER and ev > best_ev:
             best_side = "no"
             best_cost = no_ask
-            best_prob = no_ask
-            best_roi = r
+            best_ev = ev
+            best_implied_prob = implied_prob
+            best_classification = classification
 
-    if not best_side:
+    # REJECT if no TRUE_EDGE found
+    if not best_side or best_classification != TradeClassification.TRUE_EDGE.value:
         return None
 
     ttr = _get_ttr_sec(market)
     if not (TTR_MIN <= ttr <= TTR_MAX):
         return None
 
+    # Log detailed EV calculation
+    roi_pct = _roi_pct(best_cost)
+    logger.info(
+        "EV Analysis: ticker=%s side=%s cost=$%.2f implied_prob=%.2f%% ev=$%.3f classification=%s roi=%.1f%% ttr=%ds",
+        ticker, best_side, best_cost, best_implied_prob * 100, best_ev, best_classification, roi_pct, ttr
+    )
+
     return {
         "ticker": ticker,
         "title": title,
         "side": best_side,
-        "probability": best_prob,
+        "probability": best_implied_prob,
         "contract_cost": best_cost,
-        "roi_pct": best_roi,
+        "roi_pct": roi_pct,
+        "ev": best_ev,
+        "classification": best_classification,
         "ttr": ttr,
         "market": market,
         "market_type": market_type,
@@ -459,7 +539,7 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
         # Locked template: 5 contracts per trade
         contracts = MIN_CONTRACTS
         total_cost = contracts * r["contract_cost"]
-        expected_payout = total_cost * (1 + r["roi_pct"] / 100)
+        expected_payout = total_cost * (1 + r["ev"] / r["contract_cost"])  # EV-based payout
         
         candidates.append(
             {
@@ -469,6 +549,8 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
                 "probability": r["probability"],
                 "contract_cost": r["contract_cost"],
                 "roi_pct": r["roi_pct"],
+                "ev": r["ev"],
+                "classification": r["classification"],
                 "ttr": r["ttr"],
                 "trade_size": trade_size,
                 "balance": balance,
@@ -480,15 +562,13 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
         )
     logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
     
-    # Sort by ROI (highest first), then TTR (shorter first), then probability
-    # Prioritize crypto/weather markets in sorting
+    # Sort by EV (highest first), then TTR (shorter first), then market type priority
     candidates.sort(key=lambda x: (
-        0 if x["market_type"] in ("crypto", "weather") else 1,  # Crypto/weather first
-        -x["roi_pct"],  # Higher ROI first
+        -x["ev"],  # Highest EV first (CRITICAL: EV-based selection)
         x["ttr"],  # Shorter TTR first
-        -x["probability"]  # Higher probability first
+        0 if x["market_type"] in ("crypto", "weather") else 1,  # Crypto/weather first
     ))
-    logger.info("Gate B scan: %d candidates from %d markets (prioritizing crypto 15min + weather)", len(candidates), len(markets))
+    logger.info("Gate B scan: %d TRUE_EDGE candidates from %d markets (EV-based, short-duration only)", len(candidates), len(markets))
     return candidates
 
 
@@ -509,14 +589,25 @@ def place_gate_b_trade(
     total_cost = float(trade["total_cost"])
     expected = float(trade["expected_payout"])
     roi = float(trade["roi_pct"])
+    ev = float(trade.get("ev", 0.0))
+    classification = str(trade.get("classification", "UNKNOWN"))
     prob = float(trade["probability"])
     ttr = int(trade["ttr"])
     title = str(trade["title"])
+    market_type = str(trade.get("market_type", "unknown"))
 
     open_trades: Dict[str, Any] = dict(state.get("open_trades") or {})
     if ticker in open_trades:
         return False
     if len(open_trades) >= MAX_CONCURRENT:
+        return False
+
+    # Verify EV requirement before placing trade
+    if ev <= MIN_EV + EV_SAFETY_BUFFER:
+        logger.warning(
+            "Gate B REJECT %s: EV too low ($%.3f < $%.3f). Classification: %s",
+            ticker, ev, MIN_EV + EV_SAFETY_BUFFER, classification
+        )
         return False
 
     approved, reason = _confirm_trade(trade, balance)
@@ -525,12 +616,16 @@ def place_gate_b_trade(
         return False
 
     logger.info(
-        "Gate B PLACING: %s %s × %d ~$%.2f (ROI ~%.0f%%)",
+        "Gate B PLACING: %s %s × %d ~$%.2f EV=$%.3f ROI=%.1f%% class=%s type=%s ttr=%ds",
         ticker,
         side.upper(),
         contracts,
         total_cost,
+        ev,
         roi,
+        classification,
+        market_type,
+        ttr,
     )
     try:
         res = kalshi_client.place_order(
