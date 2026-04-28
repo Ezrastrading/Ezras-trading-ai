@@ -23,6 +23,21 @@ load_shark_dotenv()
 
 from pathlib import Path
 
+# Auto-clear trading halt if caused by supabase_unstable
+try:
+    from trading_ai.core.system_guard import trading_halt_path, get_system_guard
+    halt_path = trading_halt_path()
+    if halt_path.exists():
+        from trading_ai.core.system_guard import SystemGuard
+        guard = get_system_guard()
+        reason = guard.halt_reason_from_file()
+        if reason == "supabase_unstable":
+            from trading_ai.core.system_guard import clear_trading_halt
+            clear_trading_halt()
+            print("Auto-cleared supabase_unstable halt - allowing trading to resume")
+except:
+    pass
+
 runtime = (os.getenv("EZRAS_RUNTIME_ROOT") or "").strip()
 if not runtime:
     runtime = "/app/ezras-runtime" if os.path.exists("/app") else str(Path.home() / "ezras-runtime")
