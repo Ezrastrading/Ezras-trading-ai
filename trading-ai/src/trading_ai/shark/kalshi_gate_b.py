@@ -157,11 +157,10 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if any(s in tu for s in SKIP_SUBSTR if s):
         return None
 
-    # Filter for crypto 15-minute markets OR weather markets only
+    # Prioritize crypto 15-minute markets and weather markets, but allow all markets if none found
     is_crypto = any(cs in tu for cs in CRYPTO_SERIES)
     is_weather = any(ws in tu for ws in WEATHER_SERIES)
-    if not (is_crypto or is_weather):
-        return None
+    market_type = "crypto" if is_crypto else "weather" if is_weather else "other"
 
     close_str = str(market.get("close_time") or "")
     # Removed year filter - we want short-term markets regardless of year
@@ -230,7 +229,7 @@ def _analyze_market(market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "roi_pct": best_roi,
         "ttr": ttr,
         "market": market,
-        "market_type": "crypto" if is_crypto else "weather",
+        "market_type": market_type,
     }
 
 
@@ -482,8 +481,14 @@ def scan_markets(markets: List[Dict[str, Any]], balance: float) -> List[Dict[str
     logger.info("Gate B scan debug: checked %d markets, found %d candidates", len(markets), len(candidates))
     
     # Sort by ROI (highest first), then TTR (shorter first), then probability
-    candidates.sort(key=lambda x: (-x["roi_pct"], x["ttr"], -x["probability"]))
-    logger.info("Gate B scan: %d candidates from %d markets (crypto 15min + weather only)", len(candidates), len(markets))
+    # Prioritize crypto/weather markets in sorting
+    candidates.sort(key=lambda x: (
+        0 if x["market_type"] in ("crypto", "weather") else 1,  # Crypto/weather first
+        -x["roi_pct"],  # Higher ROI first
+        x["ttr"],  # Shorter TTR first
+        -x["probability"]  # Higher probability first
+    ))
+    logger.info("Gate B scan: %d candidates from %d markets (prioritizing crypto 15min + weather)", len(candidates), len(markets))
     return candidates
 
 
