@@ -58,7 +58,8 @@ def fetch_kalshi_balance_usd() -> Optional[float]:
         req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read())
-        cents = body.get("available_balance", 0)
+        # API returns 'balance' in cents, not 'available_balance'
+        cents = body.get("balance", 0)
         return round(float(cents) / 100, 2)
     except urllib.error.HTTPError as e:
         logger.warning("Kalshi balance fetch HTTP %s: %s", e.code, e.reason)
